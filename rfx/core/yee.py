@@ -6,6 +6,7 @@ No hidden mutable state.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import NamedTuple
 
 import jax
@@ -83,30 +84,38 @@ def _shift_bwd(arr, axis):
     return padded[tuple(slices)]
 
 
-@jax.jit
-def update_h(state: FDTDState, materials: MaterialArrays, dt: float, dx: float) -> FDTDState:
+@partial(jax.jit, static_argnums=(4,))
+def update_h(state: FDTDState, materials: MaterialArrays, dt: float, dx: float,
+             periodic: tuple = (False, False, False)) -> FDTDState:
     """Magnetic field half-step update (Faraday's law).
 
     H^{n+1/2} = H^{n-1/2} - (dt / μ) * curl(E^n)
+
+    periodic: tuple of 3 bools selecting periodic boundary per axis (x, y, z).
     """
+    def fwd(arr, axis):
+        if periodic[axis]:
+            return jnp.roll(arr, -1, axis)
+        return _shift_fwd(arr, axis)
+
     ex, ey, ez = state.ex, state.ey, state.ez
     mu = materials.mu_r * MU_0
 
     # curl E components via forward differences (zero-padded, no wraparound)
     # dEz/dy - dEy/dz
     curl_x = (
-        (_shift_fwd(ez, 1) - ez) / dx
-        - (_shift_fwd(ey, 2) - ey) / dx
+        (fwd(ez, 1) - ez) / dx
+        - (fwd(ey, 2) - ey) / dx
     )
     # dEx/dz - dEz/dx
     curl_y = (
-        (_shift_fwd(ex, 2) - ex) / dx
-        - (_shift_fwd(ez, 0) - ez) / dx
+        (fwd(ex, 2) - ex) / dx
+        - (fwd(ez, 0) - ez) / dx
     )
     # dEy/dx - dEx/dy
     curl_z = (
-        (_shift_fwd(ey, 0) - ey) / dx
-        - (_shift_fwd(ex, 1) - ex) / dx
+        (fwd(ey, 0) - ey) / dx
+        - (fwd(ex, 1) - ex) / dx
     )
 
     hx = state.hx - (dt / mu) * curl_x
@@ -116,8 +125,9 @@ def update_h(state: FDTDState, materials: MaterialArrays, dt: float, dx: float) 
     return state._replace(hx=hx, hy=hy, hz=hz)
 
 
-@jax.jit
-def update_e(state: FDTDState, materials: MaterialArrays, dt: float, dx: float) -> FDTDState:
+@partial(jax.jit, static_argnums=(4,))
+def update_e(state: FDTDState, materials: MaterialArrays, dt: float, dx: float,
+             periodic: tuple = (False, False, False)) -> FDTDState:
     """Electric field full-step update (Ampere's law).
 
     For lossy media with conductivity σ:
@@ -125,7 +135,14 @@ def update_e(state: FDTDState, materials: MaterialArrays, dt: float, dx: float) 
 
     Ca = (1 - σ*dt/(2ε)) / (1 + σ*dt/(2ε))
     Cb = (dt/ε) / (1 + σ*dt/(2ε))
+
+    periodic: tuple of 3 bools selecting periodic boundary per axis (x, y, z).
     """
+    def bwd(arr, axis):
+        if periodic[axis]:
+            return jnp.roll(arr, 1, axis)
+        return _shift_bwd(arr, axis)
+
     hx, hy, hz = state.hx, state.hy, state.hz
     eps = materials.eps_r * EPS_0
     sigma = materials.sigma
@@ -138,18 +155,18 @@ def update_e(state: FDTDState, materials: MaterialArrays, dt: float, dx: float) 
     # curl H components via backward differences (zero-padded, no wraparound)
     # dHz/dy - dHy/dz
     curl_x = (
-        (hz - _shift_bwd(hz, 1)) / dx
-        - (hy - _shift_bwd(hy, 2)) / dx
+        (hz - bwd(hz, 1)) / dx
+        - (hy - bwd(hy, 2)) / dx
     )
     # dHx/dz - dHz/dx
     curl_y = (
-        (hx - _shift_bwd(hx, 2)) / dx
-        - (hz - _shift_bwd(hz, 0)) / dx
+        (hx - bwd(hx, 2)) / dx
+        - (hz - bwd(hz, 0)) / dx
     )
     # dHy/dx - dHx/dy
     curl_z = (
-        (hy - _shift_bwd(hy, 0)) / dx
-        - (hx - _shift_bwd(hx, 1)) / dx
+        (hy - bwd(hy, 0)) / dx
+        - (hx - bwd(hx, 1)) / dx
     )
 
     ex = ca * state.ex + cb * curl_x
