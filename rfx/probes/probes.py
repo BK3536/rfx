@@ -308,6 +308,91 @@ def extract_s11(probe: SParamProbe, z0: float = 50.0) -> jnp.ndarray:
     return s11
 
 
+# ---------------------------------------------------------------------------
+# DFT plane probe — frequency-domain field on a 2D plane
+# ---------------------------------------------------------------------------
+
+class DFTPlaneProbe(NamedTuple):
+    """Running DFT accumulator for a 2D field plane.
+
+    Accumulates X(f, y, z) = Σ x(t, y, z) · exp(-j2πft) · dt
+    over the simulation, avoiding storage of full time series.
+
+    Attributes
+    ----------
+    accumulator : (n_freqs, n1, n2) complex
+        Accumulated DFT field on the plane.
+    freqs : (n_freqs,) float
+        Frequency array in Hz.
+    component : str
+        Field component ("ex", "ey", "ez", "hx", "hy", "hz").
+    axis : int
+        Normal axis (0=x, 1=y, 2=z).
+    index : int
+        Position along normal axis.
+    """
+    accumulator: jnp.ndarray
+    freqs: jnp.ndarray
+    component: str
+    axis: int
+    index: int
+
+
+def init_dft_plane_probe(
+    axis: int,
+    index: int,
+    component: str,
+    freqs: jnp.ndarray,
+    grid_shape: tuple[int, int, int],
+) -> DFTPlaneProbe:
+    """Create a DFT plane probe.
+
+    Parameters
+    ----------
+    axis : int
+        Normal axis (0=x → yz plane, 1=y → xz plane, 2=z → xy plane).
+    index : int
+        Grid index along normal axis.
+    component : str
+        Field component to monitor.
+    freqs : (n_freqs,) array
+        Frequencies in Hz.
+    grid_shape : (nx, ny, nz)
+    """
+    if axis == 0:
+        plane_shape = (grid_shape[1], grid_shape[2])
+    elif axis == 1:
+        plane_shape = (grid_shape[0], grid_shape[2])
+    else:
+        plane_shape = (grid_shape[0], grid_shape[1])
+
+    nf = len(freqs)
+    acc = jnp.zeros((nf,) + plane_shape, dtype=jnp.complex64)
+    return DFTPlaneProbe(
+        accumulator=acc, freqs=freqs,
+        component=component, axis=axis, index=index,
+    )
+
+
+def update_dft_plane_probe(
+    probe: DFTPlaneProbe, state, dt: float,
+) -> DFTPlaneProbe:
+    """Accumulate one timestep into the plane DFT."""
+    t = state.step * dt
+    field = getattr(state, probe.component)
+
+    if probe.axis == 0:
+        plane = field[probe.index, :, :]
+    elif probe.axis == 1:
+        plane = field[:, probe.index, :]
+    else:
+        plane = field[:, :, probe.index]
+
+    phase = jnp.exp(-1j * 2.0 * jnp.pi * probe.freqs * t)
+    new_acc = probe.accumulator + plane[None, :, :] * phase[:, None, None] * dt
+    return probe._replace(accumulator=new_acc)
+
+
 def extract_s11_normalised(probe: SParamProbe, z0: float = 50.0) -> jnp.ndarray:
     """Compute S11 normalised against the incident source DFT.
 

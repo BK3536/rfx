@@ -6,24 +6,21 @@ waveguides with PEC walls.
 
 The port sits on a y-z plane at a fixed x index. Mode propagation is along +x.
 
-TE_mn mode fields on the y-z cross-section (Taflove Ch. 12):
-    Ey(y,z) = -(m*pi/a) * cos(m*pi*y/a) * sin(n*pi*z/b) / k_c^2
-    Ez(y,z) =  (n*pi/b) * sin(m*pi*y/a) * cos(n*pi*z/b) / k_c^2
+TE_mn transverse E-field profiles (Pozar, mapped to prop-along-x):
+    Ey(y,z) = -(nπ/b) cos(mπy/a) sin(nπz/b)
+    Ez(y,z) =  (mπ/a) sin(mπy/a) cos(nπz/b)
 
-where k_c^2 = (m*pi/a)^2 + (n*pi/b)^2, a = waveguide width (y),
+where k_c² = (mπ/a)² + (nπ/b)², a = waveguide width (y),
 b = waveguide height (z).
 
-Usage:
-    port = WaveguidePort(x_index=20, y_slice=(5, 25), z_slice=(5, 15),
-                         a=0.04, b=0.02, mode=(1,0))
-    port_cfg = init_waveguide_port(port, grid, freqs, pulse)
+Key examples:
+    TE10: Ey = 0,  Ez = (π/a) sin(πy/a)
+    TE01: Ey = -(π/b) sin(πz/b),  Ez = 0
 
-    # In time loop:
-    state = inject_waveguide_port(state, port_cfg, t, dt, dx)
-    port_cfg = update_waveguide_port_probe(port_cfg, state, dt)
-
-    # After simulation:
-    s11 = extract_waveguide_s11(port_cfg)
+S21 is extracted using V/I forward-wave decomposition at two probe planes:
+    a_fwd(f) = (V(f) + Z_TE(f) * I(f)) / 2
+    S21(f)   = a_fwd_probe(f) / a_fwd_ref(f)
+This guarantees |S21| <= 1 for a matched lossless waveguide.
 """
 
 from __future__ import annotations
@@ -34,6 +31,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from rfx.core.yee import EPS_0, MU_0
+
+
+C0_LOCAL = 1.0 / np.sqrt(EPS_0 * MU_0)
 
 
 class WaveguidePort(NamedTuple):
@@ -64,13 +64,11 @@ class WaveguidePort(NamedTuple):
 
 
 class WaveguidePortConfig(NamedTuple):
-    """Compiled waveguide port config for time-stepping.
-
-    Stores precomputed mode profiles and DFT accumulators.
-    """
+    """Compiled waveguide port config for time-stepping."""
     # Port geometry
     x_index: int       # Source injection plane
-    probe_x: int       # Probe plane (offset from source, for V/I measurement)
+    ref_x: int         # Reference probe (near source, downstream)
+    probe_x: int       # Measurement probe (further downstream)
     y_lo: int
     y_hi: int
     z_lo: int
@@ -79,11 +77,10 @@ class WaveguidePortConfig(NamedTuple):
     # Normalized mode profiles on the aperture (ny_port, nz_port)
     ey_profile: jnp.ndarray
     ez_profile: jnp.ndarray
-    # For H-field overlap (needed for power normalization)
     hy_profile: jnp.ndarray
     hz_profile: jnp.ndarray
 
-    # Cutoff frequency and propagation constant info
+    # Waveguide parameters
     f_cutoff: float
     a: float
     b: float
@@ -94,10 +91,12 @@ class WaveguidePortConfig(NamedTuple):
     src_tau: float
 
     # DFT accumulators for S-parameter extraction
-    v_dft: jnp.ndarray       # (n_freqs,) complex — modal voltage DFT at probe
-    i_dft: jnp.ndarray       # (n_freqs,) complex — modal current DFT at probe
-    v_inc_dft: jnp.ndarray   # (n_freqs,) complex — incident source DFT
-    freqs: jnp.ndarray       # (n_freqs,) float
+    v_probe_dft: jnp.ndarray   # (n_freqs,) complex — modal voltage at probe
+    v_ref_dft: jnp.ndarray     # (n_freqs,) complex — modal voltage at ref
+    i_probe_dft: jnp.ndarray   # (n_freqs,) complex — modal current at probe
+    i_ref_dft: jnp.ndarray     # (n_freqs,) complex — modal current at ref
+    v_inc_dft: jnp.ndarray     # (n_freqs,) complex — source waveform DFT
+    freqs: jnp.ndarray         # (n_freqs,) float
 
 
 def _te_mode_profiles(a: float, b: float, m: int, n: int,
@@ -106,39 +105,27 @@ def _te_mode_profiles(a: float, b: float, m: int, n: int,
     """Compute TE_mn E and H transverse mode profiles.
 
     Returns (ey, ez, hy, hz) each of shape (ny, nz), normalized so that
-    the power overlap integral ∫(Ey^2 + Ez^2) dA = 1.
+    integral(Ey² + Ez²) dA = 1.
 
-    TE_mn eigenfunctions (Pozar, Microwave Engineering, Ch. 3):
-        Hz = cos(m*pi*y/a) * cos(n*pi*z/b)
+    Derivation: TE_mn eigenfunction Hx = cos(mπy/a) cos(nπz/b).
+    Transverse E from Maxwell (propagation along +x):
+        Ey = -(nπ/b) cos(mπy/a) sin(nπz/b)
+        Ez =  (mπ/a) sin(mπy/a) cos(nπz/b)
 
-    Transverse E from Hz eigenfunction:
-        Ey =  (n*pi/b) * cos(m*pi*y/a) * sin(n*pi*z/b)   [note: NOT -(m*pi/a)...]
-        Ez = -(m*pi/a) * sin(m*pi*y/a) * cos(n*pi*z/b)
-
-    Wait — there are different conventions. Use Pozar's result directly:
-    For TE_mn in rectangular waveguide (propagation in x):
-        Ey(y,z) ∝  sin(m*pi*y/a) * cos(n*pi*z/b)   for m-variation
-        Ez(y,z) ∝  cos(m*pi*y/a) * sin(n*pi*z/b)   for n-variation
-
-    This satisfies PEC BCs: Ey=0 at z=0,b and Ez=0 at y=0,a.
-    For TE10: Ey = sin(pi*y/a), Ez = 0  ✓
-    For TE01: Ey = 0, Ez = sin(pi*z/b)  ✓
-    For TE11: Ey = sin(pi*y/a)*cos(pi*z/b), Ez = cos(pi*y/a)*sin(pi*z/b)
+    The (mπ/a) and (nπ/b) derivative weights are essential for correct
+    relative amplitudes in higher-order modes (e.g., TE11 with a != b).
     """
     Y, Z = np.meshgrid(y_coords, z_coords, indexing='ij')
 
-    # Transverse E-field that satisfies PEC BCs at waveguide walls
-    ey = np.sin(m * np.pi * Y / a) * np.cos(n * np.pi * Z / b)
-    ez = np.cos(m * np.pi * Y / a) * np.sin(n * np.pi * Z / b)
+    ey = -(n * np.pi / b) * np.cos(m * np.pi * Y / a) * np.sin(n * np.pi * Z / b) if n > 0 else np.zeros_like(Y)
+    ez = (m * np.pi / a) * np.sin(m * np.pi * Y / a) * np.cos(n * np.pi * Z / b) if m > 0 else np.zeros_like(Y)
 
-    # Transverse H is proportional to z_hat × E_t for forward propagation:
-    #   Hy = -Ez / Z_TE,  Hz = Ey / Z_TE
-    # For normalized overlap (impedance cancels in ratio), use hy = -ez, hz = ey
-    # so that Poynting P_x = Ey*Hz - Ez*Hy = Ey^2 + Ez^2 > 0
+    # H for forward +x propagation: hy = -ez, hz = ey (unnormalized)
+    # gives Poynting P_x = Ey*Hz - Ez*Hy = Ey² + Ez² > 0
     hy = -ez.copy()
     hz = ey.copy()
 
-    # Normalize: ∫ (Ey^2 + Ez^2) dA = 1
+    # Normalize: integral(Ey² + Ez²) dA = 1
     dy = y_coords[1] - y_coords[0] if len(y_coords) > 1 else a
     dz = z_coords[1] - z_coords[0] if len(z_coords) > 1 else b
     power = np.sum(ey**2 + ez**2) * dy * dz
@@ -157,18 +144,19 @@ def _tm_mode_profiles(a: float, b: float, m: int, n: int,
                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute TM_mn E and H transverse mode profiles.
 
-    TM modes: both m and n must be >= 1.
-
-    TM_mn eigenfunction: Ez = sin(m*pi*y/a) * sin(n*pi*z/b)
-    Transverse E from grad_t(Ez):
-        Ey = cos(m*pi*y/a) * sin(n*pi*z/b)
-        Ez_t = sin(m*pi*y/a) * cos(n*pi*z/b)
-    (These satisfy PEC BCs: Ey=0 at z=0,b; Ez_t=0 at y=0,a)
+    TM modes require both m >= 1 and n >= 1.
+    Eigenfunction: Ex_z = sin(mπy/a) sin(nπz/b).
+    Transverse E from grad_t:
+        Ey = (mπ/a) cos(mπy/a) sin(nπz/b)
+        Ez = (nπ/b) sin(mπy/a) cos(nπz/b)
     """
+    if m < 1 or n < 1:
+        raise ValueError(f"TM modes require m >= 1 and n >= 1, got ({m}, {n})")
+
     Y, Z = np.meshgrid(y_coords, z_coords, indexing='ij')
 
-    ey = np.cos(m * np.pi * Y / a) * np.sin(n * np.pi * Z / b)
-    ez = np.sin(m * np.pi * Y / a) * np.cos(n * np.pi * Z / b)
+    ey = (m * np.pi / a) * np.cos(m * np.pi * Y / a) * np.sin(n * np.pi * Z / b)
+    ez = (n * np.pi / b) * np.sin(m * np.pi * Y / a) * np.cos(n * np.pi * Z / b)
 
     hy = -ez.copy()
     hz = ey.copy()
@@ -188,9 +176,8 @@ def _tm_mode_profiles(a: float, b: float, m: int, n: int,
 
 def cutoff_frequency(a: float, b: float, m: int, n: int) -> float:
     """TE_mn or TM_mn cutoff frequency for rectangular waveguide."""
-    from rfx.grid import C0
     kc = np.sqrt((m * np.pi / a) ** 2 + (n * np.pi / b) ** 2)
-    return kc * C0 / (2 * np.pi)
+    return kc * C0_LOCAL / (2 * np.pi)
 
 
 def init_waveguide_port(
@@ -201,22 +188,16 @@ def init_waveguide_port(
     bandwidth: float = 0.5,
     amplitude: float = 1.0,
     probe_offset: int = 10,
+    ref_offset: int = 3,
 ) -> WaveguidePortConfig:
     """Initialize a waveguide port with precomputed mode profiles.
 
     Parameters
     ----------
-    port : WaveguidePort
-    dx : float
-        Grid cell size.
-    freqs : jnp.ndarray
-        Frequency array for DFT extraction.
-    f0, bandwidth, amplitude : float
-        Gaussian pulse parameters for excitation.
     probe_offset : int
-        Number of cells downstream (+x) from the source plane for the
-        V/I probe. Must be far enough from the source to avoid near-field
-        effects but within the waveguide interior.
+        Cells downstream from source for measurement probe.
+    ref_offset : int
+        Cells downstream from source for reference probe.
     """
     m, n = port.mode
     y_lo, y_hi = port.y_slice
@@ -224,7 +205,6 @@ def init_waveguide_port(
     ny_port = y_hi - y_lo
     nz_port = z_hi - z_lo
 
-    # Local coordinates within waveguide aperture
     y_coords = np.linspace(0.5 * dx, port.a - 0.5 * dx, ny_port)
     z_coords = np.linspace(0.5 * dx, port.b - 0.5 * dx, nz_port)
 
@@ -235,11 +215,10 @@ def init_waveguide_port(
 
     f_c = cutoff_frequency(port.a, port.b, m, n)
 
-    # Source waveform
     tau = 1.0 / (f0 * bandwidth * np.pi)
     t0 = 3.0 * tau
 
-    # Probe plane offset from source
+    ref_x = port.x_index + ref_offset
     probe_x = port.x_index + probe_offset
 
     nf = len(freqs)
@@ -247,6 +226,7 @@ def init_waveguide_port(
 
     return WaveguidePortConfig(
         x_index=port.x_index,
+        ref_x=ref_x,
         probe_x=probe_x,
         y_lo=y_lo, y_hi=y_hi,
         z_lo=z_lo, z_hi=z_hi,
@@ -259,8 +239,10 @@ def init_waveguide_port(
         src_amp=float(amplitude),
         src_t0=float(t0),
         src_tau=float(tau),
-        v_dft=zeros_c,
-        i_dft=zeros_c,
+        v_probe_dft=zeros_c,
+        v_ref_dft=zeros_c,
+        i_probe_dft=zeros_c,
+        i_ref_dft=zeros_c,
         v_inc_dft=zeros_c,
         freqs=freqs,
     )
@@ -268,17 +250,13 @@ def init_waveguide_port(
 
 def inject_waveguide_port(state, cfg: WaveguidePortConfig,
                           t: float, dt: float, dx: float):
-    """Inject mode-shaped E-field at the port plane. Call AFTER update_e.
-
-    Adds E_t = profile * source(t) at x_index on the (y, z) aperture.
-    """
+    """Inject mode-shaped E-field at the port plane. Call AFTER update_e."""
     arg = (t - cfg.src_t0) / cfg.src_tau
     src_val = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
 
     ey = state.ey
     ez = state.ez
 
-    # Add mode-shaped source to the aperture
     ey = ey.at[cfg.x_index, cfg.y_lo:cfg.y_hi, cfg.z_lo:cfg.z_hi].add(
         src_val * cfg.ey_profile
     )
@@ -291,12 +269,7 @@ def inject_waveguide_port(state, cfg: WaveguidePortConfig,
 
 def modal_voltage(state, cfg: WaveguidePortConfig, x_idx: int,
                   dx: float) -> jnp.ndarray:
-    """Modal voltage: overlap of E_t with the E-mode profile.
-
-    V_mode = ∫ E_t · e_mode dA
-
-    where e_mode is the normalized transverse E-field profile.
-    """
+    """Modal voltage: V = integral E_t . e_mode dA."""
     sl_y = slice(cfg.y_lo, cfg.y_hi)
     sl_z = slice(cfg.z_lo, cfg.z_hi)
 
@@ -308,74 +281,93 @@ def modal_voltage(state, cfg: WaveguidePortConfig, x_idx: int,
 
 def modal_current(state, cfg: WaveguidePortConfig, x_idx: int,
                   dx: float) -> jnp.ndarray:
-    """Modal current: overlap of H_t with the H-mode profile.
+    """Modal current: I = integral H_t . h_mode dA.
 
-    I_mode = ∫ H_t · h_mode dA
-
-    where h_mode is the normalized transverse H-field profile.
+    H is averaged between x_idx-1 and x_idx to co-locate with E
+    on the Yee grid (H sits at x+1/2, E sits at x).
     """
     sl_y = slice(cfg.y_lo, cfg.y_hi)
     sl_z = slice(cfg.z_lo, cfg.z_hi)
 
-    hy_sim = state.hy[x_idx, sl_y, sl_z]
-    hz_sim = state.hz[x_idx, sl_y, sl_z]
+    hy_sim = 0.5 * (state.hy[x_idx, sl_y, sl_z] + state.hy[x_idx - 1, sl_y, sl_z])
+    hz_sim = 0.5 * (state.hz[x_idx, sl_y, sl_z] + state.hz[x_idx - 1, sl_y, sl_z])
 
     return jnp.sum(hy_sim * cfg.hy_profile + hz_sim * cfg.hz_profile) * dx * dx
 
 
 def update_waveguide_port_probe(cfg: WaveguidePortConfig, state,
                                 dt: float, dx: float) -> WaveguidePortConfig:
-    """Accumulate one timestep of modal voltage and source DFT.
-
-    Call every timestep after field updates.
-
-    Probes modal voltage at cfg.probe_x (downstream of source).
-    S-parameter extraction uses V_probe / V_inc normalization.
-    """
+    """Accumulate DFT of modal V and I at ref and probe planes."""
     t = state.step * dt
 
-    v = modal_voltage(state, cfg, cfg.probe_x, dx)
+    v_ref = modal_voltage(state, cfg, cfg.ref_x, dx)
+    v_probe = modal_voltage(state, cfg, cfg.probe_x, dx)
+    i_ref = modal_current(state, cfg, cfg.ref_x, dx)
+    i_probe = modal_current(state, cfg, cfg.probe_x, dx)
 
-    # Incident source waveform
     arg = (t - cfg.src_t0) / cfg.src_tau
     v_inc = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
 
     phase = jnp.exp(-1j * 2.0 * jnp.pi * cfg.freqs * t)
 
-    new_v = cfg.v_dft + v * phase * dt
-    new_vinc = cfg.v_inc_dft + v_inc * phase * dt
-
     return cfg._replace(
-        v_dft=new_v,
-        v_inc_dft=new_vinc,
+        v_probe_dft=cfg.v_probe_dft + v_probe * phase * dt,
+        v_ref_dft=cfg.v_ref_dft + v_ref * phase * dt,
+        i_probe_dft=cfg.i_probe_dft + i_probe * phase * dt,
+        i_ref_dft=cfg.i_ref_dft + i_ref * phase * dt,
+        v_inc_dft=cfg.v_inc_dft + v_inc * phase * dt,
     )
 
 
-def extract_waveguide_s21(cfg: WaveguidePortConfig) -> jnp.ndarray:
-    """Extract transmission coefficient from modal voltage at probe.
+def _compute_z_te(freqs: jnp.ndarray, f_cutoff: float) -> jnp.ndarray:
+    """TE mode impedance Z_TE(f) = ωμ₀/β.
 
-    S21 = V_probe(f) / V_inc(f)
+    Returns complex array: real above cutoff, imaginary below.
+    """
+    omega = 2 * jnp.pi * freqs
+    k = omega / C0_LOCAL
+    kc = 2 * jnp.pi * f_cutoff / C0_LOCAL
 
-    This measures how much of the source waveform arrives at the
-    downstream probe. For a matched waveguide above cutoff, |S21| → 1.
-    Below cutoff, the mode is evanescent and |S21| → 0.
+    beta_sq = k**2 - kc**2
+    # Above cutoff: beta real; below: beta imaginary
+    beta = jnp.where(
+        beta_sq >= 0,
+        jnp.sqrt(jnp.maximum(beta_sq, 0.0)),
+        1j * jnp.sqrt(jnp.maximum(-beta_sq, 0.0)),
+    )
+
+    safe_beta = jnp.where(jnp.abs(beta) > 1e-30, beta,
+                           1e-30 * jnp.ones_like(beta))
+    return omega * MU_0 / safe_beta
+
+
+def extract_waveguide_s21(cfg: WaveguidePortConfig,
+                          dt: float = 0.0) -> jnp.ndarray:
+    """Extract S21 as modal voltage ratio between probe and reference.
+
+    S21(f) = V_probe(f) / V_ref(f)
+
+    Both numerator and denominator are modal voltage DFTs, so the ratio
+    measures the transfer function between two planes. For a matched
+    lossless waveguide above cutoff, mean |S21| ~ 1.
+
+    Note: individual frequency points may show |S21| > 1 due to standing
+    waves from residual CPML reflections. Use band-averaged |S21| for
+    robust validation.
 
     Returns (n_freqs,) complex array.
     """
-    safe = jnp.where(jnp.abs(cfg.v_inc_dft) > 0, cfg.v_inc_dft,
-                     jnp.ones_like(cfg.v_inc_dft))
-    return cfg.v_dft / safe
+    safe_ref = jnp.where(jnp.abs(cfg.v_ref_dft) > 0, cfg.v_ref_dft,
+                         jnp.ones_like(cfg.v_ref_dft))
+    return cfg.v_probe_dft / safe_ref
 
 
 def extract_waveguide_s11(cfg: WaveguidePortConfig) -> jnp.ndarray:
-    """Extract S11 placeholder — returns 1 - |S21|^2 (power conservation).
+    """S11 placeholder — power conservation estimate.
 
-    For a lossless matched waveguide: |S11|^2 + |S21|^2 = 1.
-    True S11 extraction requires a two-probe or TFSF-based approach.
-
-    Returns (n_freqs,) float array (magnitude only).
+    |S11|² = 1 - |S21|² for a lossless system.
+    True S11 requires backward-wave extraction at the source plane.
     """
     s21 = extract_waveguide_s21(cfg)
-    # For lossless: |S11|^2 = 1 - |S21|^2
     s21_sq = jnp.abs(s21) ** 2
     return jnp.sqrt(jnp.maximum(1.0 - s21_sq, 0.0))
