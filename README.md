@@ -50,6 +50,17 @@ pip install rfx[gpu]
 > [JAX GPU setup](https://jax.readthedocs.io/en/latest/installation.html)
 > for your platform before running large simulations.
 
+### GPU Performance (RTX 4090)
+
+| Grid | Steps | GPU Time | Throughput |
+|------|-------|----------|------------|
+| 23³ | 200 | 0.087s | 28 Mcells/s |
+| 33³ | 300 | 0.086s | 125 Mcells/s |
+| 43³ | 400 | 0.103s | 310 Mcells/s |
+| 63³ | 500 | 0.095s | **1,310 Mcells/s** |
+
+Gradient computation (reverse-mode AD): **~0.31s** for all grid sizes on GPU.
+
 ## Quick Start
 
 The example below creates a PEC cavity with a dielectric slab, excites it with a lumped port, runs the simulation, extracts S11, and plots the result.
