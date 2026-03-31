@@ -1,0 +1,21 @@
+# rfx Documentation
+
+**rfx** is a JAX-based differentiable 3D FDTD electromagnetic simulator for RF and microwave engineering.
+
+## Guides
+
+| Guide | Description |
+|-------|-------------|
+| [Installation](installation.md) | Install rfx, set up GPU, development mode |
+| [Quick Start](quickstart.md) | Your first simulation in 15 minutes |
+| [Simulation API](simulation_api.md) | Simulation builder, materials, sources, probes |
+| [Waveguide Ports](waveguide_ports.md) | S-matrix extraction, multi-port, calibration |
+| [Inverse Design](inverse_design.md) | Gradient-based optimization with jax.grad |
+| [Far-Field & RCS](farfield_rcs.md) | Radiation patterns, radar cross section |
+| [Advanced Features](advanced.md) | Dispersive materials, CFS-CPML, subpixel smoothing |
+
+## Quick Links
+
+- **GitHub**: [BK3536/rfx](https://github.com/BK3536/rfx)
+- **License**: MIT
+- **API Reference**: All public classes and functions have comprehensive docstrings. Use `help(rfx.Simulation)` in Python.
