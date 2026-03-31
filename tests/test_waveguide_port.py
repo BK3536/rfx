@@ -2,6 +2,7 @@
 
 import numpy as np
 import jax.numpy as jnp
+import pytest
 
 from rfx.grid import Grid, C0
 from rfx.core.yee import init_state, init_materials, update_e, update_h, EPS_0, MU_0
@@ -9,7 +10,8 @@ from rfx.boundaries.pec import apply_pec
 from rfx.boundaries.cpml import init_cpml, apply_cpml_e, apply_cpml_h
 from rfx.sources.waveguide_port import (
     WaveguidePort, init_waveguide_port, inject_waveguide_port,
-    update_waveguide_port_probe, extract_waveguide_s11, extract_waveguide_s21,
+    update_waveguide_port_probe, extract_waveguide_sparams,
+    extract_waveguide_s11, extract_waveguide_s21, waveguide_plane_positions,
     cutoff_frequency, modal_voltage,
 )
 
@@ -109,7 +111,6 @@ def test_te11_mode_profile_derivative_weights():
 def test_tm_mode_invalid():
     """TM modes with m=0 or n=0 should raise ValueError."""
     from rfx.sources.waveguide_port import _tm_mode_profiles
-    import pytest
 
     a, b = 0.04, 0.02
     y = np.linspace(0.001, a - 0.001, 10)
@@ -120,6 +121,123 @@ def test_tm_mode_invalid():
 
     with pytest.raises(ValueError):
         _tm_mode_profiles(a, b, 0, 1, y, z)
+
+
+@pytest.mark.parametrize(
+    ("mode_type", "mode", "freqs"),
+    [
+        ("TE", (1, 0), jnp.array([6.0e9, 8.0e9])),
+        ("TM", (1, 1), jnp.array([11.0e9, 13.0e9])),
+    ],
+)
+def test_waveguide_sparams_recover_traveling_waves(mode_type, mode, freqs):
+    """S11/S21 should reconstruct known forward/backward modal waves."""
+    port = WaveguidePort(
+        x_index=5,
+        y_slice=(0, 20),
+        z_slice=(0, 10),
+        a=0.04,
+        b=0.02,
+        mode=mode,
+        mode_type=mode_type,
+    )
+    cfg = init_waveguide_port(
+        port,
+        dx=0.002,
+        freqs=freqs,
+        f0=float(freqs[0]),
+        bandwidth=0.5,
+    )
+
+    omega = 2 * np.pi * np.array(freqs)
+    kc = 2 * np.pi * cutoff_frequency(port.a, port.b, *mode) / C0
+    beta = np.sqrt((omega / C0) ** 2 - kc ** 2)
+    if mode_type == "TE":
+        z_mode = omega * MU_0 / beta
+    else:
+        z_mode = beta / (omega * EPS_0)
+
+    a_ref = np.array([1.0 + 0.2j, 0.7 - 0.1j], dtype=np.complex64)
+    b_ref = np.array([0.15 - 0.05j, -0.10 + 0.08j], dtype=np.complex64)
+    s21_expected = np.array([0.80 + 0.10j, 0.55 - 0.15j], dtype=np.complex64)
+    a_probe = s21_expected * a_ref
+    b_probe = np.zeros_like(a_probe)
+
+    v_ref = a_ref + b_ref
+    i_ref = (a_ref - b_ref) / z_mode
+    v_probe = a_probe + b_probe
+    i_probe = (a_probe - b_probe) / z_mode
+
+    cfg = cfg._replace(
+        v_ref_dft=jnp.array(v_ref),
+        i_ref_dft=jnp.array(i_ref),
+        v_probe_dft=jnp.array(v_probe),
+        i_probe_dft=jnp.array(i_probe),
+    )
+
+    s11 = np.array(extract_waveguide_s11(cfg))
+    s21 = np.array(extract_waveguide_s21(cfg))
+    np.testing.assert_allclose(s11, b_ref / a_ref, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(s21, s21_expected, rtol=1e-5, atol=1e-6)
+
+
+def test_waveguide_sparams_support_reference_plane_shifts():
+    """De-embedding shifts should recover the desired source/probe planes."""
+    freqs = jnp.array([6.0e9, 8.0e9])
+    port = WaveguidePort(
+        x_index=5,
+        y_slice=(0, 20),
+        z_slice=(0, 10),
+        a=0.04,
+        b=0.02,
+        mode=(1, 0),
+        mode_type="TE",
+    )
+    cfg = init_waveguide_port(port, dx=0.002, freqs=freqs, f0=6.0e9, bandwidth=0.5)
+
+    omega = 2 * np.pi * np.array(freqs)
+    kc = 2 * np.pi * cutoff_frequency(port.a, port.b, 1, 0) / C0
+    beta = np.sqrt((omega / C0) ** 2 - kc ** 2)
+    z_mode = omega * MU_0 / beta
+
+    ref_plane_shift = -0.006   # desired plane is 6 mm upstream of stored ref plane
+    probe_plane_shift = -0.010 # desired plane is 10 mm upstream of stored probe plane
+
+    a_ref_target = np.array([1.0 + 0.2j, 0.7 - 0.1j], dtype=np.complex64)
+    b_ref_target = np.array([0.10 - 0.04j, -0.05 + 0.03j], dtype=np.complex64)
+    s21_target = np.array([0.85 - 0.15j, 0.60 + 0.05j], dtype=np.complex64)
+    a_probe_target = s21_target * a_ref_target
+    b_probe_target = np.zeros_like(a_probe_target)
+
+    a_ref_meas = a_ref_target * np.exp(-1j * beta * (-ref_plane_shift))
+    b_ref_meas = b_ref_target * np.exp(+1j * beta * (-ref_plane_shift))
+    a_probe_meas = a_probe_target * np.exp(-1j * beta * (-probe_plane_shift))
+    b_probe_meas = b_probe_target * np.exp(+1j * beta * (-probe_plane_shift))
+
+    v_ref = a_ref_meas + b_ref_meas
+    i_ref = (a_ref_meas - b_ref_meas) / z_mode
+    v_probe = a_probe_meas + b_probe_meas
+    i_probe = (a_probe_meas - b_probe_meas) / z_mode
+
+    cfg = cfg._replace(
+        v_ref_dft=jnp.array(v_ref),
+        i_ref_dft=jnp.array(i_ref),
+        v_probe_dft=jnp.array(v_probe),
+        i_probe_dft=jnp.array(i_probe),
+    )
+
+    positions = waveguide_plane_positions(cfg)
+    assert positions["source"] == pytest.approx(0.010)
+    assert positions["reference"] == pytest.approx(0.016)
+    assert positions["probe"] == pytest.approx(0.030)
+
+    s11, s21 = extract_waveguide_sparams(
+        cfg,
+        ref_shift=ref_plane_shift,
+        probe_shift=probe_plane_shift,
+    )
+    np.testing.assert_allclose(np.array(s11), b_ref_target / a_ref_target, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(np.array(s21), s21_target, rtol=1e-5, atol=1e-6)
 
 
 class _WgGrid:
@@ -167,15 +285,15 @@ def _run_waveguide_sim(a_wg, b_wg, length, f0, dx, nc, freqs,
         mode=(1, 0), mode_type="TE",
     )
 
+    n_steps = grid.num_timesteps(num_periods=num_periods)
     port_cfg = init_waveguide_port(port, dx, freqs, f0=f0, bandwidth=0.5,
                                    amplitude=1.0, probe_offset=probe_offset,
-                                   ref_offset=ref_offset)
+                                   ref_offset=ref_offset,
+                                   dft_total_steps=n_steps)
 
     state = init_state(grid.shape)
     materials = init_materials(grid.shape)
     cp, cs = init_cpml(grid)
-
-    n_steps = grid.num_timesteps(num_periods=num_periods)
 
     for step in range(n_steps):
         t = step * dt
@@ -232,12 +350,18 @@ def test_waveguide_port_propagation():
     print(f"  |S21| above cutoff (mean): {np.mean(s21_above):.4f} ({mean_s21_db:.1f} dB)")
     print(f"  |S21| min/max: {np.min(s21_above):.4f} / {np.max(s21_above):.4f}")
 
-    # TE10 above cutoff: mode should propagate with low loss.
-    # V_probe/V_ref ratio: mean should be close to 1 for a matched guide.
-    # Individual frequencies may exceed 1 from standing waves (known limitation
-    # of V-only ratio without V/I forward-wave decomposition).
+    s11 = extract_waveguide_s11(port_cfg)
+    s11_mag = np.abs(np.array(s11))
+    # TE10 above cutoff: with tapered DFT accumulation, the extracted S21 band
+    # should now be much smoother and stay near unity on average.
     assert mean_s21_db > -6, \
         f"Mean |S21| = {mean_s21_db:.1f} dB, expected > -6 dB"
+    assert np.max(s21_above) < 1.5, \
+        f"Max |S21| = {np.max(s21_above):.3f}, expected < 1.5 after windowing"
+    assert np.min(s21_above) > 0.7, \
+        f"Min |S21| = {np.min(s21_above):.3f}, expected > 0.7 after windowing"
+    assert np.mean(s11_mag[above_cutoff]) < 0.6, \
+        f"Mean |S11| = {np.mean(s11_mag[above_cutoff]):.3f}, expected < 0.6"
 
 
 def test_te10_below_cutoff_evanescent():

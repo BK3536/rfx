@@ -44,10 +44,9 @@ def test_lumped_port_pec_cavity_s11():
 
     # Frequency points for S-parameter extraction
     freqs = jnp.linspace(1e9, 5e9, 50)
-    sprobe = init_sparam_probe(grid, port, freqs)
-
     dt, dx = grid.dt, grid.dx
     num_steps = grid.num_timesteps(num_periods=60)
+    sprobe = init_sparam_probe(grid, port, freqs, dft_total_steps=num_steps)
 
     for n in range(num_steps):
         t = n * dt

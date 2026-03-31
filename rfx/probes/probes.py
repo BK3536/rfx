@@ -41,6 +41,10 @@ class DFTProbe(NamedTuple):
     index: tuple[int, int, int]
     # Field component name
     component: str
+    # Optional streaming DFT window metadata
+    total_steps: int
+    window: str
+    window_alpha: float
 
 
 def init_dft_probe(
@@ -48,6 +52,9 @@ def init_dft_probe(
     position: tuple[float, float, float],
     component: str,
     freqs: jnp.ndarray,
+    dft_total_steps: int = 0,
+    dft_window: str = "rect",
+    dft_window_alpha: float = 0.25,
 ) -> DFTProbe:
     """Create a DFT probe at a point for given frequencies."""
     idx = grid.position_to_index(position)
@@ -56,6 +63,9 @@ def init_dft_probe(
         freqs=freqs,
         index=idx,
         component=component,
+        total_steps=int(dft_total_steps),
+        window=dft_window,
+        window_alpha=float(dft_window_alpha),
     )
 
 
@@ -73,7 +83,8 @@ def update_dft_probe(
     value = field[probe.index[0], probe.index[1], probe.index[2]]
 
     phase = jnp.exp(-1j * 2.0 * jnp.pi * probe.freqs * t)
-    new_acc = probe.accumulator + value * phase * dt
+    weight = _dft_window_weight(state.step, probe.total_steps, probe.window, probe.window_alpha)
+    new_acc = probe.accumulator + value * phase * dt * weight
 
     return probe._replace(accumulator=new_acc)
 
@@ -192,12 +203,18 @@ class SParamProbe(NamedTuple):
     freqs: jnp.ndarray
     port_index: tuple[int, int, int]
     component: str
+    total_steps: int
+    window: str
+    window_alpha: float
 
 
 def init_sparam_probe(
     grid: Grid,
     port: LumpedPort,
     freqs: jnp.ndarray,
+    dft_total_steps: int = 0,
+    dft_window: str = "rect",
+    dft_window_alpha: float = 0.25,
 ) -> SParamProbe:
     """Create a zeroed SParamProbe for the given port and frequency array.
 
@@ -222,6 +239,9 @@ def init_sparam_probe(
         freqs=freqs,
         port_index=idx,
         component=port.component,
+        total_steps=int(dft_total_steps),
+        window=dft_window,
+        window_alpha=float(dft_window_alpha),
     )
 
 
@@ -261,9 +281,10 @@ def update_sparam_probe(
     v_inc = port.excitation(t)
 
     phase = jnp.exp(-1j * 2.0 * jnp.pi * probe.freqs * t)
-    new_v = probe.v_dft + v * phase * dt
-    new_i = probe.i_dft + i * phase * dt
-    new_vinc = probe.v_inc_dft + v_inc * phase * dt
+    weight = _dft_window_weight(state.step, probe.total_steps, probe.window, probe.window_alpha)
+    new_v = probe.v_dft + v * phase * dt * weight
+    new_i = probe.i_dft + i * phase * dt * weight
+    new_vinc = probe.v_inc_dft + v_inc * phase * dt * weight
 
     return probe._replace(v_dft=new_v, i_dft=new_i, v_inc_dft=new_vinc)
 
@@ -336,6 +357,9 @@ class DFTPlaneProbe(NamedTuple):
     component: str
     axis: int
     index: int
+    total_steps: int
+    window: str
+    window_alpha: float
 
 
 def init_dft_plane_probe(
@@ -344,6 +368,9 @@ def init_dft_plane_probe(
     component: str,
     freqs: jnp.ndarray,
     grid_shape: tuple[int, int, int],
+    dft_total_steps: int = 0,
+    dft_window: str = "rect",
+    dft_window_alpha: float = 0.25,
 ) -> DFTPlaneProbe:
     """Create a DFT plane probe.
 
@@ -371,6 +398,9 @@ def init_dft_plane_probe(
     return DFTPlaneProbe(
         accumulator=acc, freqs=freqs,
         component=component, axis=axis, index=index,
+        total_steps=int(dft_total_steps),
+        window=dft_window,
+        window_alpha=float(dft_window_alpha),
     )
 
 
@@ -389,8 +419,12 @@ def update_dft_plane_probe(
         plane = field[:, :, probe.index]
 
     phase = jnp.exp(-1j * 2.0 * jnp.pi * probe.freqs * t)
-    new_acc = probe.accumulator + plane[None, :, :] * phase[:, None, None] * dt
+    weight = _dft_window_weight(state.step, probe.total_steps, probe.window, probe.window_alpha)
+    new_acc = probe.accumulator + plane[None, :, :] * phase[:, None, None] * dt * weight
     return probe._replace(accumulator=new_acc)
+
+
+from rfx.core.dft_utils import dft_window_weight as _dft_window_weight
 
 
 def extract_s_matrix(
@@ -470,7 +504,7 @@ def extract_s_matrix(
 
     for j in range(n_ports):
         state = init_state(grid.shape)
-        sprobes = [init_sparam_probe(grid, p, freqs) for p in ports]
+        sprobes = [init_sparam_probe(grid, p, freqs, dft_total_steps=n_steps) for p in ports]
         cpml_state = cpml_state_init if use_cpml else None
         debye_state = debye[1] if debye is not None else None
         lorentz_state = lorentz[1] if lorentz is not None else None

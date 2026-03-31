@@ -20,7 +20,8 @@ Key examples:
 S21 is extracted using V/I forward-wave decomposition at two probe planes:
     a_fwd(f) = (V(f) + Z_TE(f) * I(f)) / 2
     S21(f)   = a_fwd_probe(f) / a_fwd_ref(f)
-This guarantees |S21| <= 1 for a matched lossless waveguide.
+This removes the worst standing-wave inflation of voltage-only ratios, though
+individual points can still deviate under finite-window/CPML error.
 """
 
 from __future__ import annotations
@@ -40,27 +41,44 @@ class WaveguidePort(NamedTuple):
     """Waveguide port definition.
 
     x_index : int
-        Grid x-index where the port plane sits.
-    y_slice : (y_lo, y_hi)
-        Grid y-index range of the waveguide aperture (exclusive end).
-    z_slice : (z_lo, z_hi)
-        Grid z-index range of the waveguide aperture (exclusive end).
+        Plane index along the port normal axis (legacy name kept for
+        backwards compatibility).
+    y_slice : (y_lo, y_hi) or None
+        Legacy x-normal first transverse slice (y) when `normal_axis='x'`.
+    z_slice : (z_lo, z_hi) or None
+        Legacy x-normal second transverse slice (z) when `normal_axis='x'`.
     a : float
-        Waveguide width in meters (y-direction).
+        Waveguide width in meters along the first local transverse axis.
     b : float
-        Waveguide height in meters (z-direction).
+        Waveguide height in meters along the second local transverse axis.
     mode : (m, n)
         Mode indices. (1, 0) for TE10 dominant mode.
     mode_type : str
         "TE" or "TM". Default "TE".
+    direction : str
+        Propagation direction when the port is driven. ``"+x"`` for a left
+        port launching into the guide, ``"-x"`` for a right port launching
+        back toward the guide interior.
+    x_position : float | None
+        Physical location (metres) of the source plane along the port normal
+        axis. If omitted, helpers fall back to `x_index * dx`.
+    normal_axis : {"x","y","z"}
+        Port-normal axis. Default `"x"` for the original straight-guide model.
+    u_slice, v_slice : tuple[int, int] or None
+        Generic transverse aperture slices used for non-x-normal ports.
     """
     x_index: int
-    y_slice: tuple[int, int]
-    z_slice: tuple[int, int]
+    y_slice: tuple[int, int] | None
+    z_slice: tuple[int, int] | None
     a: float
     b: float
     mode: tuple[int, int] = (1, 0)
     mode_type: str = "TE"
+    direction: str = "+x"
+    x_position: float | None = None
+    normal_axis: str = "x"
+    u_slice: tuple[int, int] | None = None
+    v_slice: tuple[int, int] | None = None
 
 
 class WaveguidePortConfig(NamedTuple):
@@ -73,6 +91,15 @@ class WaveguidePortConfig(NamedTuple):
     y_hi: int
     z_lo: int
     z_hi: int
+    normal_axis: str
+    u_lo: int
+    u_hi: int
+    v_lo: int
+    v_hi: int
+    e_u_component: str
+    e_v_component: str
+    h_u_component: str
+    h_v_component: str
 
     # Normalized mode profiles on the aperture (ny_port, nz_port)
     ey_profile: jnp.ndarray
@@ -81,9 +108,18 @@ class WaveguidePortConfig(NamedTuple):
     hz_profile: jnp.ndarray
 
     # Waveguide parameters
+    mode_type: str
+    direction: str
     f_cutoff: float
     a: float
     b: float
+    dx: float
+    source_x_m: float
+    reference_x_m: float
+    probe_x_m: float
+    dft_total_steps: int
+    dft_window: str
+    dft_window_alpha: float
 
     # Source waveform parameters (differentiated Gaussian)
     src_amp: float
@@ -189,6 +225,9 @@ def init_waveguide_port(
     amplitude: float = 1.0,
     probe_offset: int = 10,
     ref_offset: int = 3,
+    dft_total_steps: int = 0,
+    dft_window: str = "tukey",
+    dft_window_alpha: float = 0.25,
 ) -> WaveguidePortConfig:
     """Initialize a waveguide port with precomputed mode profiles.
 
@@ -200,26 +239,74 @@ def init_waveguide_port(
         Cells downstream from source for reference probe.
     """
     m, n = port.mode
-    y_lo, y_hi = port.y_slice
-    z_lo, z_hi = port.z_slice
-    ny_port = y_hi - y_lo
-    nz_port = z_hi - z_lo
+    normal_axis = port.normal_axis
+    if normal_axis not in ("x", "y", "z"):
+        raise ValueError(f"normal_axis must be 'x', 'y', or 'z', got {normal_axis!r}")
+    if port.direction not in ("+x", "-x", "+y", "-y", "+z", "-z"):
+        raise ValueError(f"direction must be one of '+x', '-x', '+y', '-y', '+z', '-z', got {port.direction!r}")
+    if port.direction[1] != normal_axis:
+        raise ValueError(
+            f"direction {port.direction!r} is inconsistent with normal_axis {normal_axis!r}"
+        )
 
-    y_coords = np.linspace(0.5 * dx, port.a - 0.5 * dx, ny_port)
-    z_coords = np.linspace(0.5 * dx, port.b - 0.5 * dx, nz_port)
+    if port.u_slice is not None and port.v_slice is not None:
+        u_lo, u_hi = port.u_slice
+        v_lo, v_hi = port.v_slice
+    elif normal_axis == "x":
+        if port.y_slice is None or port.z_slice is None:
+            raise ValueError("x-normal legacy ports require y_slice and z_slice")
+        u_lo, u_hi = port.y_slice
+        v_lo, v_hi = port.z_slice
+    else:
+        raise ValueError(
+            "non-x-normal ports require u_slice and v_slice explicit transverse aperture slices"
+        )
+
+    nu_port = u_hi - u_lo
+    nv_port = v_hi - v_lo
+
+    u_coords = np.linspace(0.5 * dx, port.a - 0.5 * dx, nu_port)
+    v_coords = np.linspace(0.5 * dx, port.b - 0.5 * dx, nv_port)
 
     if port.mode_type == "TE":
-        ey, ez, hy, hz = _te_mode_profiles(port.a, port.b, m, n, y_coords, z_coords)
+        ey, ez, hy, hz = _te_mode_profiles(port.a, port.b, m, n, u_coords, v_coords)
     else:
-        ey, ez, hy, hz = _tm_mode_profiles(port.a, port.b, m, n, y_coords, z_coords)
+        ey, ez, hy, hz = _tm_mode_profiles(port.a, port.b, m, n, u_coords, v_coords)
 
     f_c = cutoff_frequency(port.a, port.b, m, n)
 
     tau = 1.0 / (f0 * bandwidth * np.pi)
     t0 = 3.0 * tau
 
-    ref_x = port.x_index + ref_offset
-    probe_x = port.x_index + probe_offset
+    step_sign = 1 if port.direction.startswith("+") else -1
+    ref_x = port.x_index + step_sign * ref_offset
+    probe_x = port.x_index + step_sign * probe_offset
+    source_x_m = float(port.x_position) if port.x_position is not None else float(port.x_index * dx)
+    reference_x_m = source_x_m + step_sign * ref_offset * dx
+    probe_x_m = source_x_m + step_sign * probe_offset * dx
+
+    if normal_axis == "x":
+        e_u_component, e_v_component = "ey", "ez"
+        h_u_component, h_v_component = "hy", "hz"
+        y_lo, y_hi = u_lo, u_hi
+        z_lo, z_hi = v_lo, v_hi
+    elif normal_axis == "y":
+        # The tangential plane is indexed in physical (x, z) order, which is
+        # left-handed with respect to +y.  Flip the stored H profiles so the
+        # modal-current inner product still measures +y-directed power.
+        ey = ey.copy()
+        ez = ez.copy()
+        hy = -hy
+        hz = -hz
+        e_u_component, e_v_component = "ex", "ez"
+        h_u_component, h_v_component = "hx", "hz"
+        y_lo, y_hi = 0, 0
+        z_lo, z_hi = 0, 0
+    else:
+        e_u_component, e_v_component = "ex", "ey"
+        h_u_component, h_v_component = "hx", "hy"
+        y_lo, y_hi = 0, 0
+        z_lo, z_hi = 0, 0
 
     nf = len(freqs)
     zeros_c = jnp.zeros(nf, dtype=jnp.complex64)
@@ -230,12 +317,30 @@ def init_waveguide_port(
         probe_x=probe_x,
         y_lo=y_lo, y_hi=y_hi,
         z_lo=z_lo, z_hi=z_hi,
+        normal_axis=normal_axis,
+        u_lo=u_lo,
+        u_hi=u_hi,
+        v_lo=v_lo,
+        v_hi=v_hi,
+        e_u_component=e_u_component,
+        e_v_component=e_v_component,
+        h_u_component=h_u_component,
+        h_v_component=h_v_component,
         ey_profile=jnp.array(ey, dtype=jnp.float32),
         ez_profile=jnp.array(ez, dtype=jnp.float32),
         hy_profile=jnp.array(hy, dtype=jnp.float32),
         hz_profile=jnp.array(hz, dtype=jnp.float32),
+        mode_type=port.mode_type,
+        direction=port.direction,
         f_cutoff=float(f_c),
         a=port.a, b=port.b,
+        dx=float(dx),
+        source_x_m=float(source_x_m),
+        reference_x_m=float(reference_x_m),
+        probe_x_m=float(probe_x_m),
+        dft_total_steps=int(dft_total_steps),
+        dft_window=dft_window,
+        dft_window_alpha=float(dft_window_alpha),
         src_amp=float(amplitude),
         src_t0=float(t0),
         src_tau=float(tau),
@@ -248,35 +353,54 @@ def init_waveguide_port(
     )
 
 
+def _plane_indexer(cfg: WaveguidePortConfig, plane_index: int | None = None):
+    """Return an indexer for the tangential aperture plane."""
+    idx = cfg.x_index if plane_index is None else plane_index
+    if cfg.normal_axis == "x":
+        return (idx, slice(cfg.u_lo, cfg.u_hi), slice(cfg.v_lo, cfg.v_hi))
+    if cfg.normal_axis == "y":
+        return (slice(cfg.u_lo, cfg.u_hi), idx, slice(cfg.v_lo, cfg.v_hi))
+    if cfg.normal_axis == "z":
+        return (slice(cfg.u_lo, cfg.u_hi), slice(cfg.v_lo, cfg.v_hi), idx)
+    raise ValueError(f"normal_axis must be 'x', 'y', or 'z', got {cfg.normal_axis!r}")
+
+
+def _plane_field(field, cfg: WaveguidePortConfig, plane_index: int):
+    """Extract a tangential E/H field slice on the port plane."""
+    return field[_plane_indexer(cfg, plane_index)]
+
+
+def _plane_h_field(field, cfg: WaveguidePortConfig, plane_index: int):
+    """Extract a tangential H field slice averaged to the E plane along the normal."""
+    prev_index = plane_index - 1
+    return 0.5 * (
+        _plane_field(field, cfg, plane_index)
+        + _plane_field(field, cfg, prev_index)
+    )
+
+
 def inject_waveguide_port(state, cfg: WaveguidePortConfig,
                           t: float, dt: float, dx: float):
     """Inject mode-shaped E-field at the port plane. Call AFTER update_e."""
     arg = (t - cfg.src_t0) / cfg.src_tau
     src_val = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
 
-    ey = state.ey
-    ez = state.ez
+    field_u = getattr(state, cfg.e_u_component)
+    field_v = getattr(state, cfg.e_v_component)
+    indexer = _plane_indexer(cfg)
 
-    ey = ey.at[cfg.x_index, cfg.y_lo:cfg.y_hi, cfg.z_lo:cfg.z_hi].add(
-        src_val * cfg.ey_profile
-    )
-    ez = ez.at[cfg.x_index, cfg.y_lo:cfg.y_hi, cfg.z_lo:cfg.z_hi].add(
-        src_val * cfg.ez_profile
-    )
+    field_u = field_u.at[indexer].add(src_val * cfg.ey_profile)
+    field_v = field_v.at[indexer].add(src_val * cfg.ez_profile)
 
-    return state._replace(ey=ey, ez=ez)
+    return state._replace(**{cfg.e_u_component: field_u, cfg.e_v_component: field_v})
 
 
 def modal_voltage(state, cfg: WaveguidePortConfig, x_idx: int,
                   dx: float) -> jnp.ndarray:
     """Modal voltage: V = integral E_t . e_mode dA."""
-    sl_y = slice(cfg.y_lo, cfg.y_hi)
-    sl_z = slice(cfg.z_lo, cfg.z_hi)
-
-    ey_sim = state.ey[x_idx, sl_y, sl_z]
-    ez_sim = state.ez[x_idx, sl_y, sl_z]
-
-    return jnp.sum(ey_sim * cfg.ey_profile + ez_sim * cfg.ez_profile) * dx * dx
+    e_u_sim = _plane_field(getattr(state, cfg.e_u_component), cfg, x_idx)
+    e_v_sim = _plane_field(getattr(state, cfg.e_v_component), cfg, x_idx)
+    return jnp.sum(e_u_sim * cfg.ey_profile + e_v_sim * cfg.ez_profile) * dx * dx
 
 
 def modal_current(state, cfg: WaveguidePortConfig, x_idx: int,
@@ -286,13 +410,9 @@ def modal_current(state, cfg: WaveguidePortConfig, x_idx: int,
     H is averaged between x_idx-1 and x_idx to co-locate with E
     on the Yee grid (H sits at x+1/2, E sits at x).
     """
-    sl_y = slice(cfg.y_lo, cfg.y_hi)
-    sl_z = slice(cfg.z_lo, cfg.z_hi)
-
-    hy_sim = 0.5 * (state.hy[x_idx, sl_y, sl_z] + state.hy[x_idx - 1, sl_y, sl_z])
-    hz_sim = 0.5 * (state.hz[x_idx, sl_y, sl_z] + state.hz[x_idx - 1, sl_y, sl_z])
-
-    return jnp.sum(hy_sim * cfg.hy_profile + hz_sim * cfg.hz_profile) * dx * dx
+    h_u_sim = _plane_h_field(getattr(state, cfg.h_u_component), cfg, x_idx)
+    h_v_sim = _plane_h_field(getattr(state, cfg.h_v_component), cfg, x_idx)
+    return jnp.sum(h_u_sim * cfg.hy_profile + h_v_sim * cfg.hz_profile) * dx * dx
 
 
 def update_waveguide_port_probe(cfg: WaveguidePortConfig, state,
@@ -309,65 +429,253 @@ def update_waveguide_port_probe(cfg: WaveguidePortConfig, state,
     v_inc = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
 
     phase = jnp.exp(-1j * 2.0 * jnp.pi * cfg.freqs * t)
+    weight = _dft_window_weight(state.step, cfg.dft_total_steps, cfg.dft_window, cfg.dft_window_alpha)
 
     return cfg._replace(
-        v_probe_dft=cfg.v_probe_dft + v_probe * phase * dt,
-        v_ref_dft=cfg.v_ref_dft + v_ref * phase * dt,
-        i_probe_dft=cfg.i_probe_dft + i_probe * phase * dt,
-        i_ref_dft=cfg.i_ref_dft + i_ref * phase * dt,
-        v_inc_dft=cfg.v_inc_dft + v_inc * phase * dt,
+        v_probe_dft=cfg.v_probe_dft + v_probe * phase * dt * weight,
+        v_ref_dft=cfg.v_ref_dft + v_ref * phase * dt * weight,
+        i_probe_dft=cfg.i_probe_dft + i_probe * phase * dt * weight,
+        i_ref_dft=cfg.i_ref_dft + i_ref * phase * dt * weight,
+        v_inc_dft=cfg.v_inc_dft + v_inc * phase * dt * weight,
     )
 
 
-def _compute_z_te(freqs: jnp.ndarray, f_cutoff: float) -> jnp.ndarray:
-    """TE mode impedance Z_TE(f) = ωμ₀/β.
-
-    Returns complex array: real above cutoff, imaginary below.
-    """
+def _compute_beta(freqs: jnp.ndarray, f_cutoff: float) -> jnp.ndarray:
+    """Guided propagation constant β(f) for a vacuum-filled rectangular guide."""
     omega = 2 * jnp.pi * freqs
     k = omega / C0_LOCAL
     kc = 2 * jnp.pi * f_cutoff / C0_LOCAL
 
     beta_sq = k**2 - kc**2
-    # Above cutoff: beta real; below: beta imaginary
-    beta = jnp.where(
+    return jnp.where(
         beta_sq >= 0,
         jnp.sqrt(jnp.maximum(beta_sq, 0.0)),
         1j * jnp.sqrt(jnp.maximum(-beta_sq, 0.0)),
     )
 
+
+from rfx.core.dft_utils import dft_window_weight as _dft_window_weight
+
+def _compute_mode_impedance(
+    freqs: jnp.ndarray,
+    f_cutoff: float,
+    mode_type: str,
+) -> jnp.ndarray:
+    """Rectangular-waveguide modal impedance for TE/TM modes.
+
+    TE: Z = ωμ / β
+    TM: Z = β / (ωε)
+    """
+    omega = 2 * jnp.pi * freqs
+    beta = _compute_beta(freqs, f_cutoff)
     safe_beta = jnp.where(jnp.abs(beta) > 1e-30, beta,
-                           1e-30 * jnp.ones_like(beta))
-    return omega * MU_0 / safe_beta
+                          1e-30 * jnp.ones_like(beta))
+    safe_omega = jnp.where(jnp.abs(omega) > 1e-30, omega,
+                           1e-30 * jnp.ones_like(omega))
+    if mode_type == "TE":
+        return omega * MU_0 / safe_beta
+    if mode_type == "TM":
+        return safe_beta / (safe_omega * EPS_0)
+    raise ValueError(f"mode_type must be 'TE' or 'TM', got {mode_type!r}")
+
+
+def _extract_global_waves(
+    cfg: WaveguidePortConfig,
+    voltage_dft: jnp.ndarray,
+    current_dft: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Return global (+x/-x) modal waves from colocated modal V/I spectra."""
+    z_mode = _compute_mode_impedance(cfg.freqs, cfg.f_cutoff, cfg.mode_type)
+    forward = 0.5 * (voltage_dft + z_mode * current_dft)
+    backward = 0.5 * (voltage_dft - z_mode * current_dft)
+    return forward, backward
+
+
+def _extract_port_waves(
+    cfg: WaveguidePortConfig,
+    voltage_dft: jnp.ndarray,
+    current_dft: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Return port-local (incident, outgoing) waves.
+
+    For a positive-direction port (`+x`, `+y`, `+z`), incident is the local
+    forward wave and outgoing is the local backward wave. For a negative
+    direction port, the mapping is reversed.
+    """
+    forward, backward = _extract_global_waves(cfg, voltage_dft, current_dft)
+    if cfg.direction.startswith("+"):
+        return forward, backward
+    return backward, forward
+
+
+def waveguide_plane_positions(cfg: WaveguidePortConfig) -> dict[str, float]:
+    """Physical source/reference/probe positions along the port normal axis.
+
+    When `cfg` comes from `rfx.api.Simulation`, these are domain-relative
+    physical coordinates along the active port-normal axis. For lower-level
+    manual setups without `x_position`,
+    they fall back to the padded-grid coordinate origin.
+    """
+    return {
+        "source": cfg.source_x_m,
+        "reference": cfg.reference_x_m,
+        "probe": cfg.probe_x_m,
+    }
+
+
+def _shift_modal_waves(
+    forward: jnp.ndarray,
+    backward: jnp.ndarray,
+    beta: jnp.ndarray,
+    shift_m: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Shift modal waves to a new reference plane.
+
+    `shift_m > 0` means shifting the reporting plane downstream along the
+    positive normal axis of the port.
+    """
+    if shift_m == 0.0:
+        return forward, backward
+    shift = jnp.asarray(shift_m, dtype=beta.dtype)
+    forward_shifted = forward * jnp.exp(-1j * beta * shift)
+    backward_shifted = backward * jnp.exp(+1j * beta * shift)
+    return forward_shifted, backward_shifted
+
+
+def extract_waveguide_sparams(
+    cfg: WaveguidePortConfig,
+    *,
+    ref_shift: float = 0.0,
+    probe_shift: float = 0.0,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Extract (S11, S21) with optional reference-plane shifts.
+
+    Parameters
+    ----------
+    ref_shift : float
+        Metres to shift the reference-plane reporting location relative to the
+        stored reference probe. Positive is downstream (+x), negative upstream.
+    probe_shift : float
+        Metres to shift the probe-plane reporting location relative to the
+        stored probe plane. Positive is downstream (+x), negative upstream.
+    """
+    beta = _compute_beta(cfg.freqs, cfg.f_cutoff)
+    a_ref, b_ref = _extract_port_waves(cfg, cfg.v_ref_dft, cfg.i_ref_dft)
+    a_probe, b_probe = _extract_port_waves(cfg, cfg.v_probe_dft, cfg.i_probe_dft)
+    a_ref, b_ref = _shift_modal_waves(a_ref, b_ref, beta, ref_shift)
+    a_probe, b_probe = _shift_modal_waves(a_probe, b_probe, beta, probe_shift)
+    safe_ref = jnp.where(jnp.abs(a_ref) > 0, a_ref, jnp.ones_like(a_ref))
+    s11 = b_ref / safe_ref
+    s21 = a_probe / safe_ref
+    return s11, s21
 
 
 def extract_waveguide_s21(cfg: WaveguidePortConfig,
-                          dt: float = 0.0) -> jnp.ndarray:
-    """Extract S21 as modal voltage ratio between probe and reference.
-
-    S21(f) = V_probe(f) / V_ref(f)
-
-    Both numerator and denominator are modal voltage DFTs, so the ratio
-    measures the transfer function between two planes. For a matched
-    lossless waveguide above cutoff, mean |S21| ~ 1.
-
-    Note: individual frequency points may show |S21| > 1 due to standing
-    waves from residual CPML reflections. Use band-averaged |S21| for
-    robust validation.
-
-    Returns (n_freqs,) complex array.
-    """
-    safe_ref = jnp.where(jnp.abs(cfg.v_ref_dft) > 0, cfg.v_ref_dft,
-                         jnp.ones_like(cfg.v_ref_dft))
-    return cfg.v_probe_dft / safe_ref
+                          dt: float = 0.0,
+                          *,
+                          ref_shift: float = 0.0,
+                          probe_shift: float = 0.0) -> jnp.ndarray:
+    """Extract S21 from forward-wave modal amplitudes with optional de-embedding."""
+    _, s21 = extract_waveguide_sparams(
+        cfg,
+        ref_shift=ref_shift,
+        probe_shift=probe_shift,
+    )
+    return s21
 
 
-def extract_waveguide_s11(cfg: WaveguidePortConfig) -> jnp.ndarray:
-    """S11 placeholder — power conservation estimate.
+def extract_waveguide_s11(cfg: WaveguidePortConfig,
+                          *,
+                          ref_shift: float = 0.0) -> jnp.ndarray:
+    """Extract S11 from backward/forward modal amplitudes with optional de-embedding."""
+    s11, _ = extract_waveguide_sparams(cfg, ref_shift=ref_shift)
+    return s11
 
-    |S11|² = 1 - |S21|² for a lossless system.
-    True S11 requires backward-wave extraction at the source plane.
-    """
-    s21 = extract_waveguide_s21(cfg)
-    s21_sq = jnp.abs(s21) ** 2
-    return jnp.sqrt(jnp.maximum(1.0 - s21_sq, 0.0))
+
+def extract_waveguide_port_waves(
+    cfg: WaveguidePortConfig,
+    *,
+    ref_shift: float = 0.0,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Return port-local (incident, outgoing) waves at a shifted reference plane."""
+    beta = _compute_beta(cfg.freqs, cfg.f_cutoff)
+    a_ref, b_ref = _extract_port_waves(cfg, cfg.v_ref_dft, cfg.i_ref_dft)
+    return _shift_modal_waves(a_ref, b_ref, beta, ref_shift)
+
+
+def extract_waveguide_s_matrix(
+    grid,
+    materials,
+    port_cfgs: list[WaveguidePortConfig],
+    n_steps: int,
+    *,
+    boundary: str = "cpml",
+    cpml_axes: str = "x",
+    pec_axes: str = "yz",
+    periodic: tuple[bool, bool, bool] | None = None,
+    debye: tuple | None = None,
+    lorentz: tuple | None = None,
+    ref_shifts: list[float] | tuple[float, float] | None = None,
+) -> jnp.ndarray:
+    """Assemble an x-directed waveguide S-matrix via one-driven-port-at-a-time runs."""
+    if len(port_cfgs) < 2:
+        raise ValueError(
+            "extract_waveguide_s_matrix requires at least two waveguide ports"
+        )
+    if ref_shifts is None:
+        ref_shifts = tuple(0.0 for _ in port_cfgs)
+    if len(ref_shifts) != len(port_cfgs):
+        raise ValueError("ref_shifts must match the number of waveguide ports when provided")
+
+    from rfx.simulation import run as run_simulation
+
+    template_cfgs = tuple(port_cfgs)
+    n_ports = len(template_cfgs)
+    n_freqs = len(template_cfgs[0].freqs)
+    s_matrix = np.zeros((n_ports, n_ports, n_freqs), dtype=np.complex64)
+
+    def _reset_cfg(cfg: WaveguidePortConfig, drive_enabled: bool) -> WaveguidePortConfig:
+        zeros = jnp.zeros_like(cfg.v_probe_dft)
+        return cfg._replace(
+            src_amp=cfg.src_amp if drive_enabled else 0.0,
+            v_probe_dft=zeros,
+            v_ref_dft=zeros,
+            i_probe_dft=zeros,
+            i_ref_dft=zeros,
+            v_inc_dft=zeros,
+        )
+
+    for drive_idx in range(n_ports):
+        driven_cfgs = [
+            _reset_cfg(cfg, drive_enabled=(idx == drive_idx))
+            for idx, cfg in enumerate(template_cfgs)
+        ]
+        result = run_simulation(
+            grid,
+            materials,
+            n_steps,
+            boundary=boundary,
+            cpml_axes=cpml_axes,
+            pec_axes=pec_axes,
+            periodic=periodic,
+            debye=debye,
+            lorentz=lorentz,
+            waveguide_ports=driven_cfgs,
+        )
+        final_cfgs = result.waveguide_ports or ()
+        if len(final_cfgs) != n_ports:
+            raise RuntimeError("waveguide S-matrix extraction expected one final config per port")
+
+        a_drive, b_drive = extract_waveguide_port_waves(
+            final_cfgs[drive_idx],
+            ref_shift=ref_shifts[drive_idx],
+        )
+        safe_a = jnp.where(jnp.abs(a_drive) > 0, a_drive, jnp.ones_like(a_drive))
+        for recv_idx, cfg in enumerate(final_cfgs):
+            _a_recv, b_recv = extract_waveguide_port_waves(
+                cfg,
+                ref_shift=ref_shifts[recv_idx],
+            )
+            s_matrix[recv_idx, drive_idx, :] = np.array(b_recv / safe_a)
+
+    return jnp.asarray(s_matrix)

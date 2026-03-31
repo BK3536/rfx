@@ -19,6 +19,8 @@ Usage
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
+from numbers import Integral
 from typing import NamedTuple
 
 import jax
@@ -33,7 +35,13 @@ from rfx.materials.debye import DebyePole, init_debye
 from rfx.materials.lorentz import LorentzPole, init_lorentz, drude_pole, lorentz_pole
 from rfx.materials.thin_conductor import ThinConductor, apply_thin_conductor
 from rfx.probes.probes import extract_s_matrix, init_dft_plane_probe
-from rfx.sources.waveguide_port import WaveguidePort, init_waveguide_port
+from rfx.sources.waveguide_port import (
+    WaveguidePort,
+    extract_waveguide_s_matrix,
+    extract_waveguide_sparams,
+    init_waveguide_port,
+    waveguide_plane_positions,
+)
 from rfx.simulation import (
     make_source, make_probe, make_port_source,
     run as _run, SimResult, SourceSpec, ProbeSpec, SnapshotSpec,
@@ -91,6 +99,8 @@ class Result(NamedTuple):
         Frequency-domain plane probes keyed by name.
     waveguide_ports : dict[str, WaveguidePortConfig] or None
         Final accumulated waveguide-port configs keyed by name.
+    waveguide_sparams : dict[str, WaveguideSParamResult] or None
+        High-level calibrated waveguide S-parameters keyed by port name.
     snapshots : dict[str, ndarray] or None
         Field snapshots keyed by component name.
     """
@@ -102,6 +112,7 @@ class Result(NamedTuple):
     ntff_box: object = None
     dft_planes: dict | None = None
     waveguide_ports: dict | None = None
+    waveguide_sparams: dict | None = None
     snapshots: dict | None = None
 
 
@@ -168,8 +179,12 @@ class _DFTPlaneEntry:
 class _WaveguidePortEntry:
     name: str
     x_position: float
+    y_range: tuple[float, float] | None
+    z_range: tuple[float, float] | None
+    x_range: tuple[float, float] | None
     mode: tuple[int, int]
     mode_type: str
+    direction: str
     freqs: jnp.ndarray | None
     n_freqs: int
     f0: float | None
@@ -177,6 +192,31 @@ class _WaveguidePortEntry:
     amplitude: float
     probe_offset: int
     ref_offset: int
+    calibration_preset: str | None
+    reference_plane: float | None
+    probe_plane: float | None
+
+
+class WaveguideSParamResult(NamedTuple):
+    """High-level calibrated waveguide S-parameter data."""
+    freqs: np.ndarray
+    s11: np.ndarray
+    s21: np.ndarray
+    calibration_preset: str
+    source_plane: float
+    measured_reference_plane: float
+    measured_probe_plane: float
+    reference_plane: float
+    probe_plane: float
+
+
+class WaveguideSMatrixResult(NamedTuple):
+    """Waveguide scattering result assembled one driven port at a time."""
+    s_params: np.ndarray
+    freqs: np.ndarray
+    port_names: tuple[str, ...]
+    port_directions: tuple[str, ...]
+    reference_planes: np.ndarray
 
 
 _DebyeSpec = tuple[list[DebyePole], list[jnp.ndarray]]
@@ -413,8 +453,12 @@ class Simulation:
         self,
         x_position: float,
         *,
+        x_range: tuple[float, float] | None = None,
+        y_range: tuple[float, float] | None = None,
+        z_range: tuple[float, float] | None = None,
         mode: tuple[int, int] = (1, 0),
         mode_type: str = "TE",
+        direction: str = "+x",
         freqs: jnp.ndarray | None = None,
         n_freqs: int = 50,
         f0: float | None = None,
@@ -422,14 +466,52 @@ class Simulation:
         amplitude: float = 1.0,
         probe_offset: int = 10,
         ref_offset: int = 3,
+        calibration_preset: str | None = None,
+        reference_plane: float | None = None,
+        probe_plane: float | None = None,
         name: str | None = None,
     ) -> "Simulation":
-        """Add a rectangular waveguide port using the full y-z domain.
+        """Add a rectangular waveguide port.
 
-        Current scope is intentionally narrow: x-directed propagation using
-        the full y-z domain as the waveguide cross-section, `boundary='cpml'`,
-        and `mode='3d'`.
+        `x_position` is interpreted along the selected port-normal axis from
+        `direction`. For example, `direction='-y'` uses `x_position` as the
+        physical y-coordinate of the port plane.
+
+        Current scope supports axis-normal boundary ports using rectangular
+        apertures, with `boundary='cpml'` and `mode='3d'`.
+
+        Calibration options:
+        - `reference_plane` / `probe_plane`: explicit reported planes in
+          physical coordinates along the port normal axis
+        - `calibration_preset='source_to_probe'`: auto-report `S11` at the
+          snapped source plane and `S21` from source to the snapped probe plane
+        - `calibration_preset=None` or `'measured'`: use the snapped stored
+          reference/probe planes directly
+
+        Sampling still occurs on the nearest snapped grid planes, and the
+        result metadata reports those actual measurement planes explicitly.
         """
+        scalar_checks = [
+            ("x_position", x_position, False),
+            ("bandwidth", bandwidth, True),
+            ("amplitude", amplitude, False),
+        ]
+        if f0 is not None:
+            scalar_checks.append(("f0", f0, True))
+        if reference_plane is not None:
+            scalar_checks.append(("reference_plane", reference_plane, False))
+        if probe_plane is not None:
+            scalar_checks.append(("probe_plane", probe_plane, False))
+        for label, value, require_positive in scalar_checks:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"{label} must be a finite scalar, got {value!r}") from None
+            if not math.isfinite(numeric):
+                raise ValueError(f"{label} must be finite, got {value!r}")
+            if require_positive and numeric <= 0:
+                raise ValueError(f"{label} must be positive, got {value}")
+
         if self._boundary != "cpml":
             raise ValueError("Waveguide port requires boundary='cpml'")
         if self._cpml_layers <= 0:
@@ -442,17 +524,112 @@ class Simulation:
             raise ValueError("Waveguide port is not supported together with lumped ports")
         if self._tfsf is not None:
             raise ValueError("Waveguide port is not supported together with TFSF")
-        if x_position < 0 or x_position > self._domain[0]:
+        if direction not in ("+x", "-x", "+y", "-y", "+z", "-z"):
             raise ValueError(
-                f"x_position {x_position} m is outside the x-domain [0, {self._domain[0]}]"
+                "direction must be one of '+x', '-x', '+y', '-y', '+z', or '-z', "
+                f"got {direction!r}"
             )
+        axis_name = direction[1]
+        axis_idx = {"x": 0, "y": 1, "z": 2}[axis_name]
+        if x_position < 0 or x_position > self._domain[axis_idx]:
+            raise ValueError(
+                f"x_position {x_position} m is outside the {axis_name}-domain [0, {self._domain[axis_idx]}]"
+            )
+        for label, rng, domain_max in (
+            ("x_range", x_range, self._domain[0]),
+            ("y_range", y_range, self._domain[1]),
+            ("z_range", z_range, self._domain[2]),
+        ):
+            if rng is None:
+                continue
+            if not isinstance(rng, tuple) or len(rng) != 2:
+                raise ValueError(f"{label} must be a (lo, hi) tuple when provided")
+            lo, hi = rng
+            try:
+                lo_f = float(lo)
+                hi_f = float(hi)
+            except (TypeError, ValueError):
+                raise ValueError(f"{label} must contain finite scalars, got {rng!r}") from None
+            if not math.isfinite(lo_f) or not math.isfinite(hi_f):
+                raise ValueError(f"{label} must contain finite scalars, got {rng!r}")
+            if lo_f < 0.0 or hi_f > domain_max or hi_f <= lo_f:
+                raise ValueError(
+                    f"{label} {rng!r} must satisfy 0 <= lo < hi <= {domain_max}"
+                )
+        if (
+            not isinstance(mode, tuple)
+            or len(mode) != 2
+            or any(not isinstance(idx, Integral) for idx in mode)
+        ):
+            raise ValueError(f"mode must be a tuple of two integers, got {mode!r}")
+        if any(idx < 0 for idx in mode):
+            raise ValueError(f"mode indices must be non-negative, got {mode!r}")
         if mode_type not in ("TE", "TM"):
             raise ValueError(f"mode_type must be 'TE' or 'TM', got {mode_type!r}")
-        if bandwidth <= 0:
-            raise ValueError(f"bandwidth must be positive, got {bandwidth}")
+        unused_range_by_axis = {
+            "x": ("x_range", x_range, "y_range/z_range"),
+            "y": ("y_range", y_range, "x_range/z_range"),
+            "z": ("z_range", z_range, "x_range/y_range"),
+        }
+        unused_label, unused_value, replacement = unused_range_by_axis[axis_name]
+        if unused_value is not None:
+            raise ValueError(
+                f"{unused_label} is not used for {axis_name}-normal ports; use {replacement} instead"
+            )
+        if not isinstance(probe_offset, Integral) or not isinstance(ref_offset, Integral):
+            raise ValueError("probe_offset and ref_offset must be positive integers")
         if probe_offset <= 0 or ref_offset <= 0:
-            raise ValueError("probe_offset and ref_offset must be positive")
+            raise ValueError("probe_offset and ref_offset must be positive integers")
+        if calibration_preset not in (None, "measured", "source_to_probe"):
+            raise ValueError(
+                "calibration_preset must be one of None, 'measured', or 'source_to_probe'"
+            )
+        if calibration_preset is not None and (reference_plane is not None or probe_plane is not None):
+            raise ValueError(
+                "calibration_preset cannot be combined with explicit reference_plane/probe_plane"
+            )
+        grid = self._build_grid(extra_waveguide_axes=axis_name)
+        pos_vec = [0.0, 0.0, 0.0]
+        pos_vec[axis_idx] = x_position
+        x_index = grid.position_to_index(tuple(pos_vec))[axis_idx]
+        axis_pad = grid.axis_pads[axis_idx]
+        snapped_source_plane = (x_index - axis_pad) * grid.dx
+        step_sign = 1 if direction.startswith("+") else -1
+        measured_reference_plane = snapped_source_plane + step_sign * ref_offset * grid.dx
+        measured_probe_plane = snapped_source_plane + step_sign * probe_offset * grid.dx
+        axis_domain = self._domain[axis_idx]
+        if (
+            measured_reference_plane < 0.0
+            or measured_reference_plane > axis_domain
+            or measured_probe_plane < 0.0
+            or measured_probe_plane > axis_domain
+            or x_index + step_sign * ref_offset < 0
+            or x_index + step_sign * ref_offset >= grid.shape[axis_idx]
+            or x_index + step_sign * probe_offset < 0
+            or x_index + step_sign * probe_offset >= grid.shape[axis_idx]
+        ):
+            raise ValueError(
+                "Waveguide port measurement planes exceed the physical "
+                f"{axis_name}-domain after grid snapping; reduce ref_offset/probe_offset, "
+                "flip direction, or move x_position inward"
+            )
+        if reference_plane is not None and not (0.0 <= reference_plane <= axis_domain):
+            raise ValueError(
+                f"reference_plane {reference_plane} m is outside the {axis_name}-domain [0, {axis_domain}]"
+            )
+        if probe_plane is not None and not (0.0 <= probe_plane <= axis_domain):
+            raise ValueError(
+                f"probe_plane {probe_plane} m is outside the {axis_name}-domain [0, {axis_domain}]"
+            )
+        if (
+            reference_plane is not None
+            and probe_plane is not None
+            and probe_plane < reference_plane
+        ):
+            raise ValueError("probe_plane must be >= reference_plane when both are provided")
         if freqs is None:
+            if not isinstance(n_freqs, Integral):
+                raise ValueError(f"n_freqs must be a positive integer, got {n_freqs!r}")
             if n_freqs <= 0:
                 raise ValueError(f"n_freqs must be positive, got {n_freqs}")
             freqs_arr = None
@@ -460,6 +637,11 @@ class Simulation:
             freqs_arr = jnp.asarray(freqs)
             if freqs_arr.ndim != 1 or freqs_arr.size == 0:
                 raise ValueError("freqs must be a non-empty 1-D array")
+            freqs_np = np.asarray(freqs_arr, dtype=float)
+            if not np.all(np.isfinite(freqs_np)):
+                raise ValueError("freqs must contain only finite values")
+            if np.any(freqs_np <= 0):
+                raise ValueError("freqs must contain only positive values")
 
         if name is None:
             name = f"waveguide_{len(self._waveguide_ports)}"
@@ -467,8 +649,12 @@ class Simulation:
         self._waveguide_ports.append(_WaveguidePortEntry(
             name=name,
             x_position=x_position,
+            x_range=x_range,
+            y_range=y_range,
+            z_range=z_range,
             mode=mode,
             mode_type=mode_type,
+            direction=direction,
             freqs=freqs_arr,
             n_freqs=n_freqs,
             f0=f0,
@@ -476,6 +662,9 @@ class Simulation:
             amplitude=amplitude,
             probe_offset=probe_offset,
             ref_offset=ref_offset,
+            calibration_preset=calibration_preset,
+            reference_plane=reference_plane,
+            probe_plane=probe_plane,
         ))
         return self
 
@@ -599,14 +788,23 @@ class Simulation:
 
     # ---- build helpers ----
 
-    def _build_grid(self) -> Grid:
-        if self._waveguide_ports:
+    def _waveguide_cpml_axes(self, extra_axes: str = "") -> str:
+        axes_in_use = {
+            entry.direction[1]
+            for entry in self._waveguide_ports
+        }
+        axes_in_use.update(axis for axis in extra_axes if axis in "xyz")
+        return "".join(axis for axis in "xyz" if axis in axes_in_use) or "x"
+
+    def _build_grid(self, *, extra_waveguide_axes: str = "") -> Grid:
+        if self._waveguide_ports or extra_waveguide_axes:
+            cpml_axes = self._waveguide_cpml_axes(extra_waveguide_axes)
             return Grid(
                 freq_max=self._freq_max,
                 domain=self._domain,
                 dx=self._dx,
                 cpml_layers=self._cpml_layers,
-                cpml_axes="x",
+                cpml_axes=cpml_axes,
                 mode=self._mode,
             )
         return Grid(
@@ -701,6 +899,207 @@ class Simulation:
         return materials, debye, lorentz
 
     @staticmethod
+    def _range_to_slice(
+        value_range: tuple[float, float] | None,
+        domain_max: float,
+        dx: float,
+        grid_size: int,
+        axis_pad: int,
+    ) -> tuple[tuple[int, int], float]:
+        """Convert a physical range to a grid slice and actual physical span."""
+        if value_range is None:
+            return (axis_pad, grid_size - axis_pad), domain_max
+        lo, hi = value_range
+        lo_idx = int(round(lo / dx)) + axis_pad
+        hi_idx = int(round(hi / dx)) + axis_pad + 1
+        if lo_idx < axis_pad or hi_idx > grid_size - axis_pad or hi_idx - lo_idx < 2:
+            raise ValueError(
+                f"range {value_range!r} does not resolve to a valid aperture on the current grid"
+            )
+        actual_span = (hi_idx - lo_idx - 1) * dx
+        if actual_span <= 0.0 or actual_span > domain_max + 1e-12:
+            raise ValueError(
+                f"range {value_range!r} resolves to an invalid physical aperture span {actual_span}"
+            )
+        return (lo_idx, hi_idx), actual_span
+
+    def _build_waveguide_port_config(
+        self,
+        entry: _WaveguidePortEntry,
+        grid: Grid,
+        freqs: jnp.ndarray,
+        n_steps: int,
+    ):
+        normal_axis = entry.direction[1]
+        axis_idx = {"x": 0, "y": 1, "z": 2}[normal_axis]
+        pos_vec = [0.0, 0.0, 0.0]
+        pos_vec[axis_idx] = entry.x_position
+        x_index = grid.position_to_index(tuple(pos_vec))[axis_idx]
+        snapped_source_plane = (x_index - grid.axis_pads[axis_idx]) * grid.dx
+        step_sign = 1 if entry.direction.startswith("+") else -1
+        measured_reference_plane = snapped_source_plane + step_sign * entry.ref_offset * grid.dx
+        measured_probe_plane = snapped_source_plane + step_sign * entry.probe_offset * grid.dx
+        axis_domain = self._domain[axis_idx]
+        if (
+            measured_reference_plane < 0.0
+            or measured_reference_plane > axis_domain
+            or measured_probe_plane < 0.0
+            or measured_probe_plane > axis_domain
+            or x_index + step_sign * entry.ref_offset < 0
+            or x_index + step_sign * entry.ref_offset >= grid.shape[axis_idx]
+            or x_index + step_sign * entry.probe_offset < 0
+            or x_index + step_sign * entry.probe_offset >= grid.shape[axis_idx]
+        ):
+            raise ValueError(
+                "Waveguide port measurement planes exceed the physical "
+                f"{normal_axis}-domain after grid snapping; reduce ref_offset/probe_offset, "
+                "flip direction, or move x_position inward"
+            )
+        if normal_axis == "x":
+            u_slice, a_span = self._range_to_slice(entry.y_range, self._domain[1], grid.dx, grid.ny, grid.axis_pads[1])
+            v_slice, b_span = self._range_to_slice(entry.z_range, self._domain[2], grid.dx, grid.nz, grid.axis_pads[2])
+        elif normal_axis == "y":
+            u_slice, a_span = self._range_to_slice(entry.x_range, self._domain[0], grid.dx, grid.nx, grid.axis_pads[0])
+            v_slice, b_span = self._range_to_slice(entry.z_range, self._domain[2], grid.dx, grid.nz, grid.axis_pads[2])
+        else:
+            u_slice, a_span = self._range_to_slice(entry.x_range, self._domain[0], grid.dx, grid.nx, grid.axis_pads[0])
+            v_slice, b_span = self._range_to_slice(entry.y_range, self._domain[1], grid.dx, grid.ny, grid.axis_pads[1])
+        port = WaveguidePort(
+            x_index=x_index,
+            y_slice=None,
+            z_slice=None,
+            a=a_span,
+            b=b_span,
+            mode=entry.mode,
+            mode_type=entry.mode_type,
+            direction=entry.direction,
+            x_position=snapped_source_plane,
+            normal_axis=normal_axis,
+            u_slice=u_slice,
+            v_slice=v_slice,
+        )
+        cfg = init_waveguide_port(
+            port,
+            grid.dx,
+            freqs,
+            f0=entry.f0 if entry.f0 is not None else self._freq_max / 2,
+            bandwidth=entry.bandwidth,
+            amplitude=entry.amplitude,
+            probe_offset=entry.probe_offset,
+            ref_offset=entry.ref_offset,
+            dft_total_steps=n_steps,
+        )
+        return cfg
+
+    def compute_waveguide_s_matrix(
+        self,
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> WaveguideSMatrixResult:
+        """Compute a theoretically clean axis-normal boundary-aperture waveguide S-matrix."""
+        if self._ports or self._tfsf:
+            raise ValueError(
+                "compute_waveguide_s_matrix() is not supported together with lumped ports or TFSF"
+            )
+        if self._periodic_axes:
+            raise ValueError(
+                "compute_waveguide_s_matrix() is not supported with manual periodic-axis overrides"
+            )
+        if len(self._waveguide_ports) < 2:
+            raise ValueError(
+                "compute_waveguide_s_matrix() requires at least two waveguide ports"
+            )
+
+        entries = list(self._waveguide_ports)
+        if any(entry.probe_plane is not None for entry in entries):
+            raise ValueError(
+                "compute_waveguide_s_matrix() does not use per-port probe_plane; use reference_plane only or leave probe_plane unset"
+            )
+        if any(entry.calibration_preset not in (None, "measured") for entry in entries):
+            raise ValueError(
+                "compute_waveguide_s_matrix() currently supports only measured/default reference planes or explicit reference_plane overrides"
+            )
+
+        grid = self._build_grid()
+        base_materials, debye_spec, lorentz_spec = self._assemble_materials(grid)
+        materials = base_materials
+        if n_steps is None:
+            n_steps = grid.num_timesteps(num_periods=num_periods)
+        _, debye, lorentz = self._init_dispersion(materials, grid.dt, debye_spec, lorentz_spec)
+
+        def _resolve_freqs(entry: _WaveguidePortEntry) -> jnp.ndarray:
+            if entry.freqs is not None:
+                return entry.freqs
+            return jnp.linspace(self._freq_max / 10, self._freq_max, entry.n_freqs)
+
+        freqs = _resolve_freqs(entries[0])
+        for entry in entries[1:]:
+            entry_freqs = _resolve_freqs(entry)
+            if entry_freqs.shape != freqs.shape or not np.allclose(np.asarray(entry_freqs), np.asarray(freqs)):
+                raise ValueError("waveguide S-matrix requires matching frequency grids on all ports")
+
+        cfgs = [self._build_waveguide_port_config(entry, grid, freqs, n_steps) for entry in entries]
+
+        def _slices_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
+            return max(a[0], b[0]) < min(a[1], b[1])
+
+        by_direction = {}
+        for entry, cfg in zip(entries, cfgs):
+            by_direction.setdefault(entry.direction, []).append(cfg)
+
+        for direction, side_cfgs in by_direction.items():
+            plane_indices = {cfg.x_index for cfg in side_cfgs}
+            if len(plane_indices) != 1:
+                raise ValueError(
+                    f"waveguide ports on boundary {direction} must share one boundary plane"
+                )
+            for i in range(len(side_cfgs)):
+                for j in range(i + 1, len(side_cfgs)):
+                    if _slices_overlap((side_cfgs[i].u_lo, side_cfgs[i].u_hi), (side_cfgs[j].u_lo, side_cfgs[j].u_hi)) and _slices_overlap((side_cfgs[i].v_lo, side_cfgs[i].v_hi), (side_cfgs[j].v_lo, side_cfgs[j].v_hi)):
+                        raise ValueError(
+                            f"waveguide ports on the same {direction} boundary must have disjoint apertures"
+                        )
+
+        ref_shifts = []
+        for entry, cfg in zip(entries, cfgs):
+            desired_ref = (
+                entry.reference_plane
+                if entry.reference_plane is not None
+                else waveguide_plane_positions(cfg)["reference"]
+            )
+            ref_shifts.append(desired_ref - waveguide_plane_positions(cfg)["reference"])
+
+        s_params = extract_waveguide_s_matrix(
+            grid,
+            materials,
+            cfgs,
+            n_steps,
+            boundary="cpml",
+            cpml_axes=grid.cpml_axes,
+            pec_axes="".join(axis for axis in "xyz" if axis not in grid.cpml_axes),
+            debye=debye,
+            lorentz=lorentz,
+            ref_shifts=ref_shifts,
+        )
+        reference_planes = np.array(
+            [
+                entry.reference_plane
+                if entry.reference_plane is not None
+                else waveguide_plane_positions(cfg)["reference"]
+                for entry, cfg in zip(entries, cfgs)
+            ],
+            dtype=float,
+        )
+        return WaveguideSMatrixResult(
+            s_params=np.array(s_params),
+            freqs=np.array(freqs),
+            port_names=tuple(entry.name for entry in entries),
+            port_directions=tuple(entry.direction for entry in entries),
+            reference_planes=reference_planes,
+        )
+
+    @staticmethod
     def _validate_tfsf_vacuum_boundary(materials: MaterialArrays, tfsf_cfg) -> None:
         """Ensure the TFSF x-boundary planes remain vacuum.
 
@@ -790,6 +1189,10 @@ class Simulation:
             raise ValueError(
                 "Waveguide ports are not supported together with lumped ports or TFSF"
             )
+        if len(self._waveguide_ports) > 1:
+            raise ValueError(
+                "Simulation.run() supports only a single waveguide port; use compute_waveguide_s_matrix() for the multiport waveguide scattering workflow"
+            )
         if self._periodic_axes:
             periodic = tuple(axis in self._periodic_axes for axis in "xyz")
 
@@ -825,40 +1228,20 @@ class Simulation:
                     component=pe.component,
                     freqs=freqs_arr,
                     grid_shape=grid.shape,
+                    dft_total_steps=n_steps,
                 )
             )
 
         if self._waveguide_ports:
-            cpml_axes = "x"
-            pec_axes = "yz"
+            cpml_axes = grid.cpml_axes
+            pec_axes = "".join(axis for axis in "xyz" if axis not in cpml_axes)
             for pe in self._waveguide_ports:
-                x_index = grid.position_to_index((pe.x_position, 0.0, 0.0))[0]
                 freqs_arr = (
                     pe.freqs
                     if pe.freqs is not None
                     else jnp.linspace(self._freq_max / 10, self._freq_max, pe.n_freqs)
                 )
-                port = WaveguidePort(
-                    x_index=x_index,
-                    y_slice=(0, grid.ny),
-                    z_slice=(0, grid.nz),
-                    a=self._domain[1],
-                    b=self._domain[2],
-                    mode=pe.mode,
-                    mode_type=pe.mode_type,
-                )
-                waveguide_ports.append(
-                    init_waveguide_port(
-                        port,
-                        grid.dx,
-                        freqs_arr,
-                        f0=pe.f0 if pe.f0 is not None else self._freq_max / 2,
-                        bandwidth=pe.bandwidth,
-                        amplitude=pe.amplitude,
-                        probe_offset=pe.probe_offset,
-                        ref_offset=pe.ref_offset,
-                    )
-                )
+                waveguide_ports.append(self._build_waveguide_port_config(pe, grid, freqs_arr, n_steps))
 
         if self._tfsf is not None:
             from rfx.sources.tfsf import init_tfsf
@@ -930,6 +1313,59 @@ class Simulation:
                 lorentz_spec=lorentz_spec,
             )
 
+        waveguide_ports_result = (
+            {
+                entry.name: cfg
+                for entry, cfg in zip(self._waveguide_ports, sim_result.waveguide_ports or ())
+            }
+            if self._waveguide_ports
+            else None
+        )
+        waveguide_sparams_result = None
+        if self._waveguide_ports:
+            waveguide_sparams_result = {}
+            for entry, cfg in zip(self._waveguide_ports, sim_result.waveguide_ports or ()):
+                plane_positions = waveguide_plane_positions(cfg)
+                source_plane = plane_positions["source"]
+                measured_reference_plane = plane_positions["reference"]
+                measured_probe_plane = plane_positions["probe"]
+                if entry.calibration_preset == "source_to_probe":
+                    reference_plane = source_plane
+                    probe_plane = measured_probe_plane
+                    calibration_preset = "source_to_probe"
+                elif entry.reference_plane is not None or entry.probe_plane is not None:
+                    reference_plane = (
+                        entry.reference_plane
+                        if entry.reference_plane is not None
+                        else measured_reference_plane
+                    )
+                    probe_plane = (
+                        entry.probe_plane
+                        if entry.probe_plane is not None
+                        else measured_probe_plane
+                    )
+                    calibration_preset = "explicit"
+                else:
+                    reference_plane = measured_reference_plane
+                    probe_plane = measured_probe_plane
+                    calibration_preset = "measured"
+                s11, s21 = extract_waveguide_sparams(
+                    cfg,
+                    ref_shift=reference_plane - measured_reference_plane,
+                    probe_shift=probe_plane - measured_probe_plane,
+                )
+                waveguide_sparams_result[entry.name] = WaveguideSParamResult(
+                    freqs=np.array(cfg.freqs),
+                    s11=np.array(s11),
+                    s21=np.array(s21),
+                    calibration_preset=calibration_preset,
+                    source_plane=float(source_plane),
+                    measured_reference_plane=measured_reference_plane,
+                    measured_probe_plane=measured_probe_plane,
+                    reference_plane=reference_plane,
+                    probe_plane=probe_plane,
+                )
+
         return Result(
             state=sim_result.state,
             time_series=sim_result.time_series,
@@ -945,14 +1381,8 @@ class Simulation:
                 if self._dft_planes
                 else None
             ),
-            waveguide_ports=(
-                {
-                    entry.name: cfg
-                    for entry, cfg in zip(self._waveguide_ports, sim_result.waveguide_ports or ())
-                }
-                if self._waveguide_ports
-                else None
-            ),
+            waveguide_ports=waveguide_ports_result,
+            waveguide_sparams=waveguide_sparams_result,
             snapshots=sim_result.snapshots,
         )
 

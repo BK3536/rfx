@@ -30,10 +30,9 @@ def test_dft_point_probe_matches_fft():
     mon_pos = (0.02, 0.02, 0.02)
     freqs = jnp.linspace(1e9, 5e9, 20)
 
-    probe = init_dft_probe(grid, mon_pos, "ez", freqs)
-
     # Store time series for post-hoc FFT comparison
     n_steps = grid.num_timesteps(num_periods=15)
+    probe = init_dft_probe(grid, mon_pos, "ez", freqs, dft_total_steps=n_steps)
     time_series = []
     mon_idx = grid.position_to_index(mon_pos)
 
@@ -84,12 +83,13 @@ def test_dft_plane_probe_matches_point():
     src_pos = (0.015, 0.015, 0.015)
 
     freqs = jnp.linspace(2e9, 5e9, 10)
+    n_steps = grid.num_timesteps(num_periods=12)
 
     # Plane probe: x-normal plane at x_index
     x_index = grid.nx // 2 + 2
     plane_probe = init_dft_plane_probe(
         axis=0, index=x_index, component="ez",
-        freqs=freqs, grid_shape=grid.shape,
+        freqs=freqs, grid_shape=grid.shape, dft_total_steps=n_steps,
     )
 
     # Point probe at same x, at (y_mid, z_mid)
@@ -101,9 +101,7 @@ def test_dft_plane_probe_matches_point():
         (y_mid - grid.cpml_layers) * grid.dx,
         (z_mid - grid.cpml_layers) * grid.dx,
     )
-    point_probe = init_dft_probe(grid, point_pos, "ez", freqs)
-
-    n_steps = grid.num_timesteps(num_periods=12)
+    point_probe = init_dft_probe(grid, point_pos, "ez", freqs, dft_total_steps=n_steps)
 
     for step in range(n_steps):
         t = step * grid.dt
@@ -141,12 +139,11 @@ def test_dft_plane_probe_spatial_pattern():
     # Monitor at mid-x plane
     x_mid = grid.nx // 2
     freqs = jnp.array([5e9])  # single frequency
+    n_steps = grid.num_timesteps(num_periods=20)
     plane_probe = init_dft_plane_probe(
         axis=0, index=x_mid, component="ez",
-        freqs=freqs, grid_shape=grid.shape,
+        freqs=freqs, grid_shape=grid.shape, dft_total_steps=n_steps,
     )
-
-    n_steps = grid.num_timesteps(num_periods=20)
     for step in range(n_steps):
         t = step * grid.dt
         state = update_h(state, materials, grid.dt, grid.dx)
