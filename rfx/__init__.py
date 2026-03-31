@@ -34,3 +34,10 @@ from rfx.checkpoint import (
     save_state, load_state, save_snapshots, load_snapshots,
     save_materials, load_materials,
 )
+from rfx.optimize_objectives import (
+    minimize_s11,
+    maximize_s21,
+    target_impedance,
+    maximize_bandwidth,
+    maximize_directivity,
+)
