@@ -194,10 +194,8 @@ def test_gradient_through_dft_plane():
 # =========================================================================
 
 @pytest.mark.xfail(
-    reason="Analytic oblique TFSF has ~27% vacuum leakage from numerical "
-           "dispersion mismatch: the analytic plane wave satisfies continuous "
-           "Maxwell but not the discrete Yee curl. Fix requires a 2D auxiliary "
-           "grid or dispersion-compensated source (Taflove Ch. 5.6).",
+    reason="Dispersion-matched 1D aux grid reduces leakage from 27% to 25% "
+           "but not below 5%. Needs finer transverse interpolation or 2D aux grid.",
     strict=False,
 )
 def test_oblique_tfsf_fresnel():
@@ -205,7 +203,7 @@ def test_oblique_tfsf_fresnel():
 
     Unlike test_fresnel_oblique_te (which uses effective-eps trick with
     normal incidence), this test actually uses the oblique TFSF code path
-    (analytic incident fields in apply_tfsf_e/h).
+    with dispersion-matched 1D auxiliary grid.
 
     For Ez polarization at 30 deg onto eps_r=4:
         n1=1, n2=2, theta_i=30 deg
