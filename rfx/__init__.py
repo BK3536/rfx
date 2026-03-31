@@ -21,11 +21,13 @@ from rfx.farfield import (
     NTFFBox, NTFFData, FarFieldResult,
     make_ntff_box, compute_far_field, radiation_pattern, directivity,
 )
+from rfx.rcs import compute_rcs, RCSResult
 from rfx.gpu import device_info, benchmark
 from rfx.optimize import DesignRegion, OptimizeResult, optimize
 from rfx.io import read_touchstone, write_touchstone
 from rfx.visualize import (
     plot_field_slice, plot_s_params, plot_radiation_pattern, plot_time_series,
+    plot_rcs,
 )
 from rfx.simulation import SnapshotSpec
 from rfx.checkpoint import (

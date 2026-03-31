@@ -832,107 +832,44 @@ def extract_waveguide_s_params_normalized(
     return jnp.asarray(s_norm)
 
 
+
 # ---------------------------------------------------------------------------
-# Overlap integral modal extraction (Spec 6E4)
+# Overlap integral modal extraction — S-parameter extraction (Spec 6E4)
+#
+# Time-domain overlap helpers ``mode_self_overlap`` and
+# ``overlap_modal_amplitude`` live above (near ``modal_voltage``).
+#
+# For DFT-based extraction the overlap integral reuses the existing V/I
+# DFT accumulators (``v_ref_dft``, ``i_ref_dft``, etc.) because the two
+# cross-product terms in the overlap decompose into modal voltage and
+# modal current when the stored mode profiles satisfy h_mode = n̂ × e_mode:
+#
+#   P1 = ∫(E_sim × h_stored) · n̂ dA  =  V   (modal voltage)
+#   P2 = ∫(e_stored × H_sim) · n̂ dA  =  I   (modal current)
+#
+# The physical mode H-field is H_mode = h_stored / Z_mode(f), so the
+# frequency-dependent impedance must be folded in at extraction time:
+#
+#   a±(f) = 0.5 * (V(f) ± Z_mode(f) * I(f)) / C_stored
+#
+# where C_stored = ∫(e_stored × h_stored) · n̂ dA  ≈ 1 for normalized
+# profiles.  This is mathematically equivalent to the V/I wave
+# decomposition with an additional mode-overlap normalization factor.
 # ---------------------------------------------------------------------------
-
-
-def overlap_mode_normalization(
-    cfg: WaveguidePortConfig,
-    dx: float,
-) -> jnp.ndarray:
-    """Mode self-overlap normalization constant.
-
-    C_mode = ∫∫ (e_mode × h*_mode) · n̂ dA
-
-    For x-normal and z-normal ports (right-handed tangential frame):
-        (E × H) · n̂ = e_u * h_v - e_v * h_u
-
-    For y-normal ports (left-handed tangential frame stored with flipped H):
-        The stored H profiles already carry the sign flip, so the same
-        formula applies.
-
-    With the stored normalization ∫(ey² + ez²) dA = 1 and the relation
-    h_mode = (-ez, ey) (before any axis flip), C_mode evaluates to
-    ∫(ey² + ez²) dA = 1.  We compute it explicitly here for correctness
-    with arbitrary mode profiles.
-
-    Returns
-    -------
-    float scalar
-        Real, positive normalization constant.
-    """
-    dA = dx * dx
-    # Cross product (e_mode × h*_mode) · n̂ = eu_mode * hv_mode - ev_mode * hu_mode
-    # Mode profiles are real, so conjugate is identity.
-    integrand = cfg.ey_profile * cfg.hz_profile - cfg.ez_profile * cfg.hy_profile
-    return jnp.sum(integrand) * dA
-
-
-def overlap_modal_amplitude(
-    state,
-    cfg: WaveguidePortConfig,
-    x_idx: int,
-    dx: float,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Compute forward and backward modal amplitudes via overlap integral.
-
-    Returns (a_forward, a_backward) as scalars.
-
-    The overlap integral for a mode with profile (e_mode, h_mode):
-      P_forward  = ∫∫ (E_sim × H*_mode) · n̂ dA
-      P_backward = ∫∫ (E*_mode × H_sim) · n̂ dA
-      a_forward  = 0.5 * (P_forward + P_backward) / C_mode
-      a_backward = 0.5 * (P_forward - P_backward) / C_mode
-
-    where C_mode = ∫∫ (e_mode × h*_mode) · n̂ dA (mode normalization).
-
-    For x-normal port: n̂ = x̂
-      (E × H) · x̂ = Ey*Hz - Ez*Hy
-
-    H fields are averaged to the E plane to handle Yee stagger.
-    """
-    dA = dx * dx
-
-    # Extract simulation fields on the aperture
-    e_u_sim = _plane_field(getattr(state, cfg.e_u_component), cfg, x_idx)
-    e_v_sim = _plane_field(getattr(state, cfg.e_v_component), cfg, x_idx)
-    h_u_sim = _plane_h_field(getattr(state, cfg.h_u_component), cfg, x_idx)
-    h_v_sim = _plane_h_field(getattr(state, cfg.h_v_component), cfg, x_idx)
-
-    # P_forward = ∫(E_sim × H*_mode) · n̂ dA
-    #   = ∫(eu_sim * hv_mode - ev_sim * hu_mode) dA
-    p_forward = jnp.sum(
-        e_u_sim * cfg.hz_profile - e_v_sim * cfg.hy_profile
-    ) * dA
-
-    # P_backward = ∫(E*_mode × H_sim) · n̂ dA
-    #   = ∫(eu_mode * hv_sim - ev_mode * hu_sim) dA
-    p_backward = jnp.sum(
-        cfg.ey_profile * h_v_sim - cfg.ez_profile * h_u_sim
-    ) * dA
-
-    c_mode = overlap_mode_normalization(cfg, dx)
-    # Guard against zero normalization
-    safe_c = jnp.where(jnp.abs(c_mode) > 1e-30, c_mode,
-                       1e-30 * jnp.ones_like(c_mode))
-
-    a_forward = 0.5 * (p_forward + p_backward) / safe_c
-    a_backward = 0.5 * (p_forward - p_backward) / safe_c
-
-    return a_forward, a_backward
 
 
 class OverlapDFTAccumulators(NamedTuple):
     """DFT accumulators for overlap-based modal extraction.
 
-    Stores frequency-domain forward/backward wave amplitudes at
-    reference and probe planes.
+    Stores the two raw cross-product DFTs (P1 = modal voltage, P2 = modal
+    current) at the reference and probe planes.  These reuse the same
+    time-domain quantities as the V/I accumulators but are combined
+    differently at extraction time.
     """
-    a_fwd_ref_dft: jnp.ndarray    # (n_freqs,) complex
-    a_bwd_ref_dft: jnp.ndarray    # (n_freqs,) complex
-    a_fwd_probe_dft: jnp.ndarray  # (n_freqs,) complex
-    a_bwd_probe_dft: jnp.ndarray  # (n_freqs,) complex
+    p1_ref_dft: jnp.ndarray     # (n_freqs,) complex — ∫(E_sim × h_mode)·n̂ dA at ref
+    p2_ref_dft: jnp.ndarray     # (n_freqs,) complex — ∫(e_mode × H_sim)·n̂ dA at ref
+    p1_probe_dft: jnp.ndarray   # (n_freqs,) complex — ∫(E_sim × h_mode)·n̂ dA at probe
+    p2_probe_dft: jnp.ndarray   # (n_freqs,) complex — ∫(e_mode × H_sim)·n̂ dA at probe
 
 
 def init_overlap_dft(freqs: jnp.ndarray) -> OverlapDFTAccumulators:
@@ -940,11 +877,35 @@ def init_overlap_dft(freqs: jnp.ndarray) -> OverlapDFTAccumulators:
     nf = len(freqs)
     zeros_c = jnp.zeros(nf, dtype=jnp.complex64)
     return OverlapDFTAccumulators(
-        a_fwd_ref_dft=zeros_c,
-        a_bwd_ref_dft=zeros_c,
-        a_fwd_probe_dft=zeros_c,
-        a_bwd_probe_dft=zeros_c,
+        p1_ref_dft=zeros_c,
+        p2_ref_dft=zeros_c,
+        p1_probe_dft=zeros_c,
+        p2_probe_dft=zeros_c,
     )
+
+
+def _overlap_cross_products(
+    state, cfg: WaveguidePortConfig, x_idx: int, dx: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Compute the two raw overlap cross-product integrals at a plane.
+
+    P1 = ∫(E_sim × h_mode) · n̂ dA  (= modal voltage V)
+    P2 = ∫(e_mode × H_sim) · n̂ dA  (= modal current I)
+
+    Returns (P1, P2) as scalars.
+    """
+    dA = dx * dx
+    e_u_sim = _plane_field(getattr(state, cfg.e_u_component), cfg, x_idx)
+    e_v_sim = _plane_field(getattr(state, cfg.e_v_component), cfg, x_idx)
+    h_u_sim = _plane_h_field(getattr(state, cfg.h_u_component), cfg, x_idx)
+    h_v_sim = _plane_h_field(getattr(state, cfg.h_v_component), cfg, x_idx)
+
+    # P1 = ∫(eu_sim * hv_mode - ev_sim * hu_mode) dA
+    p1 = jnp.sum(e_u_sim * cfg.hz_profile - e_v_sim * cfg.hy_profile) * dA
+    # P2 = ∫(eu_mode * hv_sim - ev_mode * hu_sim) dA
+    p2 = jnp.sum(cfg.ey_profile * h_v_sim - cfg.ez_profile * h_u_sim) * dA
+
+    return p1, p2
 
 
 def update_overlap_dft(
@@ -954,15 +915,16 @@ def update_overlap_dft(
     dt: float,
     dx: float,
 ) -> OverlapDFTAccumulators:
-    """Accumulate overlap-based DFT at reference and probe planes.
+    """Accumulate overlap cross-product DFTs at reference and probe planes.
 
-    Computes time-domain overlap modal amplitudes at each timestep and
-    accumulates the running DFT.
+    Computes P1 and P2 at each timestep and accumulates into running DFTs.
+    At extraction time these are combined with frequency-dependent mode
+    impedance to yield forward/backward modal amplitudes.
     """
     t = state.step * dt
 
-    a_fwd_ref, a_bwd_ref = overlap_modal_amplitude(state, cfg, cfg.ref_x, dx)
-    a_fwd_probe, a_bwd_probe = overlap_modal_amplitude(state, cfg, cfg.probe_x, dx)
+    p1_ref, p2_ref = _overlap_cross_products(state, cfg, cfg.ref_x, dx)
+    p1_probe, p2_probe = _overlap_cross_products(state, cfg, cfg.probe_x, dx)
 
     phase = jnp.exp(-1j * 2.0 * jnp.pi * cfg.freqs * t)
     weight = _dft_window_weight(
@@ -970,11 +932,31 @@ def update_overlap_dft(
     )
 
     return OverlapDFTAccumulators(
-        a_fwd_ref_dft=acc.a_fwd_ref_dft + a_fwd_ref * phase * dt * weight,
-        a_bwd_ref_dft=acc.a_bwd_ref_dft + a_bwd_ref * phase * dt * weight,
-        a_fwd_probe_dft=acc.a_fwd_probe_dft + a_fwd_probe * phase * dt * weight,
-        a_bwd_probe_dft=acc.a_bwd_probe_dft + a_bwd_probe * phase * dt * weight,
+        p1_ref_dft=acc.p1_ref_dft + p1_ref * phase * dt * weight,
+        p2_ref_dft=acc.p2_ref_dft + p2_ref * phase * dt * weight,
+        p1_probe_dft=acc.p1_probe_dft + p1_probe * phase * dt * weight,
+        p2_probe_dft=acc.p2_probe_dft + p2_probe * phase * dt * weight,
     )
+
+
+def _overlap_to_waves(
+    p1_dft: jnp.ndarray,
+    p2_dft: jnp.ndarray,
+    z_mode: jnp.ndarray,
+    c_stored: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Convert overlap cross-product DFTs to forward/backward modal amplitudes.
+
+    a_fwd(f) = 0.5 * (P1(f) + Z_mode(f) * P2(f)) / C_stored
+    a_bwd(f) = 0.5 * (P1(f) - Z_mode(f) * P2(f)) / C_stored
+
+    The Z_mode scaling compensates for the stored h_mode profiles being
+    un-normalized by impedance (h_stored = Z_mode * H_mode_physical).
+    """
+    safe_c = max(abs(c_stored), 1e-30)
+    a_fwd = 0.5 * (p1_dft + z_mode * p2_dft) / safe_c
+    a_bwd = 0.5 * (p1_dft - z_mode * p2_dft) / safe_c
+    return a_fwd, a_bwd
 
 
 def extract_waveguide_sparams_overlap(
@@ -986,12 +968,15 @@ def extract_waveguide_sparams_overlap(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Extract (S11, S21) from overlap-integral DFT accumulators.
 
+    Combines the stored cross-product DFTs with frequency-dependent mode
+    impedance and mode self-overlap normalization to produce S-parameters.
+
     Parameters
     ----------
     acc : OverlapDFTAccumulators
         Accumulated overlap DFTs from the simulation.
     cfg : WaveguidePortConfig
-        Port configuration (for frequency and cutoff info).
+        Port configuration (for frequency, cutoff, and mode profile info).
     ref_shift : float
         Metres to shift the reference-plane reporting location.
     probe_shift : float
@@ -1003,16 +988,24 @@ def extract_waveguide_sparams_overlap(
         S-parameters at the (optionally shifted) planes.
     """
     beta = _compute_beta(cfg.freqs, cfg.f_cutoff)
+    z_mode = _compute_mode_impedance(cfg.freqs, cfg.f_cutoff, cfg.mode_type)
+    c_stored = mode_self_overlap(cfg, cfg.dx)
 
-    # Port-local wave mapping: for positive-direction ports, incident = fwd
+    # Convert cross-product DFTs to global forward/backward waves
+    fwd_ref, bwd_ref = _overlap_to_waves(
+        acc.p1_ref_dft, acc.p2_ref_dft, z_mode, c_stored
+    )
+    fwd_probe, bwd_probe = _overlap_to_waves(
+        acc.p1_probe_dft, acc.p2_probe_dft, z_mode, c_stored
+    )
+
+    # Port-local wave mapping
     if cfg.direction.startswith("+"):
-        a_inc_ref = acc.a_fwd_ref_dft
-        a_out_ref = acc.a_bwd_ref_dft
-        a_inc_probe = acc.a_fwd_probe_dft
+        a_inc_ref, a_out_ref = fwd_ref, bwd_ref
+        a_inc_probe = fwd_probe
     else:
-        a_inc_ref = acc.a_bwd_ref_dft
-        a_out_ref = acc.a_fwd_ref_dft
-        a_inc_probe = acc.a_bwd_probe_dft
+        a_inc_ref, a_out_ref = bwd_ref, fwd_ref
+        a_inc_probe = bwd_probe
 
     # Apply reference-plane shifts
     a_inc_ref, a_out_ref = _shift_modal_waves(a_inc_ref, a_out_ref, beta, ref_shift)
