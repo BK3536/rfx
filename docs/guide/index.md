@@ -13,6 +13,7 @@
 | [Inverse Design](inverse_design.md) | Gradient-based optimization with jax.grad |
 | [Far-Field & RCS](farfield_rcs.md) | Radiation patterns, radar cross section |
 | [Advanced Features](advanced.md) | Dispersive materials, CFS-CPML, subpixel smoothing |
+| [Geometry & Limitations](geometry_and_limitations.md) | Primitives, CSG, what rfx can/can't do, tool comparison |
 | [Visualization & AI Analysis](visualization_and_analysis.md) | Plots, post-processing, LLM-assisted design, ML surrogates |
 
 ## Quick Links
