@@ -292,8 +292,8 @@ def test_two_port_reciprocity():
         materials = setup_lumped_port(grid, driven_port, materials)
         materials = setup_lumped_port(grid, passive_port, materials)
 
-        sprobe_driven = init_sparam_probe(grid, driven_port, freqs)
-        sprobe_passive = init_sparam_probe(grid, passive_port, freqs)
+        sprobe_driven = init_sparam_probe(grid, driven_port, freqs, dft_total_steps=num_steps)
+        sprobe_passive = init_sparam_probe(grid, passive_port, freqs, dft_total_steps=num_steps)
 
         for n in range(num_steps):
             t = n * dt

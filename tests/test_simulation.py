@@ -17,6 +17,7 @@ from rfx.core.yee import (
 )
 from rfx.boundaries.pec import apply_pec
 from rfx.boundaries.cpml import init_cpml, apply_cpml_e, apply_cpml_h
+from rfx.geometry.csg import Box
 from rfx.sources.sources import GaussianPulse, LumpedPort, setup_lumped_port
 from rfx.sources.tfsf import (
     init_tfsf, update_tfsf_1d_h, update_tfsf_1d_e, apply_tfsf_h, apply_tfsf_e,
@@ -30,7 +31,7 @@ from rfx.probes.probes import (
 )
 from rfx.sources.waveguide_port import (
     WaveguidePort, init_waveguide_port, inject_waveguide_port,
-    update_waveguide_port_probe, extract_waveguide_s21,
+    update_waveguide_port_probe, extract_waveguide_s21, extract_waveguide_s_matrix,
 )
 
 
@@ -152,6 +153,7 @@ def test_compiled_runner_dft_plane_matches_manual_loop():
         component="ez",
         freqs=jnp.array([2e9, 3e9, 4e9]),
         grid_shape=grid.shape,
+        dft_total_steps=n_steps,
     )
 
     result = run(grid, materials, n_steps, sources=[src], dft_planes=[plane_probe])
@@ -479,6 +481,7 @@ def test_compiled_runner_waveguide_port_matches_manual_loop():
     cfg0 = init_waveguide_port(
         port, dx, freqs, f0=f0, bandwidth=0.5,
         amplitude=1.0, probe_offset=15, ref_offset=3,
+        dft_total_steps=n_steps,
     )
 
     compiled = run(
@@ -511,6 +514,165 @@ def test_compiled_runner_waveguide_port_matches_manual_loop():
     max_err = np.max(np.abs(s21_compiled - s21_manual))
     print(f"\nCompiled waveguide vs manual loop max S21 error: {max_err:.2e}")
     assert max_err < 1e-3, f"Compiled waveguide runner diverged from manual loop: {max_err:.2e}"
+
+
+def test_extract_waveguide_s_matrix_two_port_reciprocity():
+    """Two-port waveguide S-matrix should be assembled one driven port at a time."""
+    a_wg = 0.04
+    b_wg = 0.02
+    length = 0.12
+    dx = 0.002
+    nc = 10
+    f0 = 6e9
+
+    grid = _CompiledWgGrid(length, a_wg, b_wg, dx, nc)
+    materials = init_materials(grid.shape)
+    freqs = jnp.linspace(4.5e9, 8e9, 12)
+    n_steps = grid.num_timesteps(num_periods=30)
+
+    port0 = WaveguidePort(
+        x_index=nc + 5,
+        y_slice=(0, grid.ny),
+        z_slice=(0, grid.nz),
+        a=(grid.ny - 1) * dx,
+        b=(grid.nz - 1) * dx,
+        mode=(1, 0),
+        mode_type="TE",
+        direction="+x",
+    )
+    port1 = WaveguidePort(
+        x_index=grid.nx - nc - 6,
+        y_slice=(0, grid.ny),
+        z_slice=(0, grid.nz),
+        a=(grid.ny - 1) * dx,
+        b=(grid.nz - 1) * dx,
+        mode=(1, 0),
+        mode_type="TE",
+        direction="-x",
+    )
+    cfg0 = init_waveguide_port(port0, dx, freqs, f0=f0, dft_total_steps=n_steps)
+    cfg1 = init_waveguide_port(port1, dx, freqs, f0=f0, dft_total_steps=n_steps)
+
+    S = np.array(
+        extract_waveguide_s_matrix(
+            grid,
+            materials,
+            [cfg0, cfg1],
+            n_steps,
+            boundary="cpml",
+            cpml_axes="x",
+            pec_axes="yz",
+        )
+    )
+    assert S.shape == (2, 2, 12)
+    s11 = S[0, 0, :]
+    s21 = S[1, 0, :]
+    s22 = S[1, 1, :]
+    s12 = S[0, 1, :]
+    recip_err = np.mean(
+        np.abs(np.abs(s21) - np.abs(s12))
+        / np.maximum(0.5 * (np.abs(s21) + np.abs(s12)), 1e-8)
+    )
+    assert np.mean(np.abs(s21)) > 0.5
+    assert np.mean(np.abs(s12)) > 0.5
+    assert np.mean(np.abs(s11)) < 0.5
+    assert np.mean(np.abs(s22)) < 0.5
+    assert recip_err < 0.2
+
+
+def test_extract_waveguide_s_matrix_mixed_normal_branch_reciprocity():
+    """Mixed x/y boundary ports in a PEC T-junction should remain reciprocal."""
+    dx = 0.002
+    nc = 10
+    domain = (0.12, 0.12, 0.02)
+    grid = Grid(freq_max=10e9, domain=domain, dx=dx, cpml_layers=nc, cpml_axes="xy")
+    materials = init_materials(grid.shape)
+
+    for box in (
+        Box((0.0, 0.0, 0.0), (0.12, 0.04, 0.02)),
+        Box((0.0, 0.08, 0.0), (0.04, 0.12, 0.02)),
+        Box((0.08, 0.08, 0.0), (0.12, 0.12, 0.02)),
+    ):
+        mask = box.mask(grid)
+        materials = materials._replace(
+            sigma=jnp.where(mask, 1e10, materials.sigma),
+        )
+
+    freqs = jnp.linspace(4.5e9, 8.0e9, 10)
+    n_steps = grid.num_timesteps(num_periods=30)
+    padx, pady, padz = grid.axis_pads
+    xslice = (padx + int(round(0.04 / dx)), padx + int(round(0.08 / dx)) + 1)
+    yslice = (pady + int(round(0.04 / dx)), pady + int(round(0.08 / dx)) + 1)
+    zslice = (padz, grid.nz - padz)
+
+    left = WaveguidePort(
+        x_index=nc + 5,
+        y_slice=yslice,
+        z_slice=zslice,
+        a=0.04,
+        b=0.02,
+        mode=(1, 0),
+        mode_type="TE",
+        direction="+x",
+        normal_axis="x",
+        u_slice=yslice,
+        v_slice=zslice,
+    )
+    right = WaveguidePort(
+        x_index=grid.nx - nc - 6,
+        y_slice=yslice,
+        z_slice=zslice,
+        a=0.04,
+        b=0.02,
+        mode=(1, 0),
+        mode_type="TE",
+        direction="-x",
+        normal_axis="x",
+        u_slice=yslice,
+        v_slice=zslice,
+    )
+    top = WaveguidePort(
+        x_index=grid.ny - nc - 6,
+        y_slice=None,
+        z_slice=None,
+        a=0.04,
+        b=0.02,
+        mode=(1, 0),
+        mode_type="TE",
+        direction="-y",
+        normal_axis="y",
+        u_slice=xslice,
+        v_slice=zslice,
+    )
+
+    cfgs = [
+        init_waveguide_port(port, dx, freqs, f0=6e9, ref_offset=3, probe_offset=15, dft_total_steps=n_steps)
+        for port in (left, right, top)
+    ]
+    S = np.array(
+        extract_waveguide_s_matrix(
+            grid,
+            materials,
+            cfgs,
+            n_steps,
+            boundary="cpml",
+            cpml_axes="xy",
+            pec_axes="z",
+        )
+    )
+
+    assert S.shape == (3, 3, 10)
+    assert np.mean(np.abs(S[1, 0, :])) > 0.2
+    assert np.mean(np.abs(S[2, 0, :])) > 0.15
+    assert np.mean(np.abs(S[0, 2, :])) > 0.15
+
+    for (recv_a, drive_a), (recv_b, drive_b) in (((2, 0), (0, 2)), ((2, 1), (1, 2)), ((1, 0), (0, 1))):
+        mag_a = np.abs(S[recv_a, drive_a, :])
+        mag_b = np.abs(S[recv_b, drive_b, :])
+        recip_err = np.mean(
+            np.abs(mag_a - mag_b) / np.maximum(0.5 * (mag_a + mag_b), 1e-8)
+        )
+        assert recip_err < 0.2
 
 
 def test_init_tfsf_rejects_impossible_geometry():

@@ -136,6 +136,7 @@ def test_gradient_through_dft_plane():
         component="ez",
         freqs=jnp.array([3e9]),
         grid_shape=grid.shape,
+        dft_total_steps=n_steps,
     )
 
     sigma = jnp.zeros(grid.shape, dtype=jnp.float32)

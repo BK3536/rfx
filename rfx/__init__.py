@@ -4,13 +4,15 @@ __version__ = "0.1.0"
 
 from rfx.grid import Grid
 from rfx.simulation import run, make_source, make_probe, make_port_source, SimResult
-from rfx.api import Simulation, Result, MATERIAL_LIBRARY
+from rfx.api import Simulation, Result, WaveguideSParamResult, WaveguideSMatrixResult, MATERIAL_LIBRARY
 from rfx.geometry.csg import Box, Sphere, Cylinder
 from rfx.sources.sources import GaussianPulse
 from rfx.sources.waveguide_port import (
     WaveguidePort, WaveguidePortConfig,
     init_waveguide_port, inject_waveguide_port, update_waveguide_port_probe,
-    extract_waveguide_s11, extract_waveguide_s21,
+    extract_waveguide_port_waves, extract_waveguide_s_matrix,
+    extract_waveguide_sparams, extract_waveguide_s11, extract_waveguide_s21,
+    waveguide_plane_positions,
 )
 from rfx.materials.debye import DebyePole
 from rfx.materials.lorentz import LorentzPole, drude_pole, lorentz_pole

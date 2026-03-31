@@ -21,7 +21,11 @@ import rfx
 from rfx.api import Simulation, Result, MATERIAL_LIBRARY, MaterialSpec
 from rfx.geometry.csg import Box, Sphere
 from rfx.sources.sources import GaussianPulse, LumpedPort, setup_lumped_port
-from rfx.sources.waveguide_port import extract_waveguide_s21
+from rfx.sources.waveguide_port import (
+    extract_waveguide_s21,
+    extract_waveguide_sparams,
+    waveguide_plane_positions,
+)
 from rfx.materials.debye import DebyePole
 from rfx.materials.lorentz import lorentz_pole
 from rfx.simulation import make_port_source, make_probe, run as low_level_run
@@ -223,6 +227,18 @@ def test_waveguide_port_rejects_unsupported_configuration():
     sim_geom.add(Box((0, 0, 0), (0.01, 0.01, 0.01)), material="vacuum")
     sim_geom.add_waveguide_port(0.01)
 
+    sim_multi = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    sim_multi.add_waveguide_port(0.01, direction="+x")
+    sim_multi.add_waveguide_port(0.09, direction="-x")
+    with pytest.raises(ValueError, match="Simulation.run\\(\\) supports only a single waveguide port"):
+        sim_multi.run(n_steps=40, compute_s_params=False)
+
 
 def test_waveguide_port_geometry_changes_response():
     """Waveguide API should support non-empty guide geometries."""
@@ -266,6 +282,507 @@ def test_waveguide_port_geometry_changes_response():
     s21_empty = np.array(extract_waveguide_s21(empty.waveguide_ports["wg0"]))
     s21_loaded = np.array(extract_waveguide_s21(loaded.waveguide_ports["wg0"]))
     assert np.max(np.abs(s21_empty - s21_loaded)) > 1e-3
+
+
+def test_waveguide_two_port_s_matrix_through_api():
+    """High-level API should assemble a true two-port waveguide S-matrix."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    sim.add_waveguide_port(
+        0.01,
+        direction="+x",
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8e9, 12),
+        f0=6e9,
+        ref_offset=3,
+        probe_offset=15,
+        name="left",
+    )
+    sim.add_waveguide_port(
+        0.09,
+        direction="-x",
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8e9, 12),
+        f0=6e9,
+        ref_offset=3,
+        probe_offset=15,
+        name="right",
+    )
+
+    result = sim.compute_waveguide_s_matrix(num_periods=30)
+
+    assert result.s_params.shape == (2, 2, 12)
+    assert result.port_names == ("left", "right")
+    assert result.port_directions == ("+x", "-x")
+    s11 = result.s_params[0, 0, :]
+    s21 = result.s_params[1, 0, :]
+    s22 = result.s_params[1, 1, :]
+    s12 = result.s_params[0, 1, :]
+    recip_err = np.mean(
+        np.abs(np.abs(s21) - np.abs(s12))
+        / np.maximum(0.5 * (np.abs(s21) + np.abs(s12)), 1e-8)
+    )
+    assert np.mean(np.abs(s21)) > 0.5
+    assert np.mean(np.abs(s12)) > 0.5
+    assert np.mean(np.abs(s11)) < 1.0
+    assert np.mean(np.abs(s22)) < 1.0
+    assert recip_err < 0.2
+
+
+def test_waveguide_multiport_same_direction_requires_shared_boundary_plane():
+    """Ports on one boundary direction must share a single boundary plane."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    sim.add_waveguide_port(0.01, direction="+x", name="left")
+    sim.add_waveguide_port(0.09, direction="+x", name="right")
+    with pytest.raises(ValueError, match="boundary \\+x must share one boundary plane"):
+        sim.compute_waveguide_s_matrix(n_steps=80)
+
+
+def test_waveguide_four_port_parallel_guides_through_api():
+    """Disjoint left/right apertures should support a 4-port parallel-guide S-matrix."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.10, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    sim.add(Box((0.0, 0.04, 0.0), (0.12, 0.06, 0.02)), material="pec")
+    common = dict(
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8.0e9, 10),
+        f0=6e9,
+        ref_offset=3,
+        probe_offset=15,
+    )
+    sim.add_waveguide_port(0.01, y_range=(0.00, 0.04), z_range=(0.00, 0.02), direction="+x", name="left_lo", **common)
+    sim.add_waveguide_port(0.01, y_range=(0.06, 0.10), z_range=(0.00, 0.02), direction="+x", name="left_hi", **common)
+    sim.add_waveguide_port(0.09, y_range=(0.00, 0.04), z_range=(0.00, 0.02), direction="-x", name="right_lo", **common)
+    sim.add_waveguide_port(0.09, y_range=(0.06, 0.10), z_range=(0.00, 0.02), direction="-x", name="right_hi", **common)
+
+    result = sim.compute_waveguide_s_matrix(num_periods=30)
+    S = result.s_params
+    assert S.shape == (4, 4, 10)
+    assert result.port_names == ("left_lo", "left_hi", "right_lo", "right_hi")
+
+    lo_tx = np.mean(np.abs(S[2, 0, :]))
+    hi_tx = np.mean(np.abs(S[3, 1, :]))
+    cross_lo_to_hi = np.mean(np.abs(S[3, 0, :]))
+    cross_hi_to_lo = np.mean(np.abs(S[2, 1, :]))
+
+    assert lo_tx > 0.2
+    assert hi_tx > 0.2
+    assert cross_lo_to_hi < lo_tx
+    assert cross_hi_to_lo < hi_tx
+
+
+def test_waveguide_same_boundary_overlapping_apertures_reject():
+    """Ports sharing a boundary plane must have disjoint apertures."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.10, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    common = dict(
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8.0e9, 8),
+        f0=6e9,
+        ref_offset=3,
+        probe_offset=15,
+    )
+    sim.add_waveguide_port(0.01, y_range=(0.00, 0.05), z_range=(0.00, 0.02), direction="+x", name="a", **common)
+    sim.add_waveguide_port(0.01, y_range=(0.04, 0.09), z_range=(0.00, 0.02), direction="+x", name="b", **common)
+    sim.add_waveguide_port(0.09, y_range=(0.00, 0.05), z_range=(0.00, 0.02), direction="-x", name="c", **common)
+    with pytest.raises(ValueError, match="same \\+x boundary must have disjoint apertures"):
+        sim.compute_waveguide_s_matrix(n_steps=120)
+
+
+def test_waveguide_two_port_y_normal_s_matrix_through_api():
+    """Y-normal end ports should produce a reciprocal two-port guide S-matrix."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.04, 0.12, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    common = dict(
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8e9, 12),
+        f0=6e9,
+        ref_offset=3,
+        probe_offset=15,
+    )
+    sim.add_waveguide_port(0.01, direction="+y", name="bottom", **common)
+    sim.add_waveguide_port(0.09, direction="-y", name="top", **common)
+
+    result = sim.compute_waveguide_s_matrix(num_periods=30)
+    s_bottom_top = result.s_params[1, 0, :]
+    s_top_bottom = result.s_params[0, 1, :]
+    recip_err = np.mean(
+        np.abs(np.abs(s_bottom_top) - np.abs(s_top_bottom))
+        / np.maximum(0.5 * (np.abs(s_bottom_top) + np.abs(s_top_bottom)), 1e-8)
+    )
+
+    assert result.port_directions == ("+y", "-y")
+    assert np.mean(np.abs(s_bottom_top)) > 0.5
+    assert np.mean(np.abs(s_top_bottom)) > 0.5
+    assert recip_err < 0.2
+
+
+def test_waveguide_branch_junction_mixed_normals_reciprocal_through_api():
+    """Mixed x/y boundary ports in a T-junction should remain reciprocal."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.12, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    sim.add(Box((0.0, 0.0, 0.0), (0.12, 0.04, 0.02)), material="pec")
+    sim.add(Box((0.0, 0.08, 0.0), (0.04, 0.12, 0.02)), material="pec")
+    sim.add(Box((0.08, 0.08, 0.0), (0.12, 0.12, 0.02)), material="pec")
+
+    common = dict(
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8.0e9, 10),
+        f0=6e9,
+        ref_offset=3,
+        probe_offset=15,
+        z_range=(0.00, 0.02),
+    )
+    sim.add_waveguide_port(0.01, y_range=(0.04, 0.08), direction="+x", name="left", **common)
+    sim.add_waveguide_port(0.11, y_range=(0.04, 0.08), direction="-x", name="right", **common)
+    sim.add_waveguide_port(0.11, x_range=(0.04, 0.08), direction="-y", name="top", **common)
+
+    result = sim.compute_waveguide_s_matrix(num_periods=30)
+    S = result.s_params
+    assert S.shape == (3, 3, 10)
+    assert result.port_directions == ("+x", "-x", "-y")
+
+    left_right = np.mean(np.abs(S[1, 0, :]))
+    left_top = np.mean(np.abs(S[2, 0, :]))
+    top_left = np.mean(np.abs(S[0, 2, :]))
+    top_right = np.mean(np.abs(S[1, 2, :]))
+
+    recip_left_right = np.mean(
+        np.abs(np.abs(S[1, 0, :]) - np.abs(S[0, 1, :]))
+        / np.maximum(0.5 * (np.abs(S[1, 0, :]) + np.abs(S[0, 1, :])), 1e-8)
+    )
+    recip_left_top = np.mean(
+        np.abs(np.abs(S[2, 0, :]) - np.abs(S[0, 2, :]))
+        / np.maximum(0.5 * (np.abs(S[2, 0, :]) + np.abs(S[0, 2, :])), 1e-8)
+    )
+    recip_right_top = np.mean(
+        np.abs(np.abs(S[2, 1, :]) - np.abs(S[1, 2, :]))
+        / np.maximum(0.5 * (np.abs(S[2, 1, :]) + np.abs(S[1, 2, :])), 1e-8)
+    )
+
+    assert left_right > 0.2
+    assert left_top > 0.15
+    assert top_left > 0.15
+    assert top_right > 0.15
+    assert recip_left_right < 0.2
+    assert recip_left_top < 0.2
+    assert recip_right_top < 0.2
+
+
+def test_waveguide_sparams_default_output():
+    """High-level result should expose calibrated waveguide S-params by default."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    sim.add_waveguide_port(
+        0.01,
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8e9, 12),
+        f0=6e9,
+        probe_offset=15,
+        ref_offset=3,
+        name="wg0",
+    )
+
+    result = sim.run(n_steps=300, compute_s_params=False)
+
+    assert result.waveguide_ports is not None
+    assert result.waveguide_sparams is not None
+    raw_cfg = result.waveguide_ports["wg0"]
+    calibrated = result.waveguide_sparams["wg0"]
+    raw_s11, raw_s21 = extract_waveguide_sparams(raw_cfg)
+    np.testing.assert_allclose(calibrated.s11, np.array(raw_s11))
+    np.testing.assert_allclose(calibrated.s21, np.array(raw_s21))
+    assert calibrated.calibration_preset == "measured"
+    assert calibrated.source_plane == pytest.approx(0.01)
+    assert calibrated.measured_reference_plane == pytest.approx(0.016)
+    assert calibrated.measured_probe_plane == pytest.approx(0.040)
+    assert calibrated.reference_plane == pytest.approx(0.016)
+    assert calibrated.probe_plane == pytest.approx(0.040)
+
+
+def test_waveguide_sparams_deembedded_planes():
+    """High-level API should de-embed waveguide S-params to requested planes."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    sim.add_waveguide_port(
+        0.01,
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8e9, 12),
+        f0=6e9,
+        probe_offset=15,
+        ref_offset=3,
+        reference_plane=0.012,
+        probe_plane=0.034,
+        name="wg0",
+    )
+
+    result = sim.run(n_steps=300, compute_s_params=False)
+
+    raw_cfg = result.waveguide_ports["wg0"]
+    calibrated = result.waveguide_sparams["wg0"]
+    expected_s11, expected_s21 = extract_waveguide_sparams(
+        raw_cfg,
+        ref_shift=0.012 - 0.016,
+        probe_shift=0.034 - 0.040,
+    )
+    np.testing.assert_allclose(calibrated.s11, np.array(expected_s11))
+    np.testing.assert_allclose(calibrated.s21, np.array(expected_s21))
+    assert calibrated.calibration_preset == "explicit"
+    assert calibrated.reference_plane == pytest.approx(0.012)
+    assert calibrated.probe_plane == pytest.approx(0.034)
+
+
+def test_waveguide_sparams_source_to_probe_preset():
+    """A calibration preset should auto-select practical reporting planes."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    sim.add_waveguide_port(
+        0.01,
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8e9, 12),
+        f0=6e9,
+        probe_offset=15,
+        ref_offset=3,
+        calibration_preset="source_to_probe",
+        name="wg0",
+    )
+
+    result = sim.run(n_steps=300, compute_s_params=False)
+
+    raw_cfg = result.waveguide_ports["wg0"]
+    calibrated = result.waveguide_sparams["wg0"]
+    expected_s11, expected_s21 = extract_waveguide_sparams(
+        raw_cfg,
+        ref_shift=0.01 - 0.016,
+        probe_shift=0.040 - 0.040,
+    )
+    assert calibrated.calibration_preset == "source_to_probe"
+    assert calibrated.reference_plane == pytest.approx(0.010)
+    assert calibrated.probe_plane == pytest.approx(0.040)
+    np.testing.assert_allclose(calibrated.s11, np.array(expected_s11))
+    np.testing.assert_allclose(calibrated.s21, np.array(expected_s21))
+
+
+def test_waveguide_sparams_report_snapped_planes_for_non_aligned_input():
+    """Result metadata should expose actual snapped planes, not raw requested x values."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    sim.add_waveguide_port(
+        0.0109,
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8e9, 12),
+        f0=6e9,
+        probe_offset=15,
+        ref_offset=3,
+        reference_plane=0.0131,
+        probe_plane=0.0331,
+        name="wg0",
+    )
+
+    result = sim.run(n_steps=300, compute_s_params=False)
+
+    raw_cfg = result.waveguide_ports["wg0"]
+    calibrated = result.waveguide_sparams["wg0"]
+    plane_positions = waveguide_plane_positions(raw_cfg)
+    expected_s11, expected_s21 = extract_waveguide_sparams(
+        raw_cfg,
+        ref_shift=0.0131 - plane_positions["reference"],
+        probe_shift=0.0331 - plane_positions["probe"],
+    )
+
+    assert plane_positions["source"] == pytest.approx(0.010)
+    assert plane_positions["reference"] == pytest.approx(0.016)
+    assert plane_positions["probe"] == pytest.approx(0.040)
+    assert calibrated.source_plane == pytest.approx(plane_positions["source"])
+    assert calibrated.measured_reference_plane == pytest.approx(plane_positions["reference"])
+    assert calibrated.measured_probe_plane == pytest.approx(plane_positions["probe"])
+    assert calibrated.reference_plane == pytest.approx(0.0131)
+    assert calibrated.probe_plane == pytest.approx(0.0331)
+    np.testing.assert_allclose(calibrated.s11, np.array(expected_s11))
+    np.testing.assert_allclose(calibrated.s21, np.array(expected_s21))
+
+
+def test_waveguide_port_allows_near_boundary_input_when_snapped_planes_fit():
+    """Near-boundary requested positions should validate against snapped planes."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    sim.add_waveguide_port(
+        0.0909,
+        mode=(1, 0),
+        mode_type="TE",
+        freqs=jnp.linspace(4.5e9, 8e9, 12),
+        f0=6e9,
+        probe_offset=15,
+        ref_offset=3,
+        name="wg0",
+    )
+
+    result = sim.run(n_steps=300, compute_s_params=False)
+    calibrated = result.waveguide_sparams["wg0"]
+    assert calibrated.source_plane == pytest.approx(0.090)
+    assert calibrated.measured_reference_plane == pytest.approx(0.096)
+    assert calibrated.measured_probe_plane == pytest.approx(0.120)
+
+
+def test_waveguide_port_rejects_invalid_reporting_plane():
+    """Waveguide calibration planes should stay inside the physical x-domain."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    with pytest.raises(ValueError, match="reference_plane .* outside the x-domain"):
+        sim.add_waveguide_port(0.01, reference_plane=-0.001)
+    with pytest.raises(ValueError, match="probe_plane .* outside the x-domain"):
+        sim.add_waveguide_port(0.01, probe_plane=0.121)
+    with pytest.raises(ValueError, match="probe_plane must be >?= reference_plane"):
+        sim.add_waveguide_port(0.01, reference_plane=0.03, probe_plane=0.02)
+    with pytest.raises(ValueError, match="calibration_preset must be one of"):
+        sim.add_waveguide_port(0.01, calibration_preset="bad")
+    with pytest.raises(ValueError, match="cannot be combined with explicit"):
+        sim.add_waveguide_port(0.01, calibration_preset="source_to_probe", reference_plane=0.02)
+
+
+def test_waveguide_port_rejects_nonfinite_numeric_inputs():
+    """High-level waveguide API should reject NaN/inf scalar inputs."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    with pytest.raises(ValueError, match="x_position must be finite"):
+        sim.add_waveguide_port(float("nan"))
+    with pytest.raises(ValueError, match="bandwidth must be finite"):
+        sim.add_waveguide_port(0.01, bandwidth=float("inf"))
+    with pytest.raises(ValueError, match="amplitude must be finite"):
+        sim.add_waveguide_port(0.01, amplitude=float("nan"))
+    with pytest.raises(ValueError, match="f0 must be finite"):
+        sim.add_waveguide_port(0.01, f0=float("inf"))
+    with pytest.raises(ValueError, match="reference_plane must be finite"):
+        sim.add_waveguide_port(0.01, reference_plane=float("nan"))
+
+
+def test_waveguide_port_rejects_invalid_integer_like_inputs():
+    """Offsets, mode, and frequency-count inputs should be integer-safe."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    with pytest.raises(ValueError, match="probe_offset and ref_offset must be positive integers"):
+        sim.add_waveguide_port(0.01, probe_offset=1.5)
+    with pytest.raises(ValueError, match="probe_offset and ref_offset must be positive integers"):
+        sim.add_waveguide_port(0.01, ref_offset=0)
+    with pytest.raises(ValueError, match="mode must be a tuple of two integers"):
+        sim.add_waveguide_port(0.01, mode=(1.0, 0))
+    with pytest.raises(ValueError, match="mode indices must be non-negative"):
+        sim.add_waveguide_port(0.01, mode=(-1, 0))
+    with pytest.raises(ValueError, match="n_freqs must be a positive integer"):
+        sim.add_waveguide_port(0.01, n_freqs=12.5)
+
+
+def test_waveguide_port_rejects_invalid_freq_arrays():
+    """Explicit frequency arrays should be finite, positive, and 1-D."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.12, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    with pytest.raises(ValueError, match="freqs must contain only finite values"):
+        sim.add_waveguide_port(0.01, freqs=jnp.array([5e9, jnp.nan]))
+    with pytest.raises(ValueError, match="freqs must contain only positive values"):
+        sim.add_waveguide_port(0.01, freqs=jnp.array([5e9, -1.0]))
+
+
+def test_waveguide_port_rejects_measurement_planes_outside_domain():
+    """Stored ref/probe measurement planes must stay inside the physical domain."""
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(0.03, 0.04, 0.02),
+        boundary="cpml",
+        cpml_layers=10,
+        dx=0.002,
+    )
+    with pytest.raises(ValueError, match="measurement planes exceed the physical x-domain after grid snapping"):
+        sim.add_waveguide_port(
+            0.024,
+            probe_offset=6,
+            ref_offset=3,
+        )
 
 
 def test_periodic_axes_reject_specialized_source_conflicts():
