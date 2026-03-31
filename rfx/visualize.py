@@ -208,3 +208,60 @@ def plot_time_series(
         ax.legend()
     ax.grid(True, alpha=0.3)
     return fig
+
+
+def plot_rcs(
+    rcs_result,
+    *,
+    freq_idx: int = 0,
+    phi_idx: int = 0,
+    polar: bool = True,
+    title: str | None = None,
+) -> object:
+    """Plot RCS pattern in polar or rectangular coordinates.
+
+    Parameters
+    ----------
+    rcs_result : RCSResult
+        Output from ``compute_rcs()``.
+    freq_idx : int
+        Frequency index to plot.
+    phi_idx : int
+        Phi cut index to plot.
+    polar : bool
+        If True, plot in polar coordinates. If False, rectangular.
+    title : str or None
+        Plot title.
+
+    Returns
+    -------
+    matplotlib Figure
+    """
+    _require_mpl()
+
+    theta = rcs_result.theta
+    rcs_db = rcs_result.rcs_dbsm[freq_idx, :, phi_idx]
+    freq_ghz = rcs_result.freqs[freq_idx] / 1e9
+
+    default_title = f"RCS Pattern ({freq_ghz:.2f} GHz)"
+    plot_title = title or default_title
+
+    if polar:
+        fig, ax = plt.subplots(figsize=(6, 6), subplot_kw={"projection": "polar"})
+        # Shift RCS values for polar display (clip and shift)
+        rcs_display = np.maximum(rcs_db, np.max(rcs_db) - 40)
+        rcs_display = rcs_display - np.min(rcs_display)
+        ax.plot(theta, rcs_display, linewidth=1.5)
+        # Mirror for symmetric display
+        ax.plot(-theta + 2 * np.pi, rcs_display, linewidth=1.5, alpha=0.5)
+        ax.set_title(plot_title)
+    else:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        theta_deg = np.degrees(theta)
+        ax.plot(theta_deg, rcs_db, linewidth=1.5)
+        ax.set_xlabel("Theta (degrees)")
+        ax.set_ylabel("RCS (dBsm)")
+        ax.set_title(plot_title)
+        ax.grid(True, alpha=0.3)
+
+    return fig
