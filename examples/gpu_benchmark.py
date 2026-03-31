@@ -30,8 +30,8 @@ def benchmark_forward(domain_m, dx, n_steps):
     mu_r = jnp.ones(grid.shape, dtype=jnp.float32)
     mats = MaterialArrays(eps_r=eps_r, sigma=sigma, mu_r=mu_r)
 
-    # Warmup (JIT compile)
-    _ = run(grid, mats, 2, sources=[src], probes=[probe], boundary="pec")
+    # Warmup (JIT compile) — must use same n_steps as timed run
+    _ = run(grid, mats, n_steps, sources=[src], probes=[probe], boundary="pec")
     jax.block_until_ready(_)
 
     # Timed run
