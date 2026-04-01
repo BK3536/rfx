@@ -113,6 +113,36 @@ def make_port_source(grid: Grid, port, materials: MaterialArrays, n_steps):
                       component=port.component, waveform=waveform)
 
 
+def make_wire_port_sources(grid, port, materials, n_steps):
+    """Create a list of SourceSpec for a multi-cell WirePort.
+
+    Each cell in the wire gets its own SourceSpec with the Cb-corrected
+    waveform scaled by 1/N_cells.  The port impedance must already be
+    folded into *materials* via ``setup_wire_port()``.
+
+    Returns
+    -------
+    list[SourceSpec]
+    """
+    from rfx.sources.sources import _wire_port_cells
+
+    cells = _wire_port_cells(grid, port)
+    n_cells = max(len(cells), 1)
+    times = jnp.arange(n_steps, dtype=jnp.float32) * grid.dt
+
+    specs = []
+    for cell in cells:
+        i, j, k = cell
+        eps = materials.eps_r[i, j, k] * EPS_0
+        sigma = materials.sigma[i, j, k]
+        loss = sigma * grid.dt / (2.0 * eps)
+        cb = (grid.dt / eps) / (1.0 + loss)
+        waveform = (cb / grid.dx) * jax.vmap(port.excitation)(times) / n_cells
+        specs.append(SourceSpec(i=i, j=j, k=k,
+                                component=port.component, waveform=waveform))
+    return specs
+
+
 def make_probe(grid: Grid, position, component):
     """Create a ProbeSpec from a physical position."""
     idx = grid.position_to_index(position)

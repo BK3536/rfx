@@ -119,3 +119,27 @@ def test_wire_port_cavity_resonance():
     assert np.max(np.abs(ez_trace)) > 1e-6, "Wire port should excite fields"
     assert not np.any(np.isnan(ez_trace)), "No NaN allowed"
     assert 2e9 < peak_f < 8e9, f"Peak {peak_f/1e9:.1f} GHz out of range"
+
+
+def test_wire_port_api_extent():
+    """High-level API: add_port with extent creates a WirePort under the hood."""
+    from rfx.api import Simulation
+    from rfx.sources.sources import GaussianPulse
+
+    sim = Simulation(freq_max=5e9, domain=(0.02, 0.02, 0.01), dx=0.001)
+    sim.add_port(
+        position=(0.01, 0.01, 0.002),
+        component="ez",
+        impedance=50.0,
+        waveform=GaussianPulse(f0=3e9),
+        extent=0.006,  # span from z=0.002 to z=0.008
+    )
+    sim.add_probe((0.01, 0.01, 0.005), "ez")
+    result = sim.run(n_steps=200)
+
+    # The probe should record non-zero field
+    ts = np.array(result.time_series[:, 0])
+    assert np.max(np.abs(ts)) > 1e-10, "Wire port via API should excite fields"
+    assert not np.any(np.isnan(ts)), "No NaN in time series"
+    print(f"\nAPI wire port test:")
+    print(f"  Max |Ez| at probe: {np.max(np.abs(ts)):.4e}")

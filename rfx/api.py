@@ -30,7 +30,7 @@ import numpy as np
 from rfx.grid import Grid, C0
 from rfx.core.yee import MaterialArrays, init_materials, EPS_0
 from rfx.geometry.csg import Shape, Box, Sphere, Cylinder, rasterize
-from rfx.sources.sources import GaussianPulse, LumpedPort, setup_lumped_port
+from rfx.sources.sources import GaussianPulse, LumpedPort, setup_lumped_port, WirePort, setup_wire_port
 from rfx.materials.debye import DebyePole, init_debye
 from rfx.materials.lorentz import LorentzPole, init_lorentz, drude_pole, lorentz_pole
 from rfx.materials.thin_conductor import ThinConductor, apply_thin_conductor
@@ -44,7 +44,7 @@ from rfx.sources.waveguide_port import (
     waveguide_plane_positions,
 )
 from rfx.simulation import (
-    make_source, make_probe, make_port_source,
+    make_source, make_probe, make_port_source, make_wire_port_sources,
     run as _run, run_until_decay as _run_until_decay,
     SimResult, SourceSpec, ProbeSpec, SnapshotSpec,
 )
@@ -148,6 +148,7 @@ class _PortEntry:
     component: str
     impedance: float
     waveform: GaussianPulse
+    extent: float | None = None
 
 
 @dataclass(frozen=True)
@@ -369,8 +370,9 @@ class Simulation:
         *,
         impedance: float = 50.0,
         waveform: GaussianPulse | None = None,
+        extent: float | None = None,
     ) -> "Simulation":
-        """Add a lumped port.
+        """Add a lumped port (single-cell) or wire port (multi-cell).
 
         Parameters
         ----------
@@ -378,6 +380,11 @@ class Simulation:
         component : "ex", "ey", or "ez"
         impedance : port impedance in ohms (default 50)
         waveform : excitation pulse (default: GaussianPulse at freq_max/2)
+        extent : float or None
+            When provided, the port spans from *position* along the port
+            axis by this distance (metres), creating a multi-cell WirePort.
+            For example ``component="ez", extent=0.0015`` spans the port
+            from ``z`` to ``z + 0.0015``.
         """
         if self._tfsf is not None:
             raise ValueError(
@@ -394,6 +401,7 @@ class Simulation:
         self._ports.append(_PortEntry(
             position=position, component=component,
             impedance=impedance, waveform=waveform,
+            extent=extent,
         ))
         return self
 
@@ -1262,13 +1270,28 @@ class Simulation:
         # Port sources — fold impedances into materials first
         lumped_ports: list[LumpedPort] = []
         for pe in self._ports:
-            lp = LumpedPort(
-                position=pe.position, component=pe.component,
-                impedance=pe.impedance, excitation=pe.waveform,
-            )
-            lumped_ports.append(lp)
-            materials = setup_lumped_port(grid, lp, materials)
-            sources.append(make_port_source(grid, lp, materials, n_steps))
+            if pe.extent is not None:
+                # Multi-cell wire port
+                axis_map = {"ex": 0, "ey": 1, "ez": 2}
+                axis = axis_map[pe.component]
+                end = list(pe.position)
+                end[axis] += pe.extent
+                wp = WirePort(
+                    start=pe.position, end=tuple(end),
+                    component=pe.component,
+                    impedance=pe.impedance, excitation=pe.waveform,
+                )
+                materials = setup_wire_port(grid, wp, materials)
+                sources.extend(make_wire_port_sources(grid, wp, materials, n_steps))
+            else:
+                # Single-cell lumped port
+                lp = LumpedPort(
+                    position=pe.position, component=pe.component,
+                    impedance=pe.impedance, excitation=pe.waveform,
+                )
+                lumped_ports.append(lp)
+                materials = setup_lumped_port(grid, lp, materials)
+                sources.append(make_port_source(grid, lp, materials, n_steps))
 
         for pe in self._probes:
             probes.append(make_probe(grid, pe.position, pe.component))
