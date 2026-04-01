@@ -1,0 +1,125 @@
+"""Example 4: Microstrip Patch Antenna at 2.4 GHz (WIP)
+
+Rectangular patch antenna on FR4 substrate with probe feed.
+
+STATUS: This example demonstrates the geometry setup but does NOT yet
+produce correct S11 results. The current lumped port is a single-cell
+voltage source that cannot properly excite the patch cavity mode
+through a multi-cell substrate.
+
+KNOWN LIMITATION: rfx needs a multi-cell lumped port (vertical wire port)
+to properly model probe-fed patch antennas. This is tracked as a v1.1
+feature. Workarounds:
+  - Use dx = substrate_thickness (loses z-resolution)
+  - Use the low-level API with manual multi-cell source injection
+  - Use waveguide port feeding instead of probe feed
+
+The analytical design values are correct and can be used as reference.
+"""
+
+import numpy as np
+import jax.numpy as jnp
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from rfx import Simulation, Box, GaussianPulse
+
+# ---- Design ----
+f0 = 2.4e9
+C0 = 3e8
+eps_r = 4.4
+h = 1.6e-3  # substrate thickness
+
+# Analytical patch dimensions
+W = C0 / (2 * f0) * np.sqrt(2 / (eps_r + 1))
+eps_eff = (eps_r + 1) / 2 + (eps_r - 1) / 2 * (1 + 12 * h / W) ** (-0.5)
+dL = 0.412 * h * ((eps_eff + 0.3) * (W / h + 0.264) /
+                   ((eps_eff - 0.258) * (W / h + 0.8)))
+L = C0 / (2 * f0 * np.sqrt(eps_eff)) - 2 * dL
+
+print(f"Patch: {L*1e3:.1f} x {W*1e3:.1f} mm, substrate h={h*1e3:.1f} mm")
+
+# ---- Grid: dx = h so 1 cell = substrate thickness ----
+dx = h  # 1.6 mm
+margin = 20e-3
+dom_x = L + 2 * margin
+dom_y = W + 2 * margin
+dom_z = h + 15e-3  # substrate + air
+
+sim = Simulation(
+    freq_max=4e9,
+    domain=(dom_x, dom_y, dom_z),
+    boundary="cpml",
+    cpml_layers=8,
+    dx=dx,
+)
+
+# ---- Materials & geometry ----
+sigma_fr4 = 2 * np.pi * f0 * 8.854e-12 * eps_r * 0.02  # tan_d=0.02
+sim.add_material("FR4", eps_r=eps_r, sigma=sigma_fr4)
+
+# Ground plane (z=0)
+sim.add(Box((0, 0, 0), (dom_x, dom_y, dx)), material="pec")
+# Substrate
+sim.add(Box((0, 0, 0), (dom_x, dom_y, h)), material="FR4")
+# Patch (z = h)
+px0, py0 = margin, margin
+sim.add(Box((px0, py0, h), (px0 + L, py0 + W, h + dx)), material="pec")
+
+# ---- Feed: lumped port at L/3 from edge, mid-substrate ----
+feed_x = px0 + L / 3
+feed_y = py0 + W / 2
+feed_z = h / 2  # single cell spans ground to patch
+
+sim.add_port(
+    position=(feed_x, feed_y, feed_z),
+    component="ez",
+    waveform=GaussianPulse(f0=f0, bandwidth=0.8),
+)
+
+print(f"Domain: {dom_x*1e3:.0f}x{dom_y*1e3:.0f}x{dom_z*1e3:.0f} mm, dx={dx*1e3:.1f} mm")
+print(f"Feed: ({feed_x*1e3:.1f}, {feed_y*1e3:.1f}, {feed_z*1e3:.1f}) mm")
+print("Running...")
+
+result = sim.run(n_steps=4000, compute_s_params=True,
+                 s_param_freqs=jnp.linspace(1.5e9, 3.5e9, 100))
+
+# ---- Results ----
+s11 = result.s_params[0, 0, :]
+freqs_GHz = np.array(result.freqs) / 1e9
+s11_dB = 20 * np.log10(np.maximum(np.abs(s11), 1e-10))
+
+mask = freqs_GHz > 1.5
+idx_min = np.argmin(s11_dB[mask])
+f_res = freqs_GHz[mask][idx_min]
+s11_min = s11_dB[mask][idx_min]
+
+print(f"\nResonance: {f_res:.2f} GHz (design: {f0/1e9:.1f} GHz)")
+print(f"S11 min:   {s11_min:.1f} dB")
+if f_res > 0:
+    print(f"Freq error: {abs(f_res - f0/1e9) / (f0/1e9) * 100:.1f}%")
+
+bw = s11_dB[mask] < -10
+if np.any(bw):
+    f_lo = freqs_GHz[mask][bw][0]
+    f_hi = freqs_GHz[mask][bw][-1]
+    print(f"-10dB BW:  {f_lo:.2f}-{f_hi:.2f} GHz ({(f_hi-f_lo)/f_res*100:.1f}%)")
+else:
+    print("-10dB BW:  not achieved")
+
+# ---- Plot ----
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.plot(freqs_GHz, s11_dB, 'b-', linewidth=1.5)
+ax.axhline(-10, color='r', ls='--', alpha=0.5, label='-10 dB')
+ax.axvline(f0/1e9, color='g', ls='--', alpha=0.5, label=f'Design {f0/1e9:.1f} GHz')
+ax.set_xlabel('Frequency (GHz)')
+ax.set_ylabel('|S11| (dB)')
+ax.set_title(f'Patch Antenna S11 (L={L*1e3:.1f}mm, W={W*1e3:.1f}mm, FR4)')
+ax.set_xlim(1.5, 3.5)
+ax.set_ylim(-25, 0)
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('examples/04_patch_antenna.png', dpi=150)
+print(f"Plot saved: examples/04_patch_antenna.png")
