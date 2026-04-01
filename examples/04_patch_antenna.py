@@ -1,9 +1,12 @@
-"""Example 4: Microstrip Patch Antenna at 2.4 GHz
+"""Example 4: Microstrip Patch Antenna at 2.4 GHz (WIP)
 
-Rectangular patch antenna on FR4 substrate with probe feed using WirePort
-(multi-cell lumped port spanning ground to patch through substrate).
+Rectangular patch antenna on FR4 substrate with probe feed using WirePort.
+Shows time-domain field spectrum at the feed point.
 
-Expected: S11 dip near 2.4 GHz.
+STATUS: WirePort excites the antenna correctly, but proper S11 extraction
+requires WirePort integration with the S-param probe machinery (incident/
+reflected wave separation). Currently shows the spectral content at the
+feed, not calibrated S11. WirePort S-param support is tracked for v1.1.
 """
 
 import numpy as np
