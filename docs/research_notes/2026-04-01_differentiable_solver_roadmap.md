@@ -87,36 +87,58 @@ Mode 3: IN-LOOP EVALUATOR (RL / active learning)
 
 ## 3. Feature Roadmap for AI/ML Novelty
 
-### Priority 1: Differentiable Geometry Parameterization (CRITICAL)
+### rfx's core promise
 
-**Problem**: Current optimization works on raw eps_r voxel arrays. Results are
-non-manufacturable, resolution-dependent, and don't generalize.
+> **rfx guarantees that `jax.grad` flows correctly through the entire FDTD
+> simulation for any RF/EM problem.** We provide the differentiable physics
+> engine and validate that it produces physically correct gradients. How users
+> parameterize their design is their responsibility.
 
-**Solution**: Level-set based differentiable geometry
+### Priority 1: Gradient Correctness & Validation (CORE)
+
+**rfx's job**: Ensure `jax.grad(objective)(eps_r)` produces correct, useful
+gradients across all supported physics paths.
+
+What rfx must guarantee:
+- AD gradient matches finite-difference within tolerance (already validated)
+- Gradient flows through CPML, dispersive materials, TFSF, waveguide ports
+- `jax.checkpoint` does not corrupt gradient values
+- Gradient is meaningful (non-zero, correct sign, stable across mesh refinements)
+
+What rfx must document:
+- **Where gradients work well**: smooth dielectric variations, lumped-port
+  S-param optimization, broadband objectives
+- **Where gradients are noisy**: sharp PEC boundaries (stairstepping creates
+  discontinuities in the objective landscape), very long simulations (gradient
+  vanishing/exploding), near-cutoff waveguide modes
+- **Known pitfalls**: float32 cancellation for small perturbations (use h≥1e-2
+  for FD validation), CPML layers are not optimizable (gradient is not
+  meaningful inside PML)
+
+**Effort**: Documentation + additional gradient validation tests
+
+### Priority 1b: Convenience Utilities for Common Optimization Patterns
+
+rfx does NOT own the user's parameterization, but can provide commonly-used
+**building blocks** as optional utilities (not core features):
 
 ```python
-# Current (voxel-level, non-parametric):
-eps_r = jnp.ones(grid.shape)
-eps_r = eps_r.at[10:20, :, :].set(4.0)
-jax.grad(objective)(eps_r)  # gradient per voxel
-
-# Needed (parametric, differentiable):
-params = {"width": 0.01, "gap": 0.002, "eps": 4.0}
-def parametric_to_eps(params, grid):
-    phi = level_set_from_params(params, grid)  # signed distance
-    return eps_min + (eps_max - eps_min) * sigmoid(beta * phi)
-jax.grad(lambda p: objective(parametric_to_eps(p, grid)))(params)
+from rfx.optim_utils import (
+    sigmoid_projection,    # smooth binary threshold
+    density_filter,        # spatial averaging for min feature size
+    binary_penalty,        # loss term pushing toward discrete eps values
+)
 ```
 
-**Why critical**: Without this, rfx is a "voxel optimizer" — with this, it
-becomes a "parametric RF design tool" that outputs manufacturable geometries.
+These are standard topology optimization tools from the structural mechanics
+community (Lazarov & Sigmund 2011, Wang et al. 2011), packaged as JAX-
+differentiable functions. They are **optional helpers**, not required for using
+rfx.
 
-**References**:
-- Li et al. (2022) — differentiable rasterizer for photonics
-- Hughes et al. (2018) — forward-mode AD for Maxwell's (Ceviche)
-- Minkov et al. (2020) — inverse design of photonic crystals via AD
-
-**Effort**: 2-3 days
+**Parameterization is the user's domain.** A waveguide filter designer
+parameterizes by iris widths and spacings. An antenna designer parameterizes
+by patch dimensions and feed position. A topology optimizer uses voxel-level
+eps_r. rfx serves all of them identically: `eps_r → FDTD → gradient`.
 
 ### Priority 2: Batch Simulation & Dataset Generation (Mode 2)
 
@@ -205,31 +227,27 @@ loss = s11_loss + 0.1 * fabrication_penalty(eps_r, min_feature=3*dx) \
 
 **Effort**: 4 hours
 
-### Priority 5: Fabrication-Aware Optimization
+### Priority 5: Gradient Behavior Documentation & Examples
 
-**Problem**: Optimized designs often have features smaller than manufacturing
-resolution or disconnected islands.
+**Problem**: Users need to understand when and how gradients are useful for
+their specific RF/EM problem.
 
-**Solution**: Density filtering + projection (standard topology optimization)
+**Solution**: Example-driven documentation showing gradient behavior in
+representative scenarios:
 
-```python
-from rfx.ml import density_filter, threshold_projection
+- **Example 1**: Dielectric slab matching — smooth objective, gradient
+  converges reliably in 10-20 iterations
+- **Example 2**: Waveguide iris filter — discrete geometry, gradient is
+  noisy near PEC edges, needs regularization
+- **Example 3**: Antenna feed optimization — mixed smooth/discrete, gradient
+  useful for continuous parameters (position, eps_r) but not for topology
+- **Example 4**: Multi-objective (S11 + bandwidth + size constraint) —
+  Pareto front exploration via weighted gradient
 
-def manufacturable_objective(latent):
-    # 1. Density filter (enforce min feature size)
-    filtered = density_filter(latent, radius=3*dx)
-    # 2. Threshold projection (push toward binary 0/1)
-    projected = threshold_projection(filtered, beta=8.0, eta=0.5)
-    # 3. Map to eps_r
-    eps_r = 1.0 + 5.0 * projected
-    return fdtd_objective(eps_r)
-```
+Each example documents: gradient quality, convergence behavior, common
+pitfalls, and recommended optimization strategy.
 
-**References**:
-- Lazarov & Sigmund (2011) — density filtering for topology optimization
-- Wang et al. (2011) — projection methods for feature size control
-
-**Effort**: 4 hours
+**Effort**: 1-2 days
 
 ---
 
@@ -281,21 +299,21 @@ Everything above the boundary is the user's domain.
 - [ ] Eigenmode solver (in progress)
 - [ ] Clean public repo
 
-### v1.1 (differentiable geometry)
-- [ ] Level-set parameterization with differentiable rasterization
-- [ ] Density filtering + threshold projection
-- [ ] Fabrication constraint utilities
-- [ ] Example: parametric waveguide filter optimization
-
-### v1.2 (ML data pipeline)
-- [ ] ParameterSweep + SimulationDataset
-- [ ] Batch simulation with jax.vmap
+### v1.1 (gradient validation + ML data pipeline)
+- [ ] Comprehensive gradient behavior documentation (where it works, pitfalls)
+- [ ] Additional gradient validation tests (dispersive, multi-port, large domain)
+- [ ] Optional topology optimization utilities (sigmoid, density filter, binary penalty)
+- [ ] ParameterSweep + SimulationDataset for batch data generation
 - [ ] HDF5/NumPy dataset export
-- [ ] Example: train surrogate model on rfx data
+- [ ] Example: gradient-based filter optimization with convergence analysis
 
-### v2.0 (RL/active learning)
-- [ ] Gymnasium environment wrapper
+### v1.2 (RL/environment interface)
+- [ ] Gymnasium-compatible environment wrapper
 - [ ] Reward shaping utilities
-- [ ] Example: RL agent designs antenna
-- [ ] Conformal PEC boundaries
-- [ ] Multi-GPU support
+- [ ] Example: active learning for antenna design space exploration
+- [ ] Conformal PEC boundaries (Dey-Mittra)
+
+### v2.0 (scale + accuracy)
+- [ ] Multi-GPU via JAX sharding
+- [ ] Subgridding for multi-scale problems
+- [ ] Nonlinear materials (Kerr, Raman via ADE)
