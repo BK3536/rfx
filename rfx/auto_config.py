@@ -68,9 +68,8 @@ def analyze_features(geometry: list, materials: dict, pec_threshold: float = 1e6
         else:
             max_eps_r = max(max_eps_r, eps_r)
             if sigma > 0 and eps_r > 1:
-                # Estimate loss tangent: tan_d ≈ sigma / (2*pi*f*eps_r*eps_0)
-                # Use a representative frequency (center of band) later
-                max_loss_tangent = max(max_loss_tangent, sigma / (eps_r * EPS_0))
+                # Store sigma and eps_r for later Q estimation (needs frequency)
+                max_loss_tangent = max(max_loss_tangent, sigma / eps_r)
 
         if hasattr(shape, "corner1") and hasattr(shape, "corner2"):
             c1, c2 = shape.corner1, shape.corner2
@@ -93,11 +92,10 @@ def analyze_features(geometry: list, materials: dict, pec_threshold: float = 1e6
     min_thickness = min(thicknesses) if thicknesses else 0.001
     max_extent = max(extents) if extents else 0.01
 
-    # Estimated Q from loss tangent
-    if max_loss_tangent > 0:
-        estimated_Q = 1.0 / max_loss_tangent  # Q ≈ 1/tan_d (rough)
-    else:
-        estimated_Q = 1000.0  # high Q if no loss specified
+    # Q estimate deferred — store raw sigma/eps_r ratio for later
+    # Full formula: tan_d = sigma/(2*pi*f*eps_r*eps_0), Q ≈ 1/tan_d
+    # Frequency will be supplied by auto_configure()
+    estimated_Q = max_loss_tangent  # raw ratio, NOT Q yet; see auto_configure()
 
     return FeatureInfo(
         min_thickness=min_thickness,
@@ -264,7 +262,13 @@ def auto_configure(
     t_source = 6 * tau
 
     # Ring-down time: Q / (pi * f_min)
-    Q_est = min(features.estimated_Q, 1000)  # cap at 1000 for practicality
+    # Compute Q from stored sigma/eps_r ratio + frequency:
+    # tan_d = (sigma/eps_r) / (2*pi*f_center*eps_0), Q ≈ 1/tan_d
+    if features.estimated_Q > 0:
+        tan_d = features.estimated_Q / (2 * math.pi * f_center * EPS_0)
+        Q_est = min(1.0 / tan_d if tan_d > 0 else 1000.0, 1000.0)
+    else:
+        Q_est = 1000.0  # no loss → high Q, cap at 1000
     t_ringdown = Q_est / (math.pi * f_min)
 
     t_total = t_source + t_ringdown
@@ -273,8 +277,9 @@ def auto_configure(
     if n_steps_override is not None:
         n_steps = n_steps_override
 
-    # Sanity check
-    if n_steps > 500000:
+    # Sanity cap
+    n_steps = min(n_steps, 100000)
+    if n_steps > 50000:
         warnings.append(f"Estimated {n_steps} steps (high Q={Q_est:.0f}). Consider reducing freq_range or using decay-based stopping.")
         n_steps = min(n_steps, 500000)
 
@@ -292,9 +297,11 @@ def auto_configure(
 
 
 def _round_dx(dx: float) -> float:
-    """Round dx to a nice value (1, 2, 2.5, or 5 × 10^n)."""
+    """Round dx DOWN to a nice value (never coarser than computed)."""
     exp = math.floor(math.log10(dx))
     mantissa = dx / (10 ** exp)
     nice = [1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0]
-    best = min(nice, key=lambda n: abs(n - mantissa))
+    # Pick the largest nice value <= mantissa
+    candidates = [n for n in nice if n <= mantissa + 1e-9]
+    best = candidates[-1] if candidates else nice[0]
     return best * (10 ** exp)
