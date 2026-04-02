@@ -1441,6 +1441,8 @@ class Simulation:
             time_series=result["time_series"],
             s_params=None,
             freqs=None,
+            dt=dt,
+            freq_range=(self._freq_max / 10, self._freq_max),
         )
 
     # ---- run ----
