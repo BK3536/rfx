@@ -85,7 +85,8 @@ def init_tfsf(
     polarization: str = "ez",
     direction: str = "+x",
     angle_deg: float = 0.0,
-) -> tuple[TFSFConfig, TFSFState]:
+    ny: int | None = None,
+) -> tuple:
     """Initialize TFSF source.
 
     Parameters
@@ -107,11 +108,32 @@ def init_tfsf(
     angle_deg : float
         Signed oblique angle in degrees away from the x-axis. Positive
         angles tilt toward the positive transverse axis.
+    ny : int | None
+        Number of cells in y (3D grid).  Required for oblique incidence
+        (2D auxiliary grid).  Ignored for normal incidence.
 
     Returns
     -------
-    (TFSFConfig, TFSFState)
+    (TFSFConfig, TFSFState) for normal incidence, or
+    (TFSF2DConfig, TFSF2DState) for oblique incidence (|angle_deg| > 0.01).
     """
+    # Dispatch to 2D auxiliary grid for oblique angles.
+    # The 2D grid naturally matches the 3D numerical dispersion at any angle.
+    if abs(angle_deg) > 0.01:
+        from rfx.sources.tfsf_2d import init_tfsf_2d
+        if ny is None:
+            ny = nx  # default: square grid
+        return init_tfsf_2d(
+            nx, ny, dx, dt,
+            cpml_layers=cpml_layers,
+            tfsf_margin=tfsf_margin,
+            f0=f0,
+            bandwidth=bandwidth,
+            amplitude=amplitude,
+            polarization=polarization,
+            direction=direction,
+            theta_deg=angle_deg,
+        )
     if nx <= 0:
         raise ValueError(f"nx must be positive, got {nx}")
     if cpml_layers < 0:
@@ -129,11 +151,8 @@ def init_tfsf(
     cos_theta = float(np.cos(theta))
     sin_theta = float(np.sin(theta))
 
-    # Dispersion-matched 1D cell size (Schneider / Taflove Ch. 5.6)
-    # For normal incidence cos_theta=1, so dx_1d=dx (unchanged behavior).
-    # Use dx_1d = dx to match the 3D grid Courant number exactly,
-    # preventing long-term phase drift in the 1D auxiliary grid.
-    # The oblique angle is encoded in the config for downstream use.
+    # 1D cell size: for normal incidence (the only case reaching this
+    # code path), dx_1d = dx.  Oblique angles dispatch to 2D above.
     dx_1d = dx
 
     # TFSF box boundaries in x
@@ -375,16 +394,18 @@ def _interp_1d_field(field_1d: jnp.ndarray, base_idx: int,
     return field_1d[idx_lo_c] * (1.0 - frac) + field_1d[idx_hi_c] * frac
 
 
-def apply_tfsf_e(state, cfg: TFSFConfig, tfsf_st: TFSFState,
-                  dx: float, dt: float):
+def apply_tfsf_e(state, cfg, tfsf_st, dx: float, dt: float):
     """Apply TFSF E-field correction (call AFTER update_e).
 
     Corrects Ez at x_lo and x_hi+1 where the H-curl stencil
     crosses the TFSF boundary.
 
-    For oblique incidence, uses 1D auxiliary grid values with
-    per-cell transverse phase delay (spatial interpolation).
+    Dispatches to 2D auxiliary grid version for oblique incidence.
     """
+    # Dispatch to 2D if config is TFSF2DConfig
+    if hasattr(cfg, 'n2x'):
+        from rfx.sources.tfsf_2d import apply_tfsf_2d_e
+        return apply_tfsf_2d_e(state, cfg, tfsf_st, dx, dt)
     coeff = dt / (EPS_0 * dx)
     i0 = cfg.i0
 
@@ -405,16 +426,18 @@ def apply_tfsf_e(state, cfg: TFSFConfig, tfsf_st: TFSFState,
     return state._replace(**{cfg.electric_component: e_field})
 
 
-def apply_tfsf_h(state, cfg: TFSFConfig, tfsf_st: TFSFState,
-                  dx: float, dt: float):
+def apply_tfsf_h(state, cfg, tfsf_st, dx: float, dt: float):
     """Apply TFSF H-field correction (call AFTER update_h).
 
     Corrects Hy at x_lo-1 and x_hi where the E-curl stencil
     crosses the TFSF boundary.
 
-    For oblique incidence, uses 1D auxiliary grid values with
-    per-cell transverse phase delay (spatial interpolation).
+    Dispatches to 2D auxiliary grid version for oblique incidence.
     """
+    # Dispatch to 2D if config is TFSF2DConfig
+    if hasattr(cfg, 'n2x'):
+        from rfx.sources.tfsf_2d import apply_tfsf_2d_h
+        return apply_tfsf_2d_h(state, cfg, tfsf_st, dx, dt)
     coeff = dt / (MU_0 * dx)
     i0 = cfg.i0
 

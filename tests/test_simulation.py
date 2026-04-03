@@ -384,6 +384,7 @@ def test_compiled_runner_tfsf_oblique_matches_manual_loop():
         amplitude=1.0,
         polarization="ez",
         angle_deg=30.0,
+        ny=grid.ny,
     )
     probe = ProbeSpec(
         i=tfsf_cfg.x_lo + 5,
@@ -403,6 +404,11 @@ def test_compiled_runner_tfsf_oblique_matches_manual_loop():
         probes=[probe],
     )
 
+    # Detect 2D auxiliary grid for oblique incidence
+    _is_2d = hasattr(tfsf_cfg, 'n2x')
+    if _is_2d:
+        from rfx.sources.tfsf_2d import update_tfsf_2d_h, update_tfsf_2d_e
+
     state = init_state(grid.shape)
     cp, cpml_state = init_cpml(grid)
     tfsf_state = tfsf_state0
@@ -413,13 +419,19 @@ def test_compiled_runner_tfsf_oblique_matches_manual_loop():
         state = update_h(state, materials, grid.dt, grid.dx, periodic=periodic)
         state = apply_tfsf_h(state, tfsf_cfg, tfsf_state, grid.dx, grid.dt)
         state, cpml_state = apply_cpml_h(state, cp, cpml_state, grid, axes="x")
-        tfsf_state = update_tfsf_1d_h(tfsf_cfg, tfsf_state, grid.dx, grid.dt)
+        if _is_2d:
+            tfsf_state = update_tfsf_2d_h(tfsf_cfg, tfsf_state, grid.dx, grid.dt)
+        else:
+            tfsf_state = update_tfsf_1d_h(tfsf_cfg, tfsf_state, grid.dx, grid.dt)
 
         state = update_e(state, materials, grid.dt, grid.dx, periodic=periodic)
         state = apply_tfsf_e(state, tfsf_cfg, tfsf_state, grid.dx, grid.dt)
         state, cpml_state = apply_cpml_e(state, cp, cpml_state, grid, axes="x")
         state = apply_pec(state, axes="x")
-        tfsf_state = update_tfsf_1d_e(tfsf_cfg, tfsf_state, grid.dx, grid.dt, t)
+        if _is_2d:
+            tfsf_state = update_tfsf_2d_e(tfsf_cfg, tfsf_state, grid.dx, grid.dt, t)
+        else:
+            tfsf_state = update_tfsf_1d_e(tfsf_cfg, tfsf_state, grid.dx, grid.dt, t)
         manual_ts.append(float(state.ez[probe.i, probe.j, probe.k]))
 
     compiled_ts = np.array(compiled.time_series[:, 0])

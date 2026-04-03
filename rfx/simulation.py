@@ -500,6 +500,11 @@ def run(
         tfsf_cfg, tfsf_state = tfsf
         carry_init["tfsf"] = tfsf_state
 
+        # Detect 2D auxiliary grid (oblique incidence)
+        _tfsf_is_2d = hasattr(tfsf_cfg, 'n2x')
+        if _tfsf_is_2d:
+            from rfx.sources.tfsf_2d import update_tfsf_2d_h, update_tfsf_2d_e
+
     if use_ntff:
         from rfx.farfield import init_ntff_data, accumulate_ntff
         carry_init["ntff"] = init_ntff_data(ntff)
@@ -580,7 +585,10 @@ def run(
             st, cpml_new = apply_cpml_h(
                 st, cpml_params, carry["cpml"], grid, cpml_axes)
         if use_tfsf:
-            tfsf_h_state = update_tfsf_1d_h(tfsf_cfg, carry["tfsf"], dx, dt)
+            if _tfsf_is_2d:
+                tfsf_h_state = update_tfsf_2d_h(tfsf_cfg, carry["tfsf"], dx, dt)
+            else:
+                tfsf_h_state = update_tfsf_1d_h(tfsf_cfg, carry["tfsf"], dx, dt)
 
         st, debye_new, lorentz_new = _update_e_with_optional_dispersion(
             st,
@@ -615,7 +623,10 @@ def run(
         t = _step_idx.astype(jnp.float32) * dt
 
         if use_tfsf:
-            tfsf_new = update_tfsf_1d_e(tfsf_cfg, tfsf_h_state, dx, dt, t)
+            if _tfsf_is_2d:
+                tfsf_new = update_tfsf_2d_e(tfsf_cfg, tfsf_h_state, dx, dt, t)
+            else:
+                tfsf_new = update_tfsf_1d_e(tfsf_cfg, tfsf_h_state, dx, dt, t)
 
         if use_waveguide_ports:
             from rfx.sources.waveguide_port import (
@@ -901,6 +912,11 @@ def run_until_decay(
         tfsf_cfg, tfsf_state = tfsf
         carry["tfsf"] = tfsf_state
 
+        # Detect 2D auxiliary grid (oblique incidence)
+        _tfsf_is_2d = hasattr(tfsf_cfg, 'n2x')
+        if _tfsf_is_2d:
+            from rfx.sources.tfsf_2d import update_tfsf_2d_h, update_tfsf_2d_e
+
     if use_ntff:
         from rfx.farfield import init_ntff_data, accumulate_ntff
         carry["ntff"] = init_ntff_data(ntff)
@@ -951,7 +967,10 @@ def run_until_decay(
             st, cpml_new = apply_cpml_h(
                 st, cpml_params, carry_in["cpml"], grid, cpml_axes)
         if use_tfsf:
-            tfsf_h_state = update_tfsf_1d_h(tfsf_cfg, carry_in["tfsf"], dx, dt)
+            if _tfsf_is_2d:
+                tfsf_h_state = update_tfsf_2d_h(tfsf_cfg, carry_in["tfsf"], dx, dt)
+            else:
+                tfsf_h_state = update_tfsf_1d_h(tfsf_cfg, carry_in["tfsf"], dx, dt)
 
         st, debye_new, lorentz_new = _update_e_with_optional_dispersion(
             st, materials, dt, dx,
@@ -982,7 +1001,10 @@ def run_until_decay(
         t = step_idx.astype(jnp.float32) * dt
 
         if use_tfsf:
-            tfsf_new = update_tfsf_1d_e(tfsf_cfg, tfsf_h_state, dx, dt, t)
+            if _tfsf_is_2d:
+                tfsf_new = update_tfsf_2d_e(tfsf_cfg, tfsf_h_state, dx, dt, t)
+            else:
+                tfsf_new = update_tfsf_1d_e(tfsf_cfg, tfsf_h_state, dx, dt, t)
 
         if use_waveguide_ports:
             from rfx.sources.waveguide_port import (
