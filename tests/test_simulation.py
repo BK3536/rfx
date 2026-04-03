@@ -21,6 +21,7 @@ from rfx.geometry.csg import Box
 from rfx.sources.sources import GaussianPulse, LumpedPort, setup_lumped_port
 from rfx.sources.tfsf import (
     init_tfsf, update_tfsf_1d_h, update_tfsf_1d_e, apply_tfsf_h, apply_tfsf_e,
+    is_tfsf_2d,
 )
 from rfx.simulation import (
     SourceSpec, ProbeSpec, SimResult,
@@ -405,7 +406,7 @@ def test_compiled_runner_tfsf_oblique_matches_manual_loop():
     )
 
     # Detect 2D auxiliary grid for oblique incidence
-    _is_2d = hasattr(tfsf_cfg, 'n2x')
+    _is_2d = is_tfsf_2d(tfsf_cfg)
     if _is_2d:
         from rfx.sources.tfsf_2d import update_tfsf_2d_h, update_tfsf_2d_e
 

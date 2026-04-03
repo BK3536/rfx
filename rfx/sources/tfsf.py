@@ -34,6 +34,12 @@ import numpy as np
 from rfx.core.yee import EPS_0, MU_0
 
 
+def is_tfsf_2d(cfg) -> bool:
+    """Check if TFSF config uses 2D auxiliary grid (for oblique incidence)."""
+    from rfx.sources.tfsf_2d import TFSF2DConfig
+    return isinstance(cfg, TFSF2DConfig)
+
+
 class TFSFState(NamedTuple):
     """1D auxiliary FDTD state for TFSF plane-wave generation."""
     e1d: jnp.ndarray   # Ez incident (n_1d,)
@@ -169,9 +175,8 @@ def init_tfsf(
     # 1D auxiliary grid: spans x_lo..x_hi + margins for source + CPML
     n_cpml_1d = 20
     n_tfsf = x_hi - x_lo + 2   # +2 for the correction at x_hi+1
-    # For oblique incidence, use a larger margin so the 1D CPML reflection
-    # fills the incident spectrum (needed for the spectral Fresnel analysis).
-    n_margin = 10 if abs(angle_deg) < 0.01 else min(n_tfsf, 400)
+    # Normal incidence only reaches this code path (oblique dispatches to 2D above).
+    n_margin = 10
     n_1d = n_cpml_1d + n_margin + n_tfsf + n_margin + n_cpml_1d
 
     # i0: 1D index that maps to 3D x_lo
@@ -339,61 +344,6 @@ def update_tfsf_1d_e(cfg: TFSFConfig, st: TFSFState, dx: float,
     return st._replace(e1d=e1d, psi_e_lo=psi_e_lo, psi_e_hi=psi_e_hi, step=st.step + 1)
 
 
-def _tfsf_waveform(cfg: TFSFConfig, t: jnp.ndarray) -> jnp.ndarray:
-    """Differentiated Gaussian source waveform at time t."""
-    arg = (t - cfg.src_t0) / cfg.src_tau
-    return cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
-
-
-def _analytic_incident_e_plane(cfg: TFSFConfig, state_shape, x_pos: float,
-                               t: jnp.ndarray, dx: float) -> jnp.ndarray:
-    """Analytic oblique incident E on an x-normal plane."""
-    ny, nz = state_shape[1], state_shape[2]
-    if cfg.transverse_axis == "y":
-        coords = (jnp.arange(ny, dtype=jnp.float32) - cfg.grid_pad) * dx
-        phase = cfg.direction_sign * x_pos * cfg.cos_theta + coords[:, None] * cfg.sin_theta
-        delayed = t - phase / 299_792_458.0
-        return jnp.broadcast_to(_tfsf_waveform(cfg, delayed), (ny, nz))
-    coords = (jnp.arange(nz, dtype=jnp.float32) - cfg.grid_pad) * dx
-    phase = cfg.direction_sign * x_pos * cfg.cos_theta + coords[None, :] * cfg.sin_theta
-    delayed = t - phase / 299_792_458.0
-    return jnp.broadcast_to(_tfsf_waveform(cfg, delayed), (ny, nz))
-
-
-def _analytic_incident_h_plane(cfg: TFSFConfig, state_shape, x_pos: float,
-                               t: jnp.ndarray, dx: float) -> jnp.ndarray:
-    """Analytic oblique incident H on an x-normal plane."""
-    eta0 = np.sqrt(MU_0 / EPS_0)
-    e_plane = _analytic_incident_e_plane(cfg, state_shape, x_pos, t, dx)
-    h_scale = -cfg.curl_sign * cfg.direction_sign * cfg.cos_theta / eta0
-    return h_scale * e_plane
-
-
-def _interp_1d_field(field_1d: jnp.ndarray, base_idx: int,
-                     offsets: jnp.ndarray) -> jnp.ndarray:
-    """Linearly interpolate 1D field at base_idx + offsets.
-
-    Parameters
-    ----------
-    field_1d : (n_1d,) array
-    base_idx : int
-        Base index in the 1D grid.
-    offsets : (n_trans,) array
-        Fractional offsets from base_idx for each transverse cell.
-
-    Returns
-    -------
-    (n_trans,) interpolated values
-    """
-    pos = base_idx + offsets
-    idx_lo = jnp.floor(pos).astype(jnp.int32)
-    frac = pos - idx_lo.astype(jnp.float32)
-    n = field_1d.shape[0]
-    idx_lo_c = jnp.clip(idx_lo, 0, n - 1)
-    idx_hi_c = jnp.clip(idx_lo + 1, 0, n - 1)
-    return field_1d[idx_lo_c] * (1.0 - frac) + field_1d[idx_hi_c] * frac
-
-
 def apply_tfsf_e(state, cfg, tfsf_st, dx: float, dt: float):
     """Apply TFSF E-field correction (call AFTER update_e).
 
@@ -403,7 +353,7 @@ def apply_tfsf_e(state, cfg, tfsf_st, dx: float, dt: float):
     Dispatches to 2D auxiliary grid version for oblique incidence.
     """
     # Dispatch to 2D if config is TFSF2DConfig
-    if hasattr(cfg, 'n2x'):
+    if is_tfsf_2d(cfg):
         from rfx.sources.tfsf_2d import apply_tfsf_2d_e
         return apply_tfsf_2d_e(state, cfg, tfsf_st, dx, dt)
     coeff = dt / (EPS_0 * dx)
@@ -435,7 +385,7 @@ def apply_tfsf_h(state, cfg, tfsf_st, dx: float, dt: float):
     Dispatches to 2D auxiliary grid version for oblique incidence.
     """
     # Dispatch to 2D if config is TFSF2DConfig
-    if hasattr(cfg, 'n2x'):
+    if is_tfsf_2d(cfg):
         from rfx.sources.tfsf_2d import apply_tfsf_2d_h
         return apply_tfsf_2d_h(state, cfg, tfsf_st, dx, dt)
     coeff = dt / (MU_0 * dx)

@@ -26,6 +26,7 @@ def _run_tfsf_leakage(angle_deg, nx=80, ny=80, nz=3, n_steps=500,
     from rfx.sources.tfsf import (
         init_tfsf, apply_tfsf_e, apply_tfsf_h,
         update_tfsf_1d_h, update_tfsf_1d_e,
+        is_tfsf_2d,
     )
     from rfx.sources.tfsf_2d import update_tfsf_2d_h, update_tfsf_2d_e
 
@@ -47,7 +48,7 @@ def _run_tfsf_leakage(angle_deg, nx=80, ny=80, nz=3, n_steps=500,
     materials = init_materials((nx, ny, nz))
     sim_state = init_state((nx, ny, nz))
     periodic = (False, True, True)
-    is_2d = hasattr(cfg, 'n2x')
+    is_2d = is_tfsf_2d(cfg)
 
     for step in range(n_steps):
         t = step * dt

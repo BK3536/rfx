@@ -25,6 +25,7 @@ from rfx.sources.sources import GaussianPulse
 from rfx.sources.tfsf import (
     init_tfsf, update_tfsf_1d_h, update_tfsf_1d_e,
     apply_tfsf_e, apply_tfsf_h,
+    is_tfsf_2d,
 )
 from rfx.probes.probes import init_dft_plane_probe
 
@@ -234,7 +235,7 @@ def test_oblique_tfsf_fresnel():
     )
 
     # Detect 2D auxiliary grid for oblique incidence
-    _is_2d = hasattr(tfsf_cfg, 'n2x')
+    _is_2d = is_tfsf_2d(tfsf_cfg)
     if _is_2d:
         from rfx.sources.tfsf_2d import update_tfsf_2d_h, update_tfsf_2d_e
 
