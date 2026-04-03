@@ -183,29 +183,34 @@ def _shared_node_coupling_3d(state_c_fields, state_f_fields, config):
     nj = config.fj_hi - fj
     nk = config.fk_hi - fk
 
-    # Impedance-matched coupling: the interface should transmit waves
-    # transparently. Weight = CFL number (Courant factor) ensures the
-    # coupling strength matches the wave propagation speed.
-    # For the fine grid CFL: courant = dt * C0 * sqrt(3) / dx_f
-    import numpy as _np
-    C0_val = 1.0 / _np.sqrt(EPS_0 * MU_0)
-    courant_f = config.dt * C0_val * _np.sqrt(3) / config.dx_f
-    # Coarse and fine get symmetric coupling (impedance matching)
-    alpha = min(courant_f, 0.5)  # cap at 0.5 for stability
+    # SBP-SAT penalty from Cheng et al. 2025 energy analysis.
+    # ΔE = Cb × (2τ/dx) × (E_other - E_self) at interface.
+    # τ = 0.5 is the minimum for energy stability (dE/dt ≤ 0).
+    # Cb = dt/eps for vacuum. The penalty enters the semi-discrete
+    # equation and is integrated by leapfrog.
+    tau = config.tau  # default 0.5
+    dt = config.dt
+
+    # Cb for vacuum at the interface (assumes vacuum at interface zone)
+    cb_vac = dt / EPS_0
+
+    # SAT penalty coefficients: Cb × 2τ/dx
+    # These are large (~98 for standard CFL) but energy-stable per paper.
+    # Cap at 0.5 to avoid numerical overshoot from interpolation errors.
+    alpha_c = min(cb_vac * 2 * tau / config.dx_c, 0.5)
+    alpha_f = min(cb_vac * 2 * tau / config.dx_f, 0.5)
 
     def _sat_couple(ec_arr, ef_arr, c_slice, f_slice,
                     nj_ds, nk_ds, ny_up, nz_up):
-        """Impedance-matched interface coupling."""
+        """SBP-SAT penalty coupling (additive correction)."""
         ec_face = ec_arr[c_slice]
         ef_face = ef_arr[f_slice]
         ef_ds = _downsample_2d(ef_face, nj_ds, nk_ds, ratio)
         ec_us = _upsample_2d(ec_face, ny_up, nz_up, ratio)
 
-        # Symmetric blend: both sides move toward each other
-        ec_arr = ec_arr.at[c_slice].set(
-            (1 - alpha) * ec_face + alpha * ef_ds)
-        ef_arr = ef_arr.at[f_slice].set(
-            (1 - alpha) * ef_face + alpha * ec_us)
+        # Additive penalty (not replacement)
+        ec_arr = ec_arr.at[c_slice].add(alpha_c * (ef_ds - ec_face))
+        ef_arr = ef_arr.at[f_slice].add(alpha_f * (ec_us - ef_face))
         return ec_arr, ef_arr
 
     # === x-lo face (i = fi_lo): tangential = Ey, Ez ===

@@ -1188,7 +1188,12 @@ class Simulation:
             )
 
         grid = self._build_grid()
-        base_materials, debye_spec, lorentz_spec, _ = self._assemble_materials(grid)
+        base_materials, debye_spec, lorentz_spec, pec_mask_wg = self._assemble_materials(grid)
+        # Waveguide S-matrix runner doesn't support pec_mask yet.
+        # Fold PEC mask back into high sigma for compatibility.
+        if pec_mask_wg is not None:
+            base_materials = base_materials._replace(
+                sigma=jnp.where(pec_mask_wg, 1e10, base_materials.sigma))
         materials = base_materials
         if n_steps is None:
             n_steps = grid.num_timesteps(num_periods=num_periods)

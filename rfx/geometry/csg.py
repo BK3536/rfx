@@ -44,15 +44,16 @@ class Box:
         z = iz * dx
 
         # For each axis: if extent <= dx (thin feature), snap to single
-        # cell nearest to corner_lo. Otherwise, standard containment.
+        # cell nearest to corner_lo. Otherwise, inclusive containment.
         def _axis_mask(coords, lo, hi):
             extent = hi - lo
             if extent <= dx * 1.01:
                 # Thin feature (≤ 1 cell): snap to cell nearest lo
                 return jnp.abs(coords - lo) < dx * 0.51
             else:
-                # Thick feature: standard [lo, hi) containment
-                return (coords >= lo) & (coords < hi)
+                # Thick feature: standard inclusive [lo, hi].
+                # Cell center must be inside the box boundaries.
+                return (coords >= lo) & (coords <= hi)
 
         mx = _axis_mask(x, self.corner_lo[0], self.corner_hi[0])
         my = _axis_mask(y, self.corner_lo[1], self.corner_hi[1])
