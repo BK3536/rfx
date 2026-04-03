@@ -1,0 +1,235 @@
+"""Subgridded (SBP-SAT) run path extracted from Simulation."""
+
+from __future__ import annotations
+
+import numpy as np
+import jax
+import jax.numpy as jnp
+
+from rfx.core.yee import MaterialArrays, EPS_0, MU_0
+from rfx.grid import Grid
+
+
+def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse,
+                        n_steps):
+    """Run simulation using SBP-SAT subgridding (JIT-compiled).
+
+    Parameters
+    ----------
+    sim : Simulation
+        The Simulation instance (read-only access to its fields).
+    grid_coarse : Grid
+        Coarse uniform grid.
+    base_materials_coarse : MaterialArrays
+        Material arrays on the coarse grid.
+    pec_mask_coarse : jnp.ndarray or None
+        PEC mask on the coarse grid.
+    n_steps : int
+        Number of timesteps.
+
+    Returns
+    -------
+    Result
+    """
+    from rfx.api import Result
+    from rfx.subgridding.sbp_sat_3d import SubgridConfig3D
+    from rfx.subgridding.jit_runner import run_subgridded_jit as _run_sg
+
+    ref = sim._refinement
+    ratio = ref["ratio"]
+    z_lo, z_hi = ref["z_range"]
+    dx_c = grid_coarse.dx
+    dx_f = dx_c / ratio
+    xy_margin = ref["xy_margin"] if ref["xy_margin"] is not None else 2 * dx_c
+
+    # Map z_range to coarse grid indices
+    cpml = grid_coarse.cpml_layers
+    fk_lo = max(int(round(z_lo / dx_c)) + cpml, cpml)
+    fk_hi = min(int(round(z_hi / dx_c)) + cpml + 1, grid_coarse.nz - cpml)
+
+    # Fine region covers full x,y for simplicity (with cpml margin)
+    fi_lo = cpml
+    fi_hi = grid_coarse.nx - cpml
+    fj_lo = cpml
+    fj_hi = grid_coarse.ny - cpml
+
+    # Fine grid dimensions
+    nx_f = (fi_hi - fi_lo) * ratio
+    ny_f = (fj_hi - fj_lo) * ratio
+    nz_f = (fk_hi - fk_lo) * ratio
+
+    # Global timestep (limited by fine grid CFL)
+    C0_val = 1.0 / np.sqrt(float(EPS_0) * float(MU_0))
+    dt = 0.45 * dx_f / (C0_val * np.sqrt(3))
+
+    config = SubgridConfig3D(
+        nx_c=grid_coarse.nx, ny_c=grid_coarse.ny, nz_c=grid_coarse.nz,
+        dx_c=dx_c,
+        fi_lo=fi_lo, fi_hi=fi_hi,
+        fj_lo=fj_lo, fj_hi=fj_hi,
+        fk_lo=fk_lo, fk_hi=fk_hi,
+        nx_f=nx_f, ny_f=ny_f, nz_f=nz_f,
+        dx_f=dx_f, dt=float(dt), ratio=ratio, tau=0.5,
+    )
+
+    # Build fine-grid materials by rasterizing geometry at fine resolution
+    shape_f = (nx_f, ny_f, nz_f)
+
+    # Create a Grid for fine region (for position_to_index utility)
+    fine_domain = (nx_f * dx_f, ny_f * dx_f, nz_f * dx_f)
+    fine_grid = Grid(
+        freq_max=sim._freq_max,
+        domain=fine_domain,
+        dx=dx_f,
+        cpml_layers=0,
+    )
+    # Override shape to match exactly (Grid may add +1 rounding)
+    fine_grid._shape_override = shape_f
+
+    # Rasterize geometry into fine grid materials
+    eps_r_f = jnp.ones(shape_f, dtype=jnp.float32)
+    sigma_f = jnp.zeros(shape_f, dtype=jnp.float32)
+    mu_r_f = jnp.ones(shape_f, dtype=jnp.float32)
+    pec_mask_f = jnp.zeros(shape_f, dtype=jnp.bool_)
+
+    # Offset: fine grid origin in physical coords
+    x_off = (fi_lo - cpml) * dx_c
+    y_off = (fj_lo - cpml) * dx_c
+    z_off = (fk_lo - cpml) * dx_c
+
+    PEC_SIGMA_THRESHOLD = sim._PEC_SIGMA_THRESHOLD
+
+    for entry in sim._geometry:
+        mat = sim._resolve_material(entry.material_name)
+        shape = entry.shape
+        if hasattr(shape, 'corner_lo') and hasattr(shape, 'corner_hi'):
+            from rfx.geometry.csg import Box
+            # Offset shape to fine grid local coordinates
+            c1 = shape.corner_lo
+            c2 = shape.corner_hi
+            # Map physical coords to fine grid indices
+            i0 = max(0, int(round((c1[0] - x_off) / dx_f)))
+            i1 = min(nx_f, int(round((c2[0] - x_off) / dx_f)))
+            j0 = max(0, int(round((c1[1] - y_off) / dx_f)))
+            j1 = min(ny_f, int(round((c2[1] - y_off) / dx_f)))
+            k0 = max(0, int(round((c1[2] - z_off) / dx_f)))
+            k1 = min(nz_f, int(round((c2[2] - z_off) / dx_f)))
+            if i0 < i1 and j0 < j1 and k0 < k1:
+                mask = jnp.zeros(shape_f, dtype=jnp.bool_)
+                mask = mask.at[i0:i1, j0:j1, k0:k1].set(True)
+                if mat.sigma >= PEC_SIGMA_THRESHOLD:
+                    pec_mask_f = pec_mask_f | mask
+                else:
+                    eps_r_f = jnp.where(mask, mat.eps_r, eps_r_f)
+                    sigma_f = jnp.where(mask, mat.sigma, sigma_f)
+                    mu_r_f = jnp.where(mask, mat.mu_r, mu_r_f)
+
+    mats_f = MaterialArrays(eps_r=eps_r_f, sigma=sigma_f, mu_r=mu_r_f)
+    has_pec_f = bool(jnp.any(pec_mask_f))
+
+    # Helper: convert physical position to fine-grid index
+    def _pos_to_fine_idx(pos):
+        return (
+            int(round((pos[0] - x_off) / dx_f)),
+            int(round((pos[1] - y_off) / dx_f)),
+            int(round((pos[2] - z_off) / dx_f)),
+        )
+
+    # Build sources on fine grid
+    sources_f = []
+    times = jnp.arange(n_steps, dtype=jnp.float32) * dt
+
+    for pe in sim._ports:
+        axis_map = {"ex": 0, "ey": 1, "ez": 2}
+        axis = axis_map[pe.component]
+
+        if pe.impedance == 0.0:
+            # Soft source (J-source Cb normalized, no port impedance)
+            idx = _pos_to_fine_idx(pe.position)
+            i, j, k = idx
+            eps = float(mats_f.eps_r[i, j, k]) * EPS_0
+            sigma_val = float(mats_f.sigma[i, j, k])
+            loss = sigma_val * dt / (2.0 * eps)
+            cb = (dt / eps) / (1.0 + loss)
+            waveform = cb * jax.vmap(pe.waveform)(times)
+            sources_f.append((i, j, k, pe.component, np.array(waveform)))
+            continue
+
+        if pe.extent is not None:
+            # Wire port: compute cells manually
+            idx_start = _pos_to_fine_idx(pe.position)
+            end_pos = list(pe.position)
+            end_pos[axis] += pe.extent
+            idx_end = _pos_to_fine_idx(tuple(end_pos))
+
+            lo = min(idx_start[axis], idx_end[axis])
+            hi = max(idx_start[axis], idx_end[axis])
+            cells = []
+            for a in range(lo, hi + 1):
+                cell = list(idx_start)
+                cell[axis] = a
+                cells.append(tuple(cell))
+
+            n_cells = max(len(cells), 1)
+            # Distribute port impedance
+            sigma_port_per_cell = n_cells / (pe.impedance * dx_f)
+            for cell in cells:
+                i, j, k = cell
+                mats_f = mats_f._replace(
+                    sigma=mats_f.sigma.at[i, j, k].add(sigma_port_per_cell))
+                pec_mask_f = pec_mask_f.at[i, j, k].set(False)
+
+            # Precompute Cb-corrected waveforms
+            for cell in cells:
+                i, j, k = cell
+                eps = float(mats_f.eps_r[i, j, k]) * EPS_0
+                sigma_val = float(mats_f.sigma[i, j, k])
+                loss = sigma_val * dt / (2.0 * eps)
+                cb = (dt / eps) / (1.0 + loss)
+                waveform = (cb / dx_f) * jax.vmap(pe.waveform)(times) / n_cells
+                sources_f.append((i, j, k, pe.component, np.array(waveform)))
+        else:
+            # Lumped port
+            idx = _pos_to_fine_idx(pe.position)
+            i, j, k = idx
+            sigma_port = 1.0 / (pe.impedance * dx_f)
+            mats_f = mats_f._replace(
+                sigma=mats_f.sigma.at[i, j, k].add(sigma_port))
+            pec_mask_f = pec_mask_f.at[i, j, k].set(False)
+
+            eps = float(mats_f.eps_r[i, j, k]) * EPS_0
+            sigma_val = float(mats_f.sigma[i, j, k])
+            loss = sigma_val * dt / (2.0 * eps)
+            cb = (dt / eps) / (1.0 + loss)
+            waveform = (cb / dx_f) * jax.vmap(pe.waveform)(times)
+            sources_f.append((i, j, k, pe.component, np.array(waveform)))
+
+    # Build probes on fine grid
+    probe_indices_f = []
+    probe_components = []
+    for pe in sim._probes:
+        idx = _pos_to_fine_idx(pe.position)
+        probe_indices_f.append(idx)
+        probe_components.append(pe.component)
+
+    result = _run_sg(
+        grid_coarse,
+        base_materials_coarse,
+        mats_f,
+        config,
+        n_steps,
+        pec_mask_c=pec_mask_coarse,
+        pec_mask_f=pec_mask_f if has_pec_f else None,
+        sources_f=sources_f,
+        probe_indices_f=probe_indices_f,
+        probe_components=probe_components,
+    )
+
+    return Result(
+        state=result.state_f,
+        time_series=result.time_series,
+        s_params=None,
+        freqs=None,
+        dt=dt,
+        freq_range=(sim._freq_max / 10, sim._freq_max, 'cpml'),
+    )

@@ -1462,215 +1462,32 @@ class Simulation:
 
     def _build_nonuniform_grid(self) -> NonUniformGrid:
         """Build a NonUniformGrid from stored dz_profile."""
-        dx = self._dx
-        if dx is None:
-            dx = C0 / self._freq_max / 20.0
-        domain_xy = (self._domain[0], self._domain[1])
-        return make_nonuniform_grid(
-            domain_xy, self._dz_profile, dx, self._cpml_layers,
+        from rfx.runners.nonuniform import build_nonuniform_grid
+        return build_nonuniform_grid(
+            self._freq_max, self._domain, self._dx, self._cpml_layers, self._dz_profile
         )
 
     def _assemble_materials_nu(
         self, grid: NonUniformGrid,
     ) -> tuple[MaterialArrays, jnp.ndarray | None]:
-        """Build material arrays for non-uniform grid.
-
-        Raises ValueError if Debye/Lorentz dispersive materials are used,
-        since the non-uniform runner does not yet support ADE dispersion.
-        """
-        # Check for unsupported dispersive materials
-        for entry in self._geometry:
-            mat = self._resolve_material(entry.material_name)
-            if mat.debye_poles or mat.lorentz_poles:
-                raise ValueError(
-                    f"Material '{entry.material_name}' uses Debye/Lorentz "
-                    f"dispersion which is not yet supported on non-uniform grids. "
-                    f"Use sigma-only conductivity or switch to uniform grid."
-                )
-        shape = (grid.nx, grid.ny, grid.nz)
-        eps_r = jnp.ones(shape, dtype=jnp.float32)
-        sigma = jnp.zeros(shape, dtype=jnp.float32)
-        mu_r = jnp.ones(shape, dtype=jnp.float32)
-        pec_mask = jnp.zeros(shape, dtype=jnp.bool_)
-
-        cpml = grid.cpml_layers
-        dx = grid.dx
-        # Cumulative z positions for index mapping
-        dz_np = np.array(grid.dz)
-        z_cumsum = np.cumsum(dz_np)
-        z_cumsum = np.insert(z_cumsum, 0, 0.0)
-
-        for entry in self._geometry:
-            mat = self._resolve_material(entry.material_name)
-            shape_obj = entry.shape
-            if hasattr(shape_obj, 'corner_lo') and hasattr(shape_obj, 'corner_hi'):
-                c1, c2 = shape_obj.corner_lo, shape_obj.corner_hi
-                # x,y: uniform grid mapping (physical coords include CPML offset)
-                ix0 = max(0, int(round(c1[0] / dx)) + cpml)
-                ix1 = min(grid.nx, int(round(c2[0] / dx)) + cpml)
-                iy0 = max(0, int(round(c1[1] / dx)) + cpml)
-                iy1 = min(grid.ny, int(round(c2[1] / dx)) + cpml)
-                # z: map physical z to non-uniform grid index
-                z_lo_phys = c1[2]
-                z_hi_phys = c2[2]
-                # z_cumsum[cpml] = start of physical domain
-                z_offset = z_cumsum[cpml]
-                iz0 = cpml + int(np.argmin(np.abs(
-                    z_cumsum[cpml:] - z_offset - z_lo_phys)))
-                iz1 = cpml + int(np.argmin(np.abs(
-                    z_cumsum[cpml:] - z_offset - z_hi_phys)))
-                if iz1 <= iz0:
-                    iz1 = iz0 + 1  # at least 1 cell
-
-                if ix0 < ix1 and iy0 < iy1 and iz0 < iz1:
-                    if mat.sigma >= self._PEC_SIGMA_THRESHOLD:
-                        pec_mask = pec_mask.at[ix0:ix1, iy0:iy1, iz0:iz1].set(True)
-                    else:
-                        eps_r = eps_r.at[ix0:ix1, iy0:iy1, iz0:iz1].set(mat.eps_r)
-                        sigma = sigma.at[ix0:ix1, iy0:iy1, iz0:iz1].set(mat.sigma)
-                        mu_r = mu_r.at[ix0:ix1, iy0:iy1, iz0:iz1].set(mat.mu_r)
-
-        materials = MaterialArrays(eps_r=eps_r, sigma=sigma, mu_r=mu_r)
-        has_pec = bool(jnp.any(pec_mask))
-        return materials, pec_mask if has_pec else None
+        """Build material arrays for non-uniform grid."""
+        from rfx.runners.nonuniform import assemble_materials_nu
+        return assemble_materials_nu(self, grid)
 
     def _pos_to_nu_index(self, grid: NonUniformGrid, pos):
         """Convert physical (x, y, z) to non-uniform grid indices."""
-        cpml = grid.cpml_layers
-        dx = grid.dx
-        dz_np = np.array(grid.dz)
-        z_cumsum = np.cumsum(dz_np)
-        z_cumsum = np.insert(z_cumsum, 0, 0.0)
-        z_offset = z_cumsum[cpml]
-
-        ix = int(round(pos[0] / dx)) + cpml
-        iy = int(round(pos[1] / dx)) + cpml
-        iz = cpml + int(np.argmin(np.abs(z_cumsum[cpml:] - z_offset - pos[2])))
-        return (ix, iy, iz)
+        from rfx.runners.nonuniform import pos_to_nu_index
+        return pos_to_nu_index(grid, pos)
 
     def _run_nonuniform(self, *, n_steps, compute_s_params=None,
                         s_param_freqs=None):
         """Run simulation on non-uniform grid with graded dz."""
-        grid = self._build_nonuniform_grid()
-        materials, pec_mask = self._assemble_materials_nu(grid)
-
-        sources = []
-        probes = []
-        wire_port_specs = []
-
-        for pe in self._ports:
-            idx = self._pos_to_nu_index(grid, pe.position)
-            if pe.impedance == 0.0:
-                # Current source with dV normalization
-                src = make_current_source(
-                    grid, idx, pe.component, pe.waveform, n_steps, materials)
-                sources.append(src)
-            elif pe.extent is not None:
-                # Wire port on non-uniform grid
-                axis_map = {"ex": 0, "ey": 1, "ez": 2}
-                axis = axis_map[pe.component]
-                end_pos = list(pe.position)
-                end_pos[axis] += pe.extent
-                idx_end = self._pos_to_nu_index(grid, tuple(end_pos))
-                lo_k = min(idx[axis], idx_end[axis])
-                hi_k = max(idx[axis], idx_end[axis])
-
-                wire_cells = list(range(lo_k, hi_k + 1))
-                n_cells = max(len(wire_cells), 1)
-
-                for k in wire_cells:
-                    cell = list(idx)
-                    cell[axis] = k
-                    ci, cj, ck = cell
-                    # Port impedance loading: sigma = n_cells / (Z0 * d_parallel)
-                    # For z-directed port, d_parallel = dz[k]; for x/y, use dx/dy
-                    if axis == 2:
-                        d_cell = float(grid.dz[ck])
-                    elif axis == 1:
-                        d_cell = grid.dy
-                    else:
-                        d_cell = grid.dx
-                    sigma_port = n_cells / (pe.impedance * d_cell)
-                    materials = materials._replace(
-                        sigma=materials.sigma.at[ci, cj, ck].add(
-                            sigma_port))
-                    if pec_mask is not None:
-                        pec_mask = pec_mask.at[ci, cj, ck].set(False)
-
-                # Create per-cell sources
-                mid_k = wire_cells[len(wire_cells) // 2]
-                mid_cell = list(idx)
-                mid_cell[axis] = mid_k
-
-                for k in wire_cells:
-                    cell = list(idx)
-                    cell[axis] = k
-                    src = make_current_source(
-                        grid, tuple(cell), pe.component,
-                        pe.waveform, n_steps, materials)
-                    # Scale by 1/n_cells for distributed excitation
-                    scaled_wf = np.array(src[4]) / n_cells
-                    sources.append(
-                        (src[0], src[1], src[2], src[3], scaled_wf))
-
-                # Wire port S-param spec
-                wire_port_specs.append({
-                    'mid_i': mid_cell[0], 'mid_j': mid_cell[1],
-                    'mid_k': mid_cell[2],
-                    'component': pe.component,
-                    'impedance': pe.impedance,
-                })
-            else:
-                # Single-cell lumped port
-                i, j, k = idx
-                # Use d_parallel for the port component direction
-                axis_map = {"ex": 0, "ey": 1, "ez": 2}
-                port_axis = axis_map[pe.component]
-                if port_axis == 2:
-                    d_port = float(grid.dz[k])
-                elif port_axis == 1:
-                    d_port = grid.dy
-                else:
-                    d_port = grid.dx
-                sigma_port = 1.0 / (pe.impedance * d_port)
-                materials = materials._replace(
-                    sigma=materials.sigma.at[i, j, k].add(sigma_port))
-                if pec_mask is not None:
-                    pec_mask = pec_mask.at[i, j, k].set(False)
-                src = make_current_source(
-                    grid, idx, pe.component, pe.waveform, n_steps, materials)
-                sources.append(src)
-
-        for pe in self._probes:
-            idx = self._pos_to_nu_index(grid, pe.position)
-            probes.append((*idx, pe.component))
-
-        sp_freqs = None
-        if wire_port_specs and (compute_s_params is None or compute_s_params):
-            sp_freqs = s_param_freqs
-            if sp_freqs is None:
-                sp_freqs = np.linspace(
-                    self._freq_max / 10, self._freq_max, 50)
-
-        r = run_nonuniform(
-            grid, materials, n_steps,
-            pec_mask=pec_mask,
-            sources=sources,
-            probes=probes,
-            wire_ports=wire_port_specs if wire_port_specs else None,
-            s_param_freqs=sp_freqs,
-        )
-
-        s_params = r.get("s_params")
-        freqs_out = r.get("s_param_freqs")
-
-        return Result(
-            state=r["state"],
-            time_series=r["time_series"],
-            s_params=s_params,
-            freqs=freqs_out,
-            dt=grid.dt,
-            freq_range=(self._freq_max / 10, self._freq_max, self._boundary),
+        from rfx.runners.nonuniform import run_nonuniform_path
+        return run_nonuniform_path(
+            self,
+            n_steps=n_steps,
+            compute_s_params=compute_s_params,
+            s_param_freqs=s_param_freqs,
         )
 
     # ---- run ----
@@ -1743,7 +1560,6 @@ class Simulation:
 
         grid = self._build_grid()
         base_materials, debye_spec, lorentz_spec, pec_mask = self._assemble_materials(grid)
-        materials = base_materials
 
         # ---- Subgridded path ----
         if self._refinement is not None:
@@ -1752,355 +1568,31 @@ class Simulation:
                 n_steps=n_steps or grid.num_timesteps(num_periods=num_periods),
             )
 
-        # Compute per-component smoothed permittivity if requested
-        aniso_eps = None
-        if subpixel_smoothing:
-            from rfx.geometry.smoothing import compute_smoothed_eps
-            shape_eps_pairs = [
-                (entry.shape, self._resolve_material(entry.material_name).eps_r)
-                for entry in self._geometry
-            ]
-            if shape_eps_pairs:
-                aniso_eps = compute_smoothed_eps(grid, shape_eps_pairs, background_eps=1.0)
-
+        # ---- Uniform path ----
         if n_steps is None:
             n_steps = grid.num_timesteps(num_periods=num_periods)
 
-        # Build sources and probes for the compiled runner
-        sources: list[SourceSpec] = []
-        probes: list[ProbeSpec] = []
-        dft_planes = []
-        waveguide_ports = []
-        periodic = None
-        cpml_axes = "xyz"
-        pec_axes = None
-        tfsf = None
-
-        if self._tfsf is not None and self._ports:
-            raise ValueError(
-                "TFSF plane-wave source is not supported together with lumped ports"
-            )
-        if self._waveguide_ports and (self._ports or self._tfsf):
-            raise ValueError(
-                "Waveguide ports are not supported together with lumped ports or TFSF"
-            )
-        if len(self._waveguide_ports) > 1:
-            raise ValueError(
-                "Simulation.run() supports only a single waveguide port; use compute_waveguide_s_matrix() for the multiport waveguide scattering workflow"
-            )
-        if self._periodic_axes:
-            periodic = tuple(axis in self._periodic_axes for axis in "xyz")
-
-        # Port sources — fold impedances into materials first
-        lumped_ports: list[LumpedPort] = []
-        wire_ports: list[WirePort] = []
-        for pe in self._ports:
-            if pe.impedance == 0.0:
-                # Auto-select source type based on boundary conditions:
-                # - CPML (open): Cb/dx normalized (prevents DC on PEC surface)
-                # - PEC (closed): raw field add (broadband, exact cavity modes)
-                if self._boundary == "cpml":
-                    sources.append(make_j_source(grid, pe.position, pe.component,
-                                                 pe.waveform, n_steps, materials))
-                else:
-                    sources.append(make_source(grid, pe.position, pe.component,
-                                               pe.waveform, n_steps))
-                continue
-            if pe.extent is not None:
-                # Multi-cell wire port
-                axis_map = {"ex": 0, "ey": 1, "ez": 2}
-                axis = axis_map[pe.component]
-                end = list(pe.position)
-                end[axis] += pe.extent
-                wp = WirePort(
-                    start=pe.position, end=tuple(end),
-                    component=pe.component,
-                    impedance=pe.impedance, excitation=pe.waveform,
-                )
-                wire_ports.append(wp)
-                materials = setup_wire_port(grid, wp, materials)
-                sources.extend(make_wire_port_sources(grid, wp, materials, n_steps))
-                # Clear PEC mask at wire cells (probe pierces ground plane)
-                if pec_mask is not None:
-                    from rfx.sources.sources import _wire_port_cells
-                    for cell in _wire_port_cells(grid, wp):
-                        pec_mask = pec_mask.at[cell[0], cell[1], cell[2]].set(False)
-            else:
-                # Single-cell lumped port
-                lp = LumpedPort(
-                    position=pe.position, component=pe.component,
-                    impedance=pe.impedance, excitation=pe.waveform,
-                )
-                lumped_ports.append(lp)
-                materials = setup_lumped_port(grid, lp, materials)
-                sources.append(make_port_source(grid, lp, materials, n_steps))
-                # Clear PEC mask at lumped port cell
-                if pec_mask is not None:
-                    idx = grid.position_to_index(pe.position)
-                    pec_mask = pec_mask.at[idx[0], idx[1], idx[2]].set(False)
-
-        # Build wire port S-param specs for JIT-integrated DFT
-        wire_sparam_specs = []
-        if wire_ports and (compute_s_params is None or compute_s_params):
-            from rfx.simulation import WirePortSParamSpec
-            from rfx.sources.sources import _wire_port_cells
-            sp_freqs = s_param_freqs if s_param_freqs is not None else jnp.linspace(
-                self._freq_max / 10, self._freq_max, 50)
-            for wp in wire_ports:
-                cells = _wire_port_cells(grid, wp)
-                mid = cells[len(cells) // 2]
-                wire_sparam_specs.append(WirePortSParamSpec(
-                    mid_i=mid[0], mid_j=mid[1], mid_k=mid[2],
-                    component=wp.component,
-                    freqs=jnp.asarray(sp_freqs, dtype=jnp.float32),
-                    impedance=wp.impedance,
-                ))
-
-        for pe in self._probes:
-            probes.append(make_probe(grid, pe.position, pe.component))
-
-        axis_to_index = {"x": 0, "y": 1, "z": 2}
-        for pe in self._dft_planes:
-            axis_idx = axis_to_index[pe.axis]
-            plane_pos = [0.0, 0.0, 0.0]
-            plane_pos[axis_idx] = pe.coordinate
-            grid_index = grid.position_to_index(tuple(plane_pos))[axis_idx]
-            freqs_arr = (
-                pe.freqs
-                if pe.freqs is not None
-                else jnp.linspace(self._freq_max / 10, self._freq_max, pe.n_freqs)
-            )
-            dft_planes.append(
-                init_dft_plane_probe(
-                    axis=axis_idx,
-                    index=grid_index,
-                    component=pe.component,
-                    freqs=freqs_arr,
-                    grid_shape=grid.shape,
-                    dft_total_steps=n_steps,
-                )
-            )
-
-        if self._waveguide_ports:
-            cpml_axes = grid.cpml_axes
-            pec_axes = "".join(axis for axis in "xyz" if axis not in cpml_axes)
-            for pe in self._waveguide_ports:
-                freqs_arr = (
-                    pe.freqs
-                    if pe.freqs is not None
-                    else jnp.linspace(self._freq_max / 10, self._freq_max, pe.n_freqs)
-                )
-                waveguide_ports.append(self._build_waveguide_port_config(pe, grid, freqs_arr, n_steps))
-
-        if self._tfsf is not None:
-            from rfx.sources.tfsf import init_tfsf
-
-            tfsf = init_tfsf(
-                grid.nx,
-                grid.dx,
-                grid.dt,
-                cpml_layers=grid.cpml_layers,
-                tfsf_margin=self._tfsf.margin,
-                f0=self._tfsf.f0 if self._tfsf.f0 is not None else self._freq_max / 2,
-                bandwidth=self._tfsf.bandwidth,
-                amplitude=self._tfsf.amplitude,
-                polarization=self._tfsf.polarization,
-                direction=self._tfsf.direction,
-                angle_deg=self._tfsf.angle_deg,
-            )
-            self._validate_tfsf_vacuum_boundary(materials, tfsf[0])
-            periodic = (False, True, True)
-            cpml_axes = "x"
-
-        _, debye, lorentz = self._init_dispersion(
-            materials, grid.dt, debye_spec, lorentz_spec)
-
-        # NTFF box
-        ntff_box = None
-        if self._ntff is not None:
-            corner_lo, corner_hi, freqs = self._ntff
-            ntff_box = make_ntff_box(grid, corner_lo, corner_hi, freqs)
-
-        # Main simulation
-        if until_decay is not None:
-            sim_result = _run_until_decay(
-                grid, materials,
-                decay_by=until_decay,
-                check_interval=decay_check_interval,
-                min_steps=decay_min_steps,
-                max_steps=decay_max_steps,
-                monitor_component=decay_monitor_component,
-                monitor_position=decay_monitor_position,
-                boundary=self._boundary,
-                cpml_axes=cpml_axes,
-                pec_axes=pec_axes,
-                periodic=periodic,
-                debye=debye,
-                lorentz=lorentz,
-                tfsf=tfsf,
-                sources=sources,
-                probes=probes,
-                dft_planes=dft_planes,
-                waveguide_ports=waveguide_ports,
-                ntff=ntff_box,
-                snapshot=snapshot,
-                checkpoint=checkpoint,
-                aniso_eps=aniso_eps,
-                pec_mask=pec_mask,
-                wire_port_sparams=wire_sparam_specs or None,
-            )
-        else:
-            sim_result = _run(
-                grid, materials, n_steps,
-                boundary=self._boundary,
-                cpml_axes=cpml_axes,
-                pec_axes=pec_axes,
-                periodic=periodic,
-                debye=debye,
-                lorentz=lorentz,
-                tfsf=tfsf,
-                sources=sources,
-                probes=probes,
-                dft_planes=dft_planes,
-                waveguide_ports=waveguide_ports,
-                ntff=ntff_box,
-                snapshot=snapshot,
-                checkpoint=checkpoint,
-                aniso_eps=aniso_eps,
-                pec_mask=pec_mask,
-                wire_port_sparams=wire_sparam_specs or None,
-            )
-
-        # S-parameters: use JIT-integrated DFT for wire ports (fast),
-        # fall back to Python loop for lumped ports
-        if compute_s_params is None:
-            compute_s_params = len(lumped_ports) > 0 or len(wire_ports) > 0
-
-        s_params = None
-        freqs_out = None
-
-        if compute_s_params and wire_ports and sim_result.wire_port_sparams:
-            # Extract S-params from JIT-accumulated DFTs (100x faster)
-            n_wp = len(wire_ports)
-            if s_param_freqs is None:
-                s_param_freqs = wire_ports[0].excitation.f0  # placeholder
-                # Use freqs from the first wire port spec
-                for wp_meta, accs in sim_result.wire_port_sparams:
-                    s_param_freqs = np.array(wp_meta.freqs)
-                    break
-            freqs_out = np.array(s_param_freqs)
-            n_freqs = len(freqs_out)
-            S = np.zeros((n_wp, n_wp, n_freqs), dtype=np.complex64)
-
-            for j, (wp_meta, accs) in enumerate(sim_result.wire_port_sparams):
-                v_dft, i_dft, _ = accs
-                z0 = wp_meta.impedance
-                # Wave decomposition
-                a_j = (v_dft + z0 * i_dft) / (2.0 * np.sqrt(z0))
-                safe_a = jnp.where(jnp.abs(a_j) > 0, a_j, jnp.ones_like(a_j))
-                b_j = (v_dft - z0 * i_dft) / (2.0 * np.sqrt(z0))
-                S[j, j, :] = np.array(b_j / safe_a)
-
-            s_params = S
-        elif compute_s_params and (lumped_ports or wire_ports):
-            # Fall back to Python-loop extraction
-            if s_param_freqs is None:
-                s_param_freqs = jnp.linspace(
-                    self._freq_max / 10, self._freq_max, 50,
-                )
-            freqs_out = np.array(s_param_freqs)
-
-            if wire_ports:
-                s_params = extract_s_matrix_wire(
-                    grid, base_materials, wire_ports, s_param_freqs,
-                    n_steps=s_param_n_steps,
-                    boundary=self._boundary,
-                    debye_spec=debye_spec,
-                    lorentz_spec=lorentz_spec,
-                    pec_mask=pec_mask,
-                )
-            else:
-                s_params = extract_s_matrix(
-                    grid, base_materials, lumped_ports, s_param_freqs,
-                    n_steps=s_param_n_steps,
-                    boundary=self._boundary,
-                    debye_spec=debye_spec,
-                    lorentz_spec=lorentz_spec,
-                )
-
-        waveguide_ports_result = (
-            {
-                entry.name: cfg
-                for entry, cfg in zip(self._waveguide_ports, sim_result.waveguide_ports or ())
-            }
-            if self._waveguide_ports
-            else None
-        )
-        waveguide_sparams_result = None
-        if self._waveguide_ports:
-            waveguide_sparams_result = {}
-            for entry, cfg in zip(self._waveguide_ports, sim_result.waveguide_ports or ()):
-                plane_positions = waveguide_plane_positions(cfg)
-                source_plane = plane_positions["source"]
-                measured_reference_plane = plane_positions["reference"]
-                measured_probe_plane = plane_positions["probe"]
-                if entry.calibration_preset == "source_to_probe":
-                    reference_plane = source_plane
-                    probe_plane = measured_probe_plane
-                    calibration_preset = "source_to_probe"
-                elif entry.reference_plane is not None or entry.probe_plane is not None:
-                    reference_plane = (
-                        entry.reference_plane
-                        if entry.reference_plane is not None
-                        else measured_reference_plane
-                    )
-                    probe_plane = (
-                        entry.probe_plane
-                        if entry.probe_plane is not None
-                        else measured_probe_plane
-                    )
-                    calibration_preset = "explicit"
-                else:
-                    reference_plane = measured_reference_plane
-                    probe_plane = measured_probe_plane
-                    calibration_preset = "measured"
-                s11, s21 = extract_waveguide_sparams(
-                    cfg,
-                    ref_shift=reference_plane - measured_reference_plane,
-                    probe_shift=probe_plane - measured_probe_plane,
-                )
-                waveguide_sparams_result[entry.name] = WaveguideSParamResult(
-                    freqs=np.array(cfg.freqs),
-                    s11=np.array(s11),
-                    s21=np.array(s21),
-                    calibration_preset=calibration_preset,
-                    source_plane=float(source_plane),
-                    measured_reference_plane=measured_reference_plane,
-                    measured_probe_plane=measured_probe_plane,
-                    reference_plane=reference_plane,
-                    probe_plane=probe_plane,
-                )
-
-        return Result(
-            state=sim_result.state,
-            time_series=sim_result.time_series,
-            s_params=s_params,
-            freqs=freqs_out,
-            ntff_data=sim_result.ntff_data,
-            ntff_box=ntff_box,
-            dft_planes=(
-                {
-                    entry.name: probe
-                    for entry, probe in zip(self._dft_planes, sim_result.dft_planes or ())
-                }
-                if self._dft_planes
-                else None
-            ),
-            waveguide_ports=waveguide_ports_result,
-            waveguide_sparams=waveguide_sparams_result,
-            snapshots=sim_result.snapshots,
-            dt=grid.dt,
-            freq_range=(self._freq_max / 10, self._freq_max, self._boundary),
+        from rfx.runners.uniform import run_uniform
+        return run_uniform(
+            self,
+            n_steps=n_steps,
+            until_decay=until_decay,
+            decay_check_interval=decay_check_interval,
+            decay_min_steps=decay_min_steps,
+            decay_max_steps=decay_max_steps,
+            decay_monitor_component=decay_monitor_component,
+            decay_monitor_position=decay_monitor_position,
+            checkpoint=checkpoint,
+            compute_s_params=compute_s_params,
+            s_param_freqs=s_param_freqs,
+            s_param_n_steps=s_param_n_steps,
+            snapshot=snapshot,
+            subpixel_smoothing=subpixel_smoothing,
+            grid=grid,
+            base_materials=base_materials,
+            debye_spec=debye_spec,
+            lorentz_spec=lorentz_spec,
+            pec_mask=pec_mask,
         )
 
     def __repr__(self) -> str:
