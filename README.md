@@ -24,7 +24,6 @@
 | **Cross-validated** | 0.000--0.007% agreement vs Meep and OpenEMS |
 | **Non-uniform mesh** | Graded z-profiles for thin substrates without global refinement |
 | **Auto-configuration** | `auto_configure()` derives dx, domain, CPML, timesteps from geometry |
-| **260+ tests** | PEC cavities, dielectric materials, S-params, far-field, optimization |
 
 ## Installation
 

@@ -2,12 +2,14 @@
 
 import numpy as np
 import jax.numpy as jnp
+import pytest
 
 from rfx.subgridding.sbp_sat_2d import (
     init_subgrid_2d, step_subgrid_2d, compute_energy_2d,
 )
 
 
+@pytest.mark.slow
 def test_2d_stability():
     """Energy bounded over 10,000 steps."""
     config, state = init_subgrid_2d(

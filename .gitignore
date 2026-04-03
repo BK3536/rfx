@@ -12,6 +12,7 @@ AGENTS.md
 docs/research_notes/
 docs/codex_specs/
 docs/reports/
+docs/superpowers/
 examples/vessl_*.yaml
 examples/benchmark_jax_vs_numpy.py
 

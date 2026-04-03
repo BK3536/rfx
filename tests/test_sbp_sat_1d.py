@@ -9,6 +9,7 @@ Required tests:
 
 import numpy as np
 import jax.numpy as jnp
+import pytest
 
 from rfx.subgridding.sbp_sat_1d import (
     build_sbp_norm,
@@ -68,6 +69,7 @@ def test_sbp_property():
 
 # ── 2. Stability over long run ───────────────────────────────────
 
+@pytest.mark.slow
 def test_stability_long_run():
     """Energy must not grow over 100,000 steps (provable stability).
 
@@ -187,6 +189,7 @@ def test_subgrid_matches_uniform():
 
 # ── 4. Energy conservation ───────────────────────────────────────
 
+@pytest.mark.slow
 def test_energy_conservation():
     """Total energy (E^2 + H^2) is non-increasing over time.
 
