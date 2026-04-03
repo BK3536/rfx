@@ -3,6 +3,10 @@
 Replaces the Python-loop runner (runner.py) with a fully JIT-compiled
 version that achieves 50-100x speedup. Both coarse and fine grids
 are updated per step with SBP-SAT interface coupling.
+
+Handles both CPML (absorbing) and PEC (reflecting) coarse-grid
+boundaries. When cpml_layers == 0 the CPML subsystem is skipped
+entirely and PEC is applied on all domain faces.
 """
 
 from __future__ import annotations
@@ -18,7 +22,6 @@ from rfx.core.yee import (
     update_h, update_e, EPS_0,
 )
 from rfx.boundaries.pec import apply_pec, apply_pec_mask
-from rfx.boundaries.cpml import init_cpml, apply_cpml_h, apply_cpml_e
 from rfx.grid import Grid
 from rfx.subgridding.sbp_sat_3d import (
     SubgridConfig3D, _shared_node_coupling_3d,
@@ -51,9 +54,9 @@ def run_subgridded_jit(
 
     Parameters
     ----------
-    grid_c : Grid — coarse grid (full domain with CPML)
-    mats_c : MaterialArrays — coarse materials
-    mats_f : MaterialArrays — fine materials
+    grid_c : Grid -- coarse grid (full domain, with or without CPML)
+    mats_c : MaterialArrays -- coarse materials
+    mats_f : MaterialArrays -- fine materials
     config : SubgridConfig3D
     n_steps : int
     pec_mask_c, pec_mask_f : boolean arrays or None
@@ -69,11 +72,17 @@ def run_subgridded_jit(
     dx_c = config.dx_c
     dx_f = config.dx_f
 
-    # Override coarse grid dt for CPML
+    # Override coarse grid dt to match subgrid global timestep
     grid_c.dt = dt
 
-    # Initialize CPML on coarse grid
-    cpml_params, cpml_state = init_cpml(grid_c)
+    # ---- Subsystem flags (resolved at trace time, not inside scan) ----
+    use_cpml = grid_c.cpml_layers > 0
+
+    cpml_params = None
+    cpml_state = None
+    if use_cpml:
+        from rfx.boundaries.cpml import init_cpml, apply_cpml_h, apply_cpml_e
+        cpml_params, cpml_state = init_cpml(grid_c)
 
     # Initialize field states
     shape_c = (config.nx_c, config.ny_c, config.nz_c)
@@ -91,18 +100,20 @@ def run_subgridded_jit(
     src_meta = [(s[0], s[1], s[2], s[3]) for s in sources_f]
     prb_meta = [(p[0], p[1], p[2], c) for p, c in
                 zip(probe_indices_f, probe_components)]
+    n_probes = len(prb_meta)
 
     use_pec_mask_c = pec_mask_c is not None
     use_pec_mask_f = pec_mask_f is not None
 
-    # Pack carry
+    # Pack carry — include CPML state only when CPML is active
     carry_init = {
         "c": (state_c.ex, state_c.ey, state_c.ez,
               state_c.hx, state_c.hy, state_c.hz),
         "f": (state_f.ex, state_f.ey, state_f.ez,
               state_f.hx, state_f.hy, state_f.hz),
-        "cpml": cpml_state,
     }
+    if use_cpml:
+        carry_init["cpml"] = cpml_state
 
     cpml_axes = "xyz"
 
@@ -116,8 +127,9 @@ def run_subgridded_jit(
                          hx=hx_c, hy=hy_c, hz=hz_c,
                          step=step_idx)
         st_c = update_h(st_c, mats_c, dt, dx_c)
-        st_c, cpml_new = apply_cpml_h(st_c, cpml_params, carry["cpml"],
-                                       grid_c, cpml_axes)
+        if use_cpml:
+            st_c, cpml_new = apply_cpml_h(st_c, cpml_params, carry["cpml"],
+                                           grid_c, cpml_axes)
 
         # === Fine H update ===
         st_f = FDTDState(ex=ex_f, ey=ey_f, ez=ez_f,
@@ -125,15 +137,16 @@ def run_subgridded_jit(
                          step=step_idx)
         st_f = update_h(st_f, mats_f, dt, dx_f)
 
-        # === Coarse E update + CPML + PEC ===
+        # === Coarse E update + boundary ===
         st_c = update_e(st_c, mats_c, dt, dx_c)
-        st_c, cpml_new = apply_cpml_e(st_c, cpml_params, cpml_new,
-                                       grid_c, cpml_axes)
+        if use_cpml:
+            st_c, cpml_new = apply_cpml_e(st_c, cpml_params, cpml_new,
+                                           grid_c, cpml_axes)
         st_c = apply_pec(st_c)
         if use_pec_mask_c:
             st_c = apply_pec_mask(st_c, pec_mask_c)
 
-        # === Fine E update + PEC ===
+        # === Fine E update + PEC mask ===
         st_f = update_e(st_f, mats_f, dt, dx_f)
         if use_pec_mask_f:
             st_f = apply_pec_mask(st_f, pec_mask_f)
@@ -156,25 +169,29 @@ def run_subgridded_jit(
                 ey_f_new = ey_f_new.at[si, sj, sk].add(src_vals[idx_s])
 
         # === Probe samples ===
-        def _get_field(comp, i, j, k):
-            if comp == "ez": return ez_f_new[i, j, k]
-            if comp == "ex": return ex_f_new[i, j, k]
-            if comp == "ey": return ey_f_new[i, j, k]
-            if comp == "hx": return st_f.hx[i, j, k]
-            if comp == "hy": return st_f.hy[i, j, k]
-            return st_f.hz[i, j, k]
+        if n_probes > 0:
+            def _get_field(comp, i, j, k):
+                if comp == "ez": return ez_f_new[i, j, k]
+                if comp == "ex": return ex_f_new[i, j, k]
+                if comp == "ey": return ey_f_new[i, j, k]
+                if comp == "hx": return st_f.hx[i, j, k]
+                if comp == "hy": return st_f.hy[i, j, k]
+                return st_f.hz[i, j, k]
 
-        samples = [_get_field(pc, pi, pj, pk)
-                   for pi, pj, pk, pc in prb_meta]
-        probe_out = jnp.stack(samples) if samples else jnp.zeros(0)
+            samples = [_get_field(pc, pi, pj, pk)
+                       for pi, pj, pk, pc in prb_meta]
+            probe_out = jnp.stack(samples)
+        else:
+            probe_out = jnp.zeros(0, dtype=jnp.float32)
 
         new_carry = {
             "c": (ex_c_new, ey_c_new, ez_c_new,
                   st_c.hx, st_c.hy, st_c.hz),
             "f": (ex_f_new, ey_f_new, ez_f_new,
                   st_f.hx, st_f.hy, st_f.hz),
-            "cpml": cpml_new,
         }
+        if use_cpml:
+            new_carry["cpml"] = cpml_new
 
         return new_carry, probe_out
 
