@@ -183,23 +183,29 @@ def _shared_node_coupling_3d(state_c_fields, state_f_fields, config):
     nj = config.fj_hi - fj
     nk = config.fk_hi - fk
 
-    # SAT penalty strengths: coarse gets less correction (larger cell),
-    # fine gets more correction (smaller cell, tighter CFL)
-    tau = config.tau
-    alpha_c = tau / ratio   # gentle correction on coarse side
-    alpha_f = tau            # stronger correction on fine side
+    # Impedance-matched coupling: the interface should transmit waves
+    # transparently. Weight = CFL number (Courant factor) ensures the
+    # coupling strength matches the wave propagation speed.
+    # For the fine grid CFL: courant = dt * C0 * sqrt(3) / dx_f
+    import numpy as _np
+    C0_val = 1.0 / _np.sqrt(EPS_0 * MU_0)
+    courant_f = config.dt * C0_val * _np.sqrt(3) / config.dx_f
+    # Coarse and fine get symmetric coupling (impedance matching)
+    alpha = min(courant_f, 0.5)  # cap at 0.5 for stability
 
     def _sat_couple(ec_arr, ef_arr, c_slice, f_slice,
                     nj_ds, nk_ds, ny_up, nz_up):
-        """Apply SAT penalty on one face for one E-component."""
+        """Impedance-matched interface coupling."""
         ec_face = ec_arr[c_slice]
         ef_face = ef_arr[f_slice]
         ef_ds = _downsample_2d(ef_face, nj_ds, nk_ds, ratio)
         ec_us = _upsample_2d(ec_face, ny_up, nz_up, ratio)
 
-        # Penalty corrections (additive, not replacement)
-        ec_arr = ec_arr.at[c_slice].add(alpha_c * (ef_ds - ec_face))
-        ef_arr = ef_arr.at[f_slice].add(alpha_f * (ec_us - ef_face))
+        # Symmetric blend: both sides move toward each other
+        ec_arr = ec_arr.at[c_slice].set(
+            (1 - alpha) * ec_face + alpha * ef_ds)
+        ef_arr = ef_arr.at[f_slice].set(
+            (1 - alpha) * ef_face + alpha * ec_us)
         return ec_arr, ef_arr
 
     # === x-lo face (i = fi_lo): tangential = Ey, Ez ===
