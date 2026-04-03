@@ -1035,3 +1035,36 @@ def test_sparams_respond_to_lorentz_dispersion():
     assert plain.s_params is not None
     assert lorentz.s_params is not None
     assert np.max(np.abs(plain.s_params - lorentz.s_params)) > 1e-6
+
+
+def test_five_line_patch_workflow():
+    """Verify the minimal patch antenna workflow runs in <= 5 API calls.
+
+    Five user-facing lines (excluding import):
+      1. sim = Simulation(freq_max=..., domain=..., boundary="cpml")
+      2. sim.add(patch, material="pec")
+      3. sim.add(substrate, material="fr4")
+      4. sim.add_port(position=..., component="ez")
+      5. result = sim.run(n_steps=...)
+
+    Uses a coarse grid (dx=5mm) and few steps for fast CI execution.
+    """
+    sim = rfx.Simulation(
+        freq_max=4e9, domain=(0.08, 0.06, 0.02),
+        boundary="cpml", cpml_layers=8, dx=5e-3,
+    )
+    sim.add(
+        Box((-19e-3, -14.5e-3, 0.8e-3), (19e-3, 14.5e-3, 0.8e-3)),
+        material="pec",
+    )  # patch
+    sim.add(
+        Box((-30e-3, -25e-3, 0), (30e-3, 25e-3, 1.6e-3)),
+        material="fr4",
+    )  # substrate
+    sim.add_port(position=(5e-3, 0, 0.8e-3), component="ez")
+    result = sim.run(n_steps=50)
+
+    assert isinstance(result, Result)
+    # The port excites the domain; verify non-zero fields in final state
+    ez_peak = float(jnp.max(jnp.abs(result.state.ez)))
+    assert ez_peak > 0, "Port should excite non-zero Ez field"

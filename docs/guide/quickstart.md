@@ -2,6 +2,26 @@
 
 This guide walks through your first rfx simulation in 15 minutes.
 
+## Minimal Workflow (5 lines)
+
+A patch antenna simulation in five lines -- define the domain, add geometry, add a port, and run:
+
+```python
+import rfx
+
+sim = rfx.Simulation(freq_max=4e9, domain=(0.08, 0.06, 0.02), boundary="cpml")
+sim.add(rfx.Box((-19e-3, -14.5e-3, 0.8e-3), (19e-3, 14.5e-3, 0.8e-3)), material="pec")   # patch
+sim.add(rfx.Box((-30e-3, -25e-3, 0), (30e-3, 25e-3, 1.6e-3)), material="fr4")             # substrate
+sim.add_port(position=(5e-3, 0, 0.8e-3), component="ez")
+result = sim.run(until_decay=1e-3)
+```
+
+`Box(corner_lo, corner_hi)` defines axis-aligned boxes in metres. Library materials
+like `"pec"` and `"fr4"` are built in -- no manual definition needed. Use
+`add_port()` for excitation with S-parameter extraction or `add_source()` for
+unloaded excitation (e.g. resonance studies). Add `add_probe()` calls to record
+time-domain field data at specific locations.
+
 ## 1. PEC Cavity Resonance
 
 The simplest FDTD simulation: a rectangular PEC (perfect electric conductor) cavity.
