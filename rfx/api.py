@@ -1318,9 +1318,9 @@ class Simulation:
 
     def _run_subgridded(self, grid_coarse, base_materials_coarse, pec_mask_coarse,
                         n_steps):
-        """Run simulation using SBP-SAT subgridding."""
-        from rfx.subgridding.sbp_sat_3d import SubgridConfig3D, SubgridState3D
-        from rfx.subgridding.runner import run_subgridded as _run_sg
+        """Run simulation using SBP-SAT subgridding (JIT-compiled)."""
+        from rfx.subgridding.sbp_sat_3d import SubgridConfig3D
+        from rfx.subgridding.jit_runner import run_subgridded_jit as _run_sg
 
         ref = self._refinement
         ratio = ref["ratio"]
@@ -1431,6 +1431,18 @@ class Simulation:
             axis_map = {"ex": 0, "ey": 1, "ez": 2}
             axis = axis_map[pe.component]
 
+            if pe.impedance == 0.0:
+                # Soft source (J-source Cb normalized, no port impedance)
+                idx = _pos_to_fine_idx(pe.position)
+                i, j, k = idx
+                eps = float(mats_f.eps_r[i, j, k]) * EPS_0
+                sigma_val = float(mats_f.sigma[i, j, k])
+                loss = sigma_val * dt / (2.0 * eps)
+                cb = (dt / eps) / (1.0 + loss)
+                waveform = cb * jax.vmap(pe.waveform)(times)
+                sources_f.append((i, j, k, pe.component, np.array(waveform)))
+                continue
+
             if pe.extent is not None:
                 # Wire port: compute cells manually
                 pos_f = (pe.position[0] - x_off, pe.position[1] - y_off,
@@ -1493,7 +1505,6 @@ class Simulation:
         result = _run_sg(
             grid_coarse,
             base_materials_coarse,
-            None,  # fine_grid not used directly
             mats_f,
             config,
             n_steps,
@@ -1505,12 +1516,12 @@ class Simulation:
         )
 
         return Result(
-            state=result["state_f"],
-            time_series=result["time_series"],
+            state=result.state_f,
+            time_series=result.time_series,
             s_params=None,
             freqs=None,
             dt=dt,
-            freq_range=(self._freq_max / 10, self._freq_max),
+            freq_range=(self._freq_max / 10, self._freq_max, 'cpml'),
         )
 
     # ---- run ----
