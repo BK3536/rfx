@@ -495,13 +495,14 @@ def run(
             update_tfsf_1d_h,
             apply_tfsf_e,
             apply_tfsf_h,
+            is_tfsf_2d,
         )
 
         tfsf_cfg, tfsf_state = tfsf
         carry_init["tfsf"] = tfsf_state
 
         # Detect 2D auxiliary grid (oblique incidence)
-        _tfsf_is_2d = hasattr(tfsf_cfg, 'n2x')
+        _tfsf_is_2d = is_tfsf_2d(tfsf_cfg)
         if _tfsf_is_2d:
             from rfx.sources.tfsf_2d import update_tfsf_2d_h, update_tfsf_2d_e
 
@@ -908,12 +909,13 @@ def run_until_decay(
             update_tfsf_1d_h,
             apply_tfsf_e,
             apply_tfsf_h,
+            is_tfsf_2d,
         )
         tfsf_cfg, tfsf_state = tfsf
         carry["tfsf"] = tfsf_state
 
         # Detect 2D auxiliary grid (oblique incidence)
-        _tfsf_is_2d = hasattr(tfsf_cfg, 'n2x')
+        _tfsf_is_2d = is_tfsf_2d(tfsf_cfg)
         if _tfsf_is_2d:
             from rfx.sources.tfsf_2d import update_tfsf_2d_h, update_tfsf_2d_e
 
