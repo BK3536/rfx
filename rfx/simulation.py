@@ -660,7 +660,8 @@ def run(
                 else:
                     i_val = (st.hx[mi,mj,mk] - st.hx[mi,mj,mk-1]
                              - st.hz[mi,mj,mk] + st.hz[mi-1,mj,mk]) * dx
-                phase = jnp.exp(-1j * 2.0 * jnp.pi * wp_meta.freqs * t) * dt
+                t_f64 = t.astype(jnp.float64) if hasattr(t, 'astype') else jnp.float64(t)
+                phase = jnp.exp(-1j * 2.0 * jnp.pi * wp_meta.freqs.astype(jnp.float64) * t_f64).astype(jnp.complex64) * dt
                 new_wire_accs.append((
                     v_dft + v * phase,
                     i_dft + i_val * phase,

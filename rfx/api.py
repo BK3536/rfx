@@ -30,6 +30,7 @@ import numpy as np
 from rfx.grid import Grid, C0
 from rfx.core.yee import MaterialArrays, init_materials, EPS_0
 from rfx.geometry.csg import Shape, Box, Sphere, Cylinder, rasterize
+from rfx.nonuniform import NonUniformGrid, make_nonuniform_grid, run_nonuniform, make_current_source
 from rfx.sources.sources import GaussianPulse, LumpedPort, setup_lumped_port, WirePort, setup_wire_port
 from rfx.materials.debye import DebyePole, init_debye
 from rfx.materials.lorentz import LorentzPole, init_lorentz, drude_pole, lorentz_pole
@@ -120,14 +121,17 @@ class Result(NamedTuple):
     freq_range: tuple | None = None
 
     def find_resonances(self, freq_range=None, probe_idx=0,
-                         source_decay_time=0.0, bandpass=None):
+                         source_decay_time=None, bandpass=None):
         """Extract resonant modes from probe time series via Harminv.
 
         Parameters
         ----------
         freq_range : (f_min, f_max) in Hz, or None to use stored range
         probe_idx : which probe to analyze
-        source_decay_time : time (s) after which source has decayed
+        source_decay_time : float or None
+            Time (s) after which source has decayed. If None, auto-
+            computed as 2×(3/π/f_center/bandwidth) — skips the Gaussian
+            excitation region for clean ring-down analysis.
         bandpass : bool or None
             Apply FFT bandpass before Harminv. Default: auto (True for
             CPML results where DC/surface-wave artifacts exist, False
@@ -160,21 +164,41 @@ class Result(NamedTuple):
         if bandpass is None:
             bandpass = stored_boundary == 'cpml'
 
-        if bandpass:
-            return harminv_from_probe(ts, self.dt, fr,
-                                      source_decay_time=source_decay_time)
+        # Auto-compute source decay time from freq range if not specified.
+        # GaussianPulse: tau = 1/(f_center * bw * pi), source decays by 6*tau.
+        # Use 2*t0 (= 2 * 3*tau) for safe margin.
+        if source_decay_time is None:
+            f_center = (fr[0] + fr[1]) / 2
+            bw = 0.8  # default bandwidth
+            tau = 1.0 / (f_center * bw * np.pi)
+            source_decay_time = 2.0 * 3.0 * tau
+
+        # Always try direct Harminv first (most accurate when signal is clean).
+        # Fall back to bandpass-filtered Harminv if direct fails or if
+        # bandpass is explicitly requested (e.g., CPML with DC artifacts).
+        start = int(np.ceil(source_decay_time / self.dt))
+        start = min(start, max(len(ts) - 20, 0))
+        w = ts[start:] - np.mean(ts[start:])
+
+        # Subsample only for very long signals (SVD scales as N³ on pencil size).
+        # Keep up to 10K samples for accuracy; subsample beyond that.
+        max_direct = 10000
+        if len(w) > max_direct:
+            step = len(w) // max_direct
+            w_sub = w[::step][:max_direct]
+            dt_h = self.dt * step
         else:
-            # Direct Harminv without bandpass (for PEC cavities)
-            start = int(np.ceil(source_decay_time / self.dt))
-            start = min(start, max(len(ts) - 20, 0))
-            w = ts[start:] - np.mean(ts[start:])
-            if len(w) > 3000:
-                step = len(w) // 3000
-                w = w[::step][:3000]
-                dt_h = self.dt * step
-            else:
-                dt_h = self.dt
-            return harminv(w, dt_h, fr[0], fr[1])
+            w_sub = w
+            dt_h = self.dt
+
+        modes = harminv(w_sub, dt_h, fr[0], fr[1])
+
+        if not modes and bandpass:
+            # Bandpass fallback: filter out DC/surface-wave artifacts
+            modes = harminv_from_probe(ts, self.dt, fr,
+                                        source_decay_time=source_decay_time)
+
+        return modes
 
 
 # ---------------------------------------------------------------------------
@@ -318,12 +342,19 @@ class Simulation:
         cpml_layers: int = 10,
         dx: float | None = None,
         mode: str = "3d",
+        dz_profile: np.ndarray | None = None,
     ):
         if boundary not in ("pec", "cpml"):
             raise ValueError(f"boundary must be 'pec' or 'cpml', got {boundary!r}")
         if freq_max <= 0:
             raise ValueError(f"freq_max must be positive, got {freq_max}")
-        if any(d <= 0 for d in domain):
+        # When dz_profile is provided, z-domain comes from the profile (z=0 OK)
+        if dz_profile is not None:
+            if any(d <= 0 for d in domain[:2]):
+                raise ValueError(f"domain x/y must be positive, got {domain}")
+            if domain[2] <= 0:
+                domain = (domain[0], domain[1], float(np.sum(dz_profile)))
+        elif any(d <= 0 for d in domain):
             raise ValueError(f"domain dimensions must be positive, got {domain}")
 
         self._freq_max = freq_max
@@ -332,6 +363,7 @@ class Simulation:
         self._cpml_layers = cpml_layers if boundary == "cpml" else 0
         self._dx = dx
         self._mode = mode
+        self._dz_profile = dz_profile
 
         # Registered items
         self._materials: dict[str, MaterialSpec] = {}
@@ -1492,11 +1524,11 @@ class Simulation:
         for entry in self._geometry:
             mat = self._resolve_material(entry.material_name)
             shape = entry.shape
-            if hasattr(shape, 'corner1') and hasattr(shape, 'corner2'):
+            if hasattr(shape, 'corner_lo') and hasattr(shape, 'corner_hi'):
                 from rfx.geometry.csg import Box
                 # Offset shape to fine grid local coordinates
-                c1 = shape.corner1
-                c2 = shape.corner2
+                c1 = shape.corner_lo
+                c2 = shape.corner_hi
                 # Map physical coords to fine grid indices
                 i0 = max(0, int(round((c1[0] - x_off) / dx_f)))
                 i1 = min(nx_f, int(round((c2[0] - x_off) / dx_f)))
@@ -1627,6 +1659,208 @@ class Simulation:
             freq_range=(self._freq_max / 10, self._freq_max, 'cpml'),
         )
 
+    # ---- non-uniform mesh run path ----
+
+    def _build_nonuniform_grid(self) -> NonUniformGrid:
+        """Build a NonUniformGrid from stored dz_profile."""
+        dx = self._dx
+        if dx is None:
+            dx = C0 / self._freq_max / 20.0
+        domain_xy = (self._domain[0], self._domain[1])
+        return make_nonuniform_grid(
+            domain_xy, self._dz_profile, dx, self._cpml_layers,
+        )
+
+    def _assemble_materials_nu(
+        self, grid: NonUniformGrid,
+    ) -> tuple[MaterialArrays, jnp.ndarray | None]:
+        """Build material arrays for non-uniform grid (no dispersion yet)."""
+        shape = (grid.nx, grid.ny, grid.nz)
+        eps_r = jnp.ones(shape, dtype=jnp.float32)
+        sigma = jnp.zeros(shape, dtype=jnp.float32)
+        mu_r = jnp.ones(shape, dtype=jnp.float32)
+        pec_mask = jnp.zeros(shape, dtype=jnp.bool_)
+
+        cpml = grid.cpml_layers
+        dx = grid.dx
+        # Cumulative z positions for index mapping
+        dz_np = np.array(grid.dz)
+        z_cumsum = np.cumsum(dz_np)
+        z_cumsum = np.insert(z_cumsum, 0, 0.0)
+
+        for entry in self._geometry:
+            mat = self._resolve_material(entry.material_name)
+            shape_obj = entry.shape
+            if hasattr(shape_obj, 'corner_lo') and hasattr(shape_obj, 'corner_hi'):
+                c1, c2 = shape_obj.corner_lo, shape_obj.corner_hi
+                # x,y: uniform grid mapping (physical coords include CPML offset)
+                ix0 = max(0, int(round(c1[0] / dx)) + cpml)
+                ix1 = min(grid.nx, int(round(c2[0] / dx)) + cpml)
+                iy0 = max(0, int(round(c1[1] / dx)) + cpml)
+                iy1 = min(grid.ny, int(round(c2[1] / dx)) + cpml)
+                # z: map physical z to non-uniform grid index
+                z_lo_phys = c1[2]
+                z_hi_phys = c2[2]
+                # z_cumsum[cpml] = start of physical domain
+                z_offset = z_cumsum[cpml]
+                iz0 = cpml + int(np.argmin(np.abs(
+                    z_cumsum[cpml:] - z_offset - z_lo_phys)))
+                iz1 = cpml + int(np.argmin(np.abs(
+                    z_cumsum[cpml:] - z_offset - z_hi_phys)))
+                if iz1 <= iz0:
+                    iz1 = iz0 + 1  # at least 1 cell
+
+                if ix0 < ix1 and iy0 < iy1 and iz0 < iz1:
+                    if mat.sigma >= self._PEC_SIGMA_THRESHOLD:
+                        pec_mask = pec_mask.at[ix0:ix1, iy0:iy1, iz0:iz1].set(True)
+                    else:
+                        eps_r = eps_r.at[ix0:ix1, iy0:iy1, iz0:iz1].set(mat.eps_r)
+                        sigma = sigma.at[ix0:ix1, iy0:iy1, iz0:iz1].set(mat.sigma)
+                        mu_r = mu_r.at[ix0:ix1, iy0:iy1, iz0:iz1].set(mat.mu_r)
+
+        materials = MaterialArrays(eps_r=eps_r, sigma=sigma, mu_r=mu_r)
+        has_pec = bool(jnp.any(pec_mask))
+        return materials, pec_mask if has_pec else None
+
+    def _pos_to_nu_index(self, grid: NonUniformGrid, pos):
+        """Convert physical (x, y, z) to non-uniform grid indices."""
+        cpml = grid.cpml_layers
+        dx = grid.dx
+        dz_np = np.array(grid.dz)
+        z_cumsum = np.cumsum(dz_np)
+        z_cumsum = np.insert(z_cumsum, 0, 0.0)
+        z_offset = z_cumsum[cpml]
+
+        ix = int(round(pos[0] / dx)) + cpml
+        iy = int(round(pos[1] / dx)) + cpml
+        iz = cpml + int(np.argmin(np.abs(z_cumsum[cpml:] - z_offset - pos[2])))
+        return (ix, iy, iz)
+
+    def _run_nonuniform(self, *, n_steps, compute_s_params=None,
+                        s_param_freqs=None):
+        """Run simulation on non-uniform grid with graded dz."""
+        grid = self._build_nonuniform_grid()
+        materials, pec_mask = self._assemble_materials_nu(grid)
+
+        sources = []
+        probes = []
+        wire_port_specs = []
+
+        for pe in self._ports:
+            idx = self._pos_to_nu_index(grid, pe.position)
+            if pe.impedance == 0.0:
+                # Current source with dV normalization
+                src = make_current_source(
+                    grid, idx, pe.component, pe.waveform, n_steps, materials)
+                sources.append(src)
+            elif pe.extent is not None:
+                # Wire port on non-uniform grid
+                axis_map = {"ex": 0, "ey": 1, "ez": 2}
+                axis = axis_map[pe.component]
+                end_pos = list(pe.position)
+                end_pos[axis] += pe.extent
+                idx_end = self._pos_to_nu_index(grid, tuple(end_pos))
+                lo_k = min(idx[axis], idx_end[axis])
+                hi_k = max(idx[axis], idx_end[axis])
+
+                wire_cells = list(range(lo_k, hi_k + 1))
+                n_cells = max(len(wire_cells), 1)
+
+                for k in wire_cells:
+                    cell = list(idx)
+                    cell[axis] = k
+                    ci, cj, ck = cell
+                    # Port impedance loading: sigma = n_cells / (Z0 * d_parallel)
+                    # For z-directed port, d_parallel = dz[k]; for x/y, use dx/dy
+                    if axis == 2:
+                        d_cell = float(grid.dz[ck])
+                    elif axis == 1:
+                        d_cell = grid.dy
+                    else:
+                        d_cell = grid.dx
+                    sigma_port = n_cells / (pe.impedance * d_cell)
+                    materials = materials._replace(
+                        sigma=materials.sigma.at[ci, cj, ck].add(
+                            sigma_port))
+                    if pec_mask is not None:
+                        pec_mask = pec_mask.at[ci, cj, ck].set(False)
+
+                # Create per-cell sources
+                mid_k = wire_cells[len(wire_cells) // 2]
+                mid_cell = list(idx)
+                mid_cell[axis] = mid_k
+
+                for k in wire_cells:
+                    cell = list(idx)
+                    cell[axis] = k
+                    src = make_current_source(
+                        grid, tuple(cell), pe.component,
+                        pe.waveform, n_steps, materials)
+                    # Scale by 1/n_cells for distributed excitation
+                    scaled_wf = np.array(src[4]) / n_cells
+                    sources.append(
+                        (src[0], src[1], src[2], src[3], scaled_wf))
+
+                # Wire port S-param spec
+                wire_port_specs.append({
+                    'mid_i': mid_cell[0], 'mid_j': mid_cell[1],
+                    'mid_k': mid_cell[2],
+                    'component': pe.component,
+                    'impedance': pe.impedance,
+                })
+            else:
+                # Single-cell lumped port
+                i, j, k = idx
+                # Use d_parallel for the port component direction
+                axis_map = {"ex": 0, "ey": 1, "ez": 2}
+                port_axis = axis_map[pe.component]
+                if port_axis == 2:
+                    d_port = float(grid.dz[k])
+                elif port_axis == 1:
+                    d_port = grid.dy
+                else:
+                    d_port = grid.dx
+                sigma_port = 1.0 / (pe.impedance * d_port)
+                materials = materials._replace(
+                    sigma=materials.sigma.at[i, j, k].add(sigma_port))
+                if pec_mask is not None:
+                    pec_mask = pec_mask.at[i, j, k].set(False)
+                src = make_current_source(
+                    grid, idx, pe.component, pe.waveform, n_steps, materials)
+                sources.append(src)
+
+        for pe in self._probes:
+            idx = self._pos_to_nu_index(grid, pe.position)
+            probes.append((*idx, pe.component))
+
+        sp_freqs = None
+        if wire_port_specs and (compute_s_params is None or compute_s_params):
+            sp_freqs = s_param_freqs
+            if sp_freqs is None:
+                sp_freqs = np.linspace(
+                    self._freq_max / 10, self._freq_max, 50)
+
+        r = run_nonuniform(
+            grid, materials, n_steps,
+            pec_mask=pec_mask,
+            sources=sources,
+            probes=probes,
+            wire_ports=wire_port_specs if wire_port_specs else None,
+            s_param_freqs=sp_freqs,
+        )
+
+        s_params = r.get("s_params")
+        freqs_out = r.get("s_param_freqs")
+
+        return Result(
+            state=r["state"],
+            time_series=r["time_series"],
+            s_params=s_params,
+            freqs=freqs_out,
+            dt=grid.dt,
+            freq_range=(self._freq_max / 10, self._freq_max, self._boundary),
+        )
+
     # ---- run ----
 
     def run(
@@ -1683,6 +1917,18 @@ class Simulation:
         -------
         Result
         """
+        # ---- Non-uniform mesh path ----
+        if self._dz_profile is not None:
+            nu_grid = self._build_nonuniform_grid()
+            if n_steps is None:
+                n_steps = int(np.ceil(
+                    num_periods / (self._freq_max * nu_grid.dt)))
+            return self._run_nonuniform(
+                n_steps=n_steps,
+                compute_s_params=compute_s_params,
+                s_param_freqs=s_param_freqs,
+            )
+
         grid = self._build_grid()
         base_materials, debye_spec, lorentz_spec, pec_mask = self._assemble_materials(grid)
         materials = base_materials

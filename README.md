@@ -63,45 +63,69 @@ Gradient computation (reverse-mode AD): **~0.31s** for all grid sizes on GPU.
 
 ## Quick Start
 
-The example below creates a PEC cavity with a dielectric slab, excites it with a lumped port, runs the simulation, extracts S11, and plots the result.
+The example below creates a PEC-walled cavity with a dielectric slab, excites it with a lumped port, runs the simulation, and plots S11 versus frequency.
 
 ```python
+import numpy as np
 import matplotlib.pyplot as plt
-from rfx import Simulation
+from rfx import Simulation, Box, GaussianPulse
 
-sim = (
-    Simulation((48, 32, 32), spacing=1e-3, dt="auto")
-    .background(eps_r=1.0)
-    .pec_box((0, 0, 0), (48, 32, 32))
-    .box((18, 8, 8), (30, 24, 24), eps_r=2.2)
-    .lumped_port("P1", start=(6, 16, 16), stop=(10, 16, 16), impedance=50.0)
-    .gaussian_pulse("P1", f0=5e9, fwidth=2e9)
-    .run(steps=1200)
-)
+# 48 mm × 32 mm × 32 mm PEC cavity, simulate up to 10 GHz
+sim = Simulation(freq_max=10e9, domain=(0.048, 0.032, 0.032), boundary="pec")
 
-freq, s11 = sim.s_parameters(port="P1", ref_impedance=50.0)["S11"]
-plt.plot(freq / 1e9, 20 * s11.log10_mag())
+# Dielectric slab filling the centre third of the cavity
+sim.add_material("slab", eps_r=2.2)
+sim.add(Box((0.016, 0.008, 0.008), (0.032, 0.024, 0.024)), material="slab")
+
+# Lumped port at one end, probe at the other
+sim.add_port((0.006, 0.016, 0.016), "ez", impedance=50.0,
+             waveform=GaussianPulse(f0=5e9, bandwidth=0.8))
+sim.add_probe((0.042, 0.016, 0.016), "ez")
+
+result = sim.run(num_periods=30)
+
+# S11 versus frequency
+freqs = result.freqs
+s11_db = 20 * np.log10(np.abs(result.s_params[0, 0, :]) + 1e-12)
+plt.plot(freqs / 1e9, s11_db)
 plt.xlabel("Frequency [GHz]")
 plt.ylabel("|S11| [dB]")
+plt.title("PEC cavity with dielectric slab")
 plt.show()
 ```
 
 ## Inverse Design Example
 
-This sketch shows a simple design-region optimization that adjusts `eps_r` between two ports to minimize reflection.
+This example optimises the permittivity inside a design region to minimise reflected power at a lumped port.
 
 ```python
+import numpy as np
 import matplotlib.pyplot as plt
-from rfx import Simulation, optim
+from rfx import Simulation, Box, GaussianPulse
+from rfx.optimize import DesignRegion, optimize
 
-sim = Simulation((80, 24, 24), spacing=1e-3).waveguide_port("in").waveguide_port("out")
-design = sim.design_region((28, 6, 6), (52, 18, 18), init_eps_r=2.0)
-opt = optim.Adam(learning_rate=5e-2)
-history = sim.optimize(design, optimizer=opt, steps=80, objective=lambda out: out.s11_power())
+sim = Simulation(freq_max=10e9, domain=(0.048, 0.032, 0.032), boundary="pec")
+sim.add_port((0.006, 0.016, 0.016), "ez", impedance=50.0,
+             waveform=GaussianPulse(f0=5e9, bandwidth=0.8))
+sim.add_probe((0.042, 0.016, 0.016), "ez")
 
-plt.plot(history["loss"])
+# Optimisable region between the port and the far wall
+region = DesignRegion(
+    corner_lo=(0.016, 0.008, 0.008),
+    corner_hi=(0.032, 0.024, 0.024),
+    eps_range=(1.0, 4.4),
+)
+
+def objective(result):
+    # Minimise reflected power averaged over all S-param frequencies
+    return float(np.mean(np.abs(result.s_params[0, 0, :]) ** 2))
+
+opt_result = optimize(sim, region, objective, n_iters=40, lr=0.05)
+
+plt.plot(opt_result.loss_history)
 plt.xlabel("Iteration")
-plt.ylabel("Loss")
+plt.ylabel("Mean |S11|²")
+plt.title("Inverse design convergence")
 plt.show()
 ```
 

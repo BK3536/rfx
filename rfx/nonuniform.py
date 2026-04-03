@@ -109,19 +109,26 @@ def make_z_profile(
     features: list[float],
     domain_z: float,
     dx_fine: float,
-    dx_coarse: float,
+    dx_coarse: float | None = None,
     grading: float = 1.4,
 ) -> np.ndarray:
     """Generate z-profile that snaps to feature boundaries.
+
+    Fine cells are used near feature boundaries; coarse cells fill the
+    remaining space.  Adjacent cells differ by at most ``grading``.
 
     Parameters
     ----------
     features : list of z-positions that must align to cell boundaries
     domain_z : total z domain height
     dx_fine : fine cell size (near features)
-    dx_coarse : coarse cell size (far from features)
-    grading : max ratio between adjacent cells
+    dx_coarse : coarse cell size (away from features). If None, uses dx_fine
+        everywhere (no grading).
+    grading : max ratio between adjacent cells (default 1.4)
     """
+    if dx_coarse is None:
+        dx_coarse = dx_fine
+
     features = sorted(set(features + [0, domain_z]))
 
     cells = []
@@ -129,14 +136,66 @@ def make_z_profile(
         span = features[i + 1] - features[i]
         if span <= 0:
             continue
-        # Use fine cells for this segment
-        n = max(1, int(round(span / dx_fine)))
-        dz = span / n
-        cells.extend([dz] * n)
 
-    # Smooth grading: transition from fine to coarse
-    # (simplified: use fine everywhere for now, optimize later)
+        if dx_coarse <= dx_fine * 1.01 or span <= 4 * dx_fine:
+            # Uniform fine cells for thin segments or when no grading needed
+            n = max(1, int(round(span / dx_fine)))
+            dz = span / n
+            cells.extend([dz] * n)
+        else:
+            # Graded transition: fine → coarse → fine
+            # Build from both ends toward the middle
+            left = []
+            dz = dx_fine
+            remaining = span
+            while remaining > 0 and dz < dx_coarse:
+                dz_use = min(dz, remaining)
+                left.append(dz_use)
+                remaining -= dz_use
+                dz = min(dz * grading, dx_coarse)
+
+            # Fill middle with coarse cells
+            if remaining > dx_coarse * 0.5:
+                n_mid = max(1, int(round(remaining / dx_coarse)))
+                mid = [remaining / n_mid] * n_mid
+            else:
+                mid = [remaining] if remaining > 1e-15 else []
+
+            cells.extend(left + mid)
+
     return np.array(cells)
+
+
+def make_current_source(grid: NonUniformGrid, position_ijk, component,
+                        waveform_fn, n_steps, materials):
+    """Create a properly normalized current source for non-uniform grid.
+
+    The waveform specifies CURRENT (Amperes). The E-field addition is:
+    E += (dt/ε) × I_source / dV
+    where dV = dx × dy × dz_local (actual cell volume).
+
+    This gives resolution-independent injected POWER regardless of cell size.
+    Same approach as Meep's internal source normalization.
+    """
+    import jax
+    i, j, k = position_ijk
+    eps = float(materials.eps_r[i, j, k]) * EPS_0
+    sigma = float(materials.sigma[i, j, k])
+    loss = sigma * grid.dt / (2.0 * eps)
+
+    # Cb = dt / (eps * (1 + loss))
+    cb = (grid.dt / eps) / (1.0 + loss)
+
+    # Cell volume: dx * dy * dz_local
+    dz_local = float(grid.dz[k])
+    dV = grid.dx * grid.dy * dz_local
+
+    # Normalized waveform: Cb * I(t) / dV
+    # This ensures power = ∫(J·E)dV is independent of cell size
+    times = jnp.arange(n_steps, dtype=jnp.float32) * grid.dt
+    waveform = (cb / dV) * jax.vmap(waveform_fn)(times)
+
+    return (i, j, k, component, np.array(waveform))
 
 
 def run_nonuniform(
@@ -251,19 +310,23 @@ def run_nonuniform(
             new_wire_sp = []
             for (v_dft, i_dft, vinc_dft), (mi, mj, mk, comp, z0) in \
                     zip(carry.get("wire_sparams", ()), wp_meta):
-                # V = -E_comp[midpoint] * dx (using local dz for non-uniform)
-                v = -getattr(st, comp)[mi, mj, mk] * grid.dx
-                # I = H-loop at midpoint
+                # V = -E_comp * d_parallel, I = H-loop * d_transverse
+                # Non-uniform z: Ez uses dz[k], Ex/Ey use dx/dy (uniform)
+                dz_local = grid.dz[mk]
                 if comp == "ez":
+                    v = -st.ez[mi, mj, mk] * dz_local
                     i_val = (st.hy[mi,mj,mk] - st.hy[mi-1,mj,mk]
                              - st.hx[mi,mj,mk] + st.hx[mi,mj-1,mk]) * grid.dx
                 elif comp == "ex":
+                    v = -st.ex[mi, mj, mk] * grid.dx
                     i_val = (st.hz[mi,mj,mk] - st.hz[mi,mj-1,mk]
-                             - st.hy[mi,mj,mk] + st.hy[mi,mj,mk-1]) * grid.dx
+                             - st.hy[mi,mj,mk] + st.hy[mi,mj,mk-1]) * dz_local
                 else:
+                    v = -st.ey[mi, mj, mk] * grid.dy
                     i_val = (st.hx[mi,mj,mk] - st.hx[mi,mj,mk-1]
-                             - st.hz[mi,mj,mk] + st.hz[mi-1,mj,mk]) * grid.dx
-                phase = jnp.exp(-1j * 2.0 * jnp.pi * sp_freqs * t) * dt
+                             - st.hz[mi,mj,mk] + st.hz[mi-1,mj,mk]) * dz_local
+                t_f64 = t.astype(jnp.float64) if hasattr(t, 'astype') else jnp.float64(t)
+                phase = jnp.exp(-1j * 2.0 * jnp.pi * sp_freqs.astype(jnp.float64) * t_f64).astype(jnp.complex64) * dt
                 new_wire_sp.append((
                     v_dft + v * phase,
                     i_dft + i_val * phase,

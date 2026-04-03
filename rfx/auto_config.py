@@ -38,6 +38,7 @@ class FeatureInfo(NamedTuple):
     max_eps_r: float          # highest relative permittivity
     has_pec: bool             # any PEC geometry present
     estimated_Q: float        # estimated cavity Q from material loss
+    z_features: list = []     # list of (z_lo, z_hi, eps_r) for z-grading
 
 
 def analyze_features(geometry: list, materials: dict, pec_threshold: float = 1e6) -> FeatureInfo:
@@ -56,6 +57,7 @@ def analyze_features(geometry: list, materials: dict, pec_threshold: float = 1e6
     max_eps_r = 1.0
     has_pec = False
     max_loss_tangent = 0.0
+    z_features = []  # (z_lo, z_hi, eps_r) for non-uniform z detection
 
     for shape, mat_name in geometry:
         mat = materials.get(mat_name, {})
@@ -64,15 +66,13 @@ def analyze_features(geometry: list, materials: dict, pec_threshold: float = 1e6
 
         if sigma >= pec_threshold:
             has_pec = True
-            # PEC shapes still contribute to geometry bounds
         else:
             max_eps_r = max(max_eps_r, eps_r)
             if sigma > 0 and eps_r > 1:
-                # Store sigma and eps_r for later Q estimation (needs frequency)
                 max_loss_tangent = max(max_loss_tangent, sigma / eps_r)
 
-        if hasattr(shape, "corner1") and hasattr(shape, "corner2"):
-            c1, c2 = shape.corner1, shape.corner2
+        if hasattr(shape, "corner_lo") and hasattr(shape, "corner_hi"):
+            c1, c2 = shape.corner_lo, shape.corner_hi
             dims = [abs(c2[i] - c1[i]) for i in range(3)]
             nonzero_dims = [d for d in dims if d > 1e-12]
             if nonzero_dims:
@@ -80,6 +80,12 @@ def analyze_features(geometry: list, materials: dict, pec_threshold: float = 1e6
                 extents.append(max(dims))
             all_corners_lo.append(c1)
             all_corners_hi.append(c2)
+
+            # Track z-extent for non-uniform mesh detection
+            z_lo, z_hi = min(c1[2], c2[2]), max(c1[2], c2[2])
+            z_thickness = z_hi - z_lo
+            if z_thickness > 1e-12 and sigma < pec_threshold:
+                z_features.append((z_lo, z_hi, eps_r))
 
     # Bounding box of all geometry
     if all_corners_lo:
@@ -92,10 +98,7 @@ def analyze_features(geometry: list, materials: dict, pec_threshold: float = 1e6
     min_thickness = min(thicknesses) if thicknesses else 0.001
     max_extent = max(extents) if extents else 0.01
 
-    # Q estimate deferred — store raw sigma/eps_r ratio for later
-    # Full formula: tan_d = sigma/(2*pi*f*eps_r*eps_0), Q ≈ 1/tan_d
-    # Frequency will be supplied by auto_configure()
-    estimated_Q = max_loss_tangent  # raw ratio, NOT Q yet; see auto_configure()
+    estimated_Q = max_loss_tangent
 
     return FeatureInfo(
         min_thickness=min_thickness,
@@ -104,6 +107,7 @@ def analyze_features(geometry: list, materials: dict, pec_threshold: float = 1e6
         max_eps_r=max_eps_r,
         has_pec=has_pec,
         estimated_Q=estimated_Q,
+        z_features=z_features,
     )
 
 
@@ -123,6 +127,7 @@ class SimConfig:
     dt: float
     accuracy: str
     warnings: list[str] = field(default_factory=list)
+    dz_profile: np.ndarray | None = None
 
     @property
     def cells_per_wavelength(self) -> float:
@@ -134,15 +139,22 @@ class SimConfig:
     def sim_time_ns(self) -> float:
         return self.n_steps * self.dt * 1e9
 
+    @property
+    def uses_nonuniform(self) -> bool:
+        return self.dz_profile is not None
+
     def to_sim_kwargs(self) -> dict:
         """Convert to keyword arguments for Simulation constructor."""
-        return {
+        kwargs = {
             "freq_max": self.freq_range[1],
             "domain": self.domain,
             "boundary": "cpml",
             "cpml_layers": self.cpml_layers,
             "dx": self.dx,
         }
+        if self.dz_profile is not None:
+            kwargs["dz_profile"] = self.dz_profile
+        return kwargs
 
     def summary(self) -> str:
         lines = [
@@ -153,6 +165,10 @@ class SimConfig:
             f"  n_steps = {self.n_steps} ({self.sim_time_ns:.1f} ns)",
             f"  freq = {self.freq_range[0]/1e9:.2f} – {self.freq_range[1]/1e9:.2f} GHz",
         ]
+        if self.dz_profile is not None:
+            dz_min = np.min(self.dz_profile) * 1e3
+            dz_max = np.max(self.dz_profile) * 1e3
+            lines.append(f"  dz = {dz_min:.3f} – {dz_max:.3f} mm ({len(self.dz_profile)} cells, non-uniform)")
         if self.warnings:
             lines.append("  WARNINGS:")
             for w in self.warnings:
@@ -227,8 +243,22 @@ def auto_configure(
         # Round to nice value
         dx = _round_dx(dx)
 
-    # Check feature resolution
-    if features.min_thickness > 0 and features.min_thickness / dx < 2:
+    # Check feature resolution — auto non-uniform z when thin z-features exist
+    # Compare against wavelength-based dx (not the feature-refined dx) to detect
+    # cases where non-uniform z saves computation vs. globally finer mesh.
+    needs_nonuniform_z = False
+    if features.z_features:
+        dx_wave_rounded = _round_dx(dx_wavelength)
+        for z_lo, z_hi, _ in features.z_features:
+            z_thick = z_hi - z_lo
+            if z_thick > 0 and z_thick / dx_wave_rounded < 4:
+                needs_nonuniform_z = True
+                # Use coarser wavelength-based dx for xy (non-uniform z handles thin features)
+                if dx_override is None:
+                    dx = dx_wave_rounded
+                break
+
+    if features.min_thickness > 0 and features.min_thickness / dx < 2 and not needs_nonuniform_z:
         warnings.append(
             f"Thinnest feature ({features.min_thickness*1e3:.2f} mm) has only "
             f"{features.min_thickness/dx:.1f} cells — consider finer dx or subgridding"
@@ -252,8 +282,24 @@ def auto_configure(
     cpml_cells = {"draft": 8, "standard": 12, "high": 16}[accuracy]
     cpml_layers = cpml_cells
 
-    # 4. Timestep
-    dt = 0.99 * dx / (C0 * math.sqrt(3))
+    # 4. Non-uniform z profile
+    dz_profile = None
+    if needs_nonuniform_z:
+        # Physical z domain = geometry extent + margin above for radiation
+        geo_z_max = max(f[1] for f in features.z_features)
+        phys_z = geo_z_max + margin
+        dz_profile = _make_dz_profile(features.z_features, phys_z, dx)
+        warnings.append(
+            f"Non-uniform z mesh enabled: {len(dz_profile)} cells, "
+            f"dz={np.min(dz_profile)*1e3:.3f}–{np.max(dz_profile)*1e3:.3f} mm"
+        )
+
+    # 4b. Timestep
+    if dz_profile is not None:
+        dz_min = float(np.min(dz_profile))
+        dt = 0.99 / (C0 * math.sqrt(1/dx**2 + 1/dx**2 + 1/dz_min**2))
+    else:
+        dt = 0.99 * dx / (C0 * math.sqrt(3))
 
     # 5. Number of steps
     # Source time: 6*tau for Gaussian pulse
@@ -293,7 +339,63 @@ def auto_configure(
         dt=dt,
         accuracy=accuracy,
         warnings=warnings,
+        dz_profile=dz_profile,
     )
+
+
+def _make_dz_profile(
+    z_features: list[tuple[float, float, float]],
+    domain_z: float,
+    dx: float,
+    min_cells_per_feature: int = 4,
+) -> np.ndarray:
+    """Generate non-uniform z cell profile from z-feature boundaries.
+
+    For each thin z-feature (substrate layer), creates fine cells that
+    exactly snap to the feature thickness. Air regions use coarse dx cells.
+
+    Parameters
+    ----------
+    z_features : list of (z_lo, z_hi, eps_r) for dielectric layers
+    domain_z : total physical z domain height (excluding CPML)
+    dx : uniform x/y cell size (used as coarse z cell size)
+    min_cells_per_feature : minimum cells to resolve each feature
+    """
+    if not z_features:
+        n = max(1, int(round(domain_z / dx)))
+        return np.ones(n) * dx
+
+    # Sort features by z_lo
+    features = sorted(z_features, key=lambda f: f[0])
+
+    # Collect z-boundary points
+    z_max = max(f[1] for f in features)
+    # Add air region above features up to domain_z
+    air_height = max(0, domain_z - z_max)
+
+    cells = []
+    z_cursor = 0.0
+
+    for z_lo, z_hi, eps_r in features:
+        # Air gap before this feature
+        gap = z_lo - z_cursor
+        if gap > dx * 0.5:
+            n_gap = max(1, int(round(gap / dx)))
+            cells.extend([gap / n_gap] * n_gap)
+
+        # Feature cells: snap exactly
+        thickness = z_hi - z_lo
+        n_feat = max(min_cells_per_feature, int(np.ceil(thickness / dx)))
+        dz_feat = thickness / n_feat
+        cells.extend([dz_feat] * n_feat)
+        z_cursor = z_hi
+
+    # Air above features
+    if air_height > dx * 0.5:
+        n_air = max(1, int(round(air_height / dx)))
+        cells.extend([air_height / n_air] * n_air)
+
+    return np.array(cells)
 
 
 def _round_dx(dx: float) -> float:

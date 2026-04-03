@@ -46,7 +46,18 @@ from rfx.optimize_objectives import (
     maximize_bandwidth,
     maximize_directivity,
 )
-from rfx.eigenmode import WaveguideMode, solve_waveguide_modes
+try:
+    from rfx.eigenmode import WaveguideMode, solve_waveguide_modes
+except ImportError:
+    # scipy is optional; eigenmode solver is unavailable without it.
+    # Accessing WaveguideMode or solve_waveguide_modes will raise ImportError.
+    def _eigenmode_unavailable(*args, **kwargs):
+        raise ImportError(
+            "rfx.eigenmode requires scipy. Install it with: pip install scipy"
+        )
+    WaveguideMode = _eigenmode_unavailable  # type: ignore[assignment]
+    solve_waveguide_modes = _eigenmode_unavailable  # type: ignore[assignment]
+from rfx.nonuniform import NonUniformGrid, make_nonuniform_grid, run_nonuniform, make_current_source
 from rfx.auto_config import auto_configure, SimConfig, analyze_features
 from rfx.harminv import harminv, harminv_from_probe, HarminvMode
 from rfx.probes.probes import (
