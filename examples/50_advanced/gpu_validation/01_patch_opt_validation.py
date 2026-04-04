@@ -1,20 +1,22 @@
-"""GPU Accuracy Validation: Topology Optimization Pipeline
+"""GPU Accuracy Validation: Topology Optimization Pipeline (Smoke Test)
 
 Validates that the rfx topology optimization pipeline works end-to-end:
-  - jax.grad flows through the full FDTD
+  - jax.grad flows through the full FDTD time-stepping
   - Adam updates reduce the objective
-  - Density filter and projection produce valid designs
+  - Density filter and Heaviside projection produce valid designs
 
 Setup:
-  A small PEC cavity (30 mm cube) with a broadband point source at
-  the centre.  A dielectric design region (air -> FR-4, eps_r 1..4.4)
-  occupies the inner volume.  The optimizer adjusts the eps_r
-  distribution to maximise total probe energy (equivalently, shift
-  cavity resonance toward the source centre frequency).
+  A small PEC cavity (30 mm cube) with a broadband soft source and a
+  probe at separate locations.  A dielectric design region (air → FR-4,
+  eps_r 1..4.4) occupies the inner volume.  The optimizer adjusts the
+  eps_r distribution to maximise probe energy.
 
   Using material_fg="fr4" (not "pec") is essential because the
   topology optimizer only interpolates eps_r.  PEC's eps_r = 1.0
   (same as air), so an air-to-PEC design region gives zero gradient.
+
+  This is a PIPELINE SMOKE TEST (gradient flow + convergence), not a
+  physics accuracy test against analytical theory.
 
 Validation criteria:
   - Optimizer completes without error
@@ -72,15 +74,15 @@ def main():
 
     centre = dom / 2.0
 
-    # Soft source (no port loading) for clean resonance excitation
+    # Soft source — offset from probe to avoid measuring the source directly
     sim.add_source(
-        position=(centre, centre, centre),
+        position=(centre - 3 * dx, centre, centre),
         component="ez",
         waveform=GaussianPulse(f0=f0, bandwidth=0.8),
     )
 
-    # Probe at the same location to observe energy build-up
-    sim.add_probe(position=(centre, centre, centre), component="ez")
+    # Probe at a separate location to observe cavity response, not source
+    sim.add_probe(position=(centre + 3 * dx, centre, centre), component="ez")
 
     # ---- Design region: inner cube, air -> fr4 ----
     margin = 0.008  # 8 mm from each wall

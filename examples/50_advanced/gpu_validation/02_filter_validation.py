@@ -12,8 +12,11 @@ Physics:
   Harminv (Matrix Pencil Method) and compare against the analytical
   frequency.
 
+  Uses a soft source (not impedance port) to avoid damping the cavity
+  Q and shifting the resonance.
+
 Validation criteria:
-  - Harminv-extracted resonance frequency within 3% of analytical TE_101
+  - Harminv-extracted resonance frequency within 1.5% of analytical TE_101
   - At least one clear mode detected by Harminv
 
 Reference:
@@ -39,7 +42,7 @@ from rfx.grid import C0
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = SCRIPT_DIR
 
-THRESHOLD_PCT = 3.0  # max allowed frequency error
+THRESHOLD_PCT = 1.5  # max allowed frequency error (soft source, no port loading)
 
 
 def main():
@@ -74,15 +77,15 @@ def main():
         dx=dx,
     )
 
-    # Excitation: off-centre to excite TE101 mode, centred on analytical freq
+    # Excitation: off-centre soft source to excite TE101 mode cleanly.
+    # Soft source (no impedance) avoids damping the cavity Q.
     exc_x = L_cav * 0.25
     exc_y = a_wg / 2
     exc_z = b_wg / 2
 
-    sim.add_port(
+    sim.add_source(
         (exc_x, exc_y, exc_z),
         component="ez",
-        impedance=50.0,
         waveform=GaussianPulse(f0=f_te101, bandwidth=0.5),
     )
     sim.add_probe((exc_x, exc_y, exc_z), component="ez")
