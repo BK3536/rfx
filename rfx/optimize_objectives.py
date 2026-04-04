@@ -4,13 +4,31 @@ Each factory returns a callable ``objective(result) -> scalar`` that
 is compatible with :func:`rfx.optimize.optimize` and differentiable
 through JAX.
 
+**S-parameter vs time-domain objectives**
+
+The frequency-domain objectives (``minimize_s11``, ``maximize_s21``,
+``target_impedance``, ``maximize_bandwidth``) require ``result.s_params``
+to be populated.  This happens automatically when running a simulation
+via ``Simulation.run()`` with ports, but the lightweight forward pass
+used inside ``optimize()`` and ``topology_optimize()`` does **not**
+compute S-parameters (it would break JAX traceability).
+
+For gradient-based optimization, use the **time-domain proxy**
+objectives instead:
+
+- ``minimize_reflected_energy`` -- proxy for minimizing S11
+- ``maximize_transmitted_energy`` -- proxy for maximizing S21
+
+These operate directly on ``result.time_series`` and are fully
+JAX-differentiable through the FDTD scan loop.
+
 Typical usage
 -------------
 >>> from rfx import Simulation, optimize, DesignRegion
->>> from rfx.optimize_objectives import minimize_s11
+>>> from rfx.optimize_objectives import minimize_reflected_energy
 >>> sim = Simulation(freq_max=10e9, domain=(0.05, 0.05, 0.025))
 >>> # ... add geometry, ports, probes ...
->>> obj = minimize_s11(freqs=jnp.linspace(2e9, 6e9, 20), target_db=-10)
+>>> obj = minimize_reflected_energy(port_probe_idx=0)
 >>> result = optimize(sim, region, obj, n_iters=50)
 """
 
@@ -73,6 +91,13 @@ def minimize_s11(
 
     def objective(result) -> jnp.ndarray:
         s_params = result.s_params  # (n_ports, n_ports, n_freqs) complex
+        if s_params is None:
+            raise ValueError(
+                "minimize_s11 requires result.s_params but got None. "
+                "The optimize() / topology_optimize() forward pass does not "
+                "compute S-parameters. Use minimize_reflected_energy() as a "
+                "time-domain proxy objective for gradient-based optimization."
+            )
         result_freqs = result.freqs  # (n_freqs,)
 
         s11 = s_params[0, 0, :]  # (n_freqs,) complex
@@ -111,6 +136,13 @@ def maximize_s21(
 
     def objective(result) -> jnp.ndarray:
         s_params = result.s_params  # (n_ports, n_ports, n_freqs) complex
+        if s_params is None:
+            raise ValueError(
+                "maximize_s21 requires result.s_params but got None. "
+                "The optimize() / topology_optimize() forward pass does not "
+                "compute S-parameters. Use maximize_transmitted_energy() as a "
+                "time-domain proxy objective for gradient-based optimization."
+            )
         result_freqs = result.freqs
 
         s21 = s_params[1, 0, :]  # (n_freqs,) complex
@@ -150,6 +182,13 @@ def target_impedance(
 
     def objective(result) -> jnp.ndarray:
         s_params = result.s_params
+        if s_params is None:
+            raise ValueError(
+                "target_impedance requires result.s_params but got None. "
+                "The optimize() / topology_optimize() forward pass does not "
+                "compute S-parameters. Use a time-domain proxy objective "
+                "for gradient-based optimization."
+            )
         result_freqs = result.freqs
 
         s11 = s_params[0, 0, :]  # (n_freqs,) complex
@@ -203,6 +242,13 @@ def maximize_bandwidth(
 
     def objective(result) -> jnp.ndarray:
         s_params = result.s_params
+        if s_params is None:
+            raise ValueError(
+                "maximize_bandwidth requires result.s_params but got None. "
+                "The optimize() / topology_optimize() forward pass does not "
+                "compute S-parameters. Use minimize_reflected_energy() as a "
+                "time-domain proxy objective for gradient-based optimization."
+            )
         result_freqs = jnp.asarray(result.freqs, dtype=jnp.float32)
 
         s11 = s_params[0, 0, :]  # (n_freqs,) complex
@@ -287,5 +333,76 @@ def maximize_directivity(
 
         # Negate: minimizing this = maximizing directivity
         return -mean_power
+
+    return objective
+
+
+# ---------------------------------------------------------------------------
+# Time-domain proxy objectives (for use with optimize / topology_optimize)
+# ---------------------------------------------------------------------------
+
+def minimize_reflected_energy(
+    port_probe_idx: int = 0,
+    *,
+    late_fraction: float = 0.5,
+) -> Callable:
+    """Time-domain S11 proxy: minimize late-time reflected energy at port.
+
+    Computes the ratio of energy in the second half of the probe time
+    series (dominated by reflections) to energy in the first half
+    (dominated by the incident pulse).  Minimizing this ratio drives
+    the optimizer toward better impedance matching.
+
+    This objective works with ``optimize()`` and ``topology_optimize()``
+    because it uses only ``result.time_series`` (no S-parameters needed).
+
+    Parameters
+    ----------
+    port_probe_idx : int
+        Index into ``result.time_series`` columns identifying the probe
+        co-located with the excitation port (default 0).
+    late_fraction : float
+        Fraction of the time series considered "late" (default 0.5).
+        A value of 0.5 means the second half is treated as reflection.
+
+    Returns
+    -------
+    callable(Result) -> scalar (JAX-differentiable)
+    """
+    def objective(result) -> jnp.ndarray:
+        ts = result.time_series[:, port_probe_idx]
+        n = ts.shape[0]
+        split = int(n * (1.0 - late_fraction))
+        early_energy = jnp.sum(ts[:split] ** 2) + 1e-30
+        late_energy = jnp.sum(ts[split:] ** 2)
+        return late_energy / early_energy
+
+    return objective
+
+
+def maximize_transmitted_energy(
+    output_probe_idx: int = -1,
+) -> Callable:
+    """Time-domain S21 proxy: maximize energy at an output probe.
+
+    Returns the negated total squared energy at the output probe, so
+    that *minimizing* this objective maximizes transmission.
+
+    This objective works with ``optimize()`` and ``topology_optimize()``
+    because it uses only ``result.time_series`` (no S-parameters needed).
+
+    Parameters
+    ----------
+    output_probe_idx : int
+        Index into ``result.time_series`` columns for the output probe.
+        Default -1 (last probe).
+
+    Returns
+    -------
+    callable(Result) -> scalar (JAX-differentiable)
+    """
+    def objective(result) -> jnp.ndarray:
+        ts = result.time_series[:, output_probe_idx]
+        return -jnp.sum(ts ** 2)
 
     return objective
