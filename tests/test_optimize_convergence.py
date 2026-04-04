@@ -50,7 +50,7 @@ def _build_forward(sim, region, n_steps, objective_fn):
 
     def forward(lat):
         eps_design = _latent_to_eps(lat, eps_min, eps_max)
-        materials, debye_spec, lorentz_spec, _ = sim._assemble_materials(grid)
+        materials, debye_spec, lorentz_spec, _, _ = sim._assemble_materials(grid)
         eps_r = materials.eps_r
 
         si, sj, sk = lo_idx
