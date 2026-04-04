@@ -1840,9 +1840,21 @@ class Simulation:
         for pe in self._probes:
             probes.append(make_probe(grid, pe.position, pe.component))
 
+        # Auto-register probes at port positions when none are set
+        if not probes and self._ports:
+            for pe in self._ports:
+                probes.append(make_probe(grid, pe.position, pe.component))
+
         _, debye, lorentz = self._init_dispersion(
             materials, grid.dt, debye_spec, lorentz_spec,
         )
+
+        # NTFF box for far-field objectives
+        ntff_box = None
+        if self._ntff is not None:
+            from rfx.farfield import make_ntff_box
+            corner_lo, corner_hi, freqs = self._ntff
+            ntff_box = make_ntff_box(grid, corner_lo, corner_hi, freqs)
 
         result = _run(
             grid, materials, n_steps,
@@ -1851,6 +1863,7 @@ class Simulation:
             lorentz=lorentz,
             sources=sources,
             probes=probes,
+            ntff=ntff_box,
             checkpoint=checkpoint,
         )
         return result
