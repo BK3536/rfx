@@ -185,7 +185,7 @@ class TestConformalConvergence:
             errors_staircase.append(norm_err_s)
             errors_conformal.append(norm_err_c)
 
-        print(f"\nConvergence study:")
+        print("\nConvergence study:")
         for i, dx in enumerate(dx_values):
             ppw = wavelength / dx
             print(f"  dx=lambda/{ppw:.0f}: staircase={errors_staircase[i]:.4e}, "

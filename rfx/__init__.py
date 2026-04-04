@@ -1,6 +1,6 @@
 """rfx — JAX-based RF FDTD electromagnetic simulator."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from rfx.grid import Grid
 from rfx.simulation import run, run_until_decay, make_source, make_probe, make_port_source, SimResult
@@ -101,4 +101,7 @@ from rfx.material_fit import (
     load_material_csv, fit_debye, fit_lorentz,
     eval_debye, eval_lorentz, plot_material_fit,
     DebyeFitResult, LorentzFitResult,
+)
+from rfx.differentiable_material_fit import (
+    differentiable_material_fit, MaterialFitResult, sparam_loss,
 )

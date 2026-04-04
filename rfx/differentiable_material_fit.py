@@ -315,8 +315,6 @@ def differentiable_material_fit(
     MaterialFitResult
     """
     from rfx.core.yee import MaterialArrays
-    from rfx.materials.debye import init_debye
-    from rfx.materials.lorentz import init_lorentz
     from rfx.simulation import run as sim_run, make_port_source, make_probe
     from rfx.sources.sources import LumpedPort, setup_lumped_port
 
@@ -369,7 +367,6 @@ def differentiable_material_fit(
     )
     grid = dummy_sim._build_grid()
     dt = grid.dt
-    dx = grid.dx
     n_steps = grid.num_timesteps(num_periods=20.0)
 
     # ------------------------------------------------------------------
@@ -445,7 +442,7 @@ def differentiable_material_fit(
         # Use probe time series and compute S-params from voltage/current DFTs
         ts = result.time_series  # (n_steps, n_probes)
         n_probes = ts.shape[1] if ts.ndim > 1 else 1
-        n_freqs = len(freqs)
+        len(freqs)
 
         # Compute DFT of probe time series at target frequencies
         times = jnp.arange(n_steps) * dt
