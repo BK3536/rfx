@@ -97,6 +97,14 @@ def init_tfsf_2d(
     """
     if polarization not in ("ez", "ey"):
         raise ValueError(f"polarization must be 'ez' or 'ey', got {polarization!r}")
+    if polarization == "ey" and abs(theta_deg) > 0.01:
+        raise NotImplementedError(
+            "Oblique TFSF with ey polarization is not yet supported.  "
+            "The 2D auxiliary grid operates in the xy-plane (TMz mode) which "
+            "correctly encodes oblique angles for ez polarization.  For ey "
+            "polarization the oblique tilt lies in the xz-plane, requiring "
+            "a separate TEz auxiliary grid (not yet implemented)."
+        )
     if direction not in ("+x", "-x"):
         raise ValueError(f"direction must be '+x' or '-x', got {direction!r}")
     if abs(theta_deg) >= 90.0:
@@ -344,13 +352,21 @@ def apply_tfsf_2d_e(state, cfg: TFSF2DConfig, tfsf_st: TFSF2DState,
                      dx: float, dt: float):
     """Apply E-field TFSF correction using 2D aux grid (call AFTER update_e).
 
-    Ez[x_lo, j, :] -= (dt/(eps0*dx)) * Hy_inc[x_lo-0.5, j]
-    Ez[x_hi+1, j, :] += (dt/(eps0*dx)) * Hy_inc[x_hi+0.5, j]
+    The 2D auxiliary grid always runs TMz, so ``hy_2d`` is the TMz Hy
+    regardless of 3D polarization.  For Ez polarization the sampled Hy
+    maps directly to the incident Hy needed by the 3D correction.  For
+    Ey polarization the incident Hz equals ``-hy_2d`` (TEz↔TMz sign
+    relation), which exactly cancels the curl-sign flip, leaving the
+    same fixed signs ``(-coeff, +coeff)`` for both polarizations.
+
+    E_inc[x_lo, j, :] -= (dt/(eps0*dx)) * H_aux[x_lo-0.5, j]
+    E_inc[x_hi+1, j, :] += (dt/(eps0*dx)) * H_aux[x_hi+0.5, j]
     """
     coeff = dt / (EPS_0 * dx)
     i0 = cfg.i0_x
-    ny_3d = state.ez.shape[1]
-    nz_3d = state.ez.shape[2]
+    e_ref = getattr(state, cfg.electric_component)
+    ny_3d = e_ref.shape[1]
+    nz_3d = e_ref.shape[2]
 
     h_inc_lo = _sample_hy_at_x(cfg, tfsf_st, i0 - 1, ny_3d)
     h_inc_hi = _sample_hy_at_x(cfg, tfsf_st, i0 + (cfg.x_hi - cfg.x_lo), ny_3d)
@@ -358,9 +374,12 @@ def apply_tfsf_2d_e(state, cfg: TFSF2DConfig, tfsf_st: TFSF2DState,
     h_lo_3d = jnp.broadcast_to(h_inc_lo[:, None], (ny_3d, nz_3d))
     h_hi_3d = jnp.broadcast_to(h_inc_hi[:, None], (ny_3d, nz_3d))
 
-    e_field = getattr(state, cfg.electric_component)
-    e_field = e_field.at[cfg.x_lo, :, :].add(-cfg.curl_sign * coeff * h_lo_3d)
-    e_field = e_field.at[cfg.x_hi + 1, :, :].add(cfg.curl_sign * coeff * h_hi_3d)
+    # Signs are fixed (-coeff at x_lo, +coeff at x_hi+1) for both
+    # polarizations because the TMz-to-TEz field mapping sign cancels
+    # the Ampere curl-sign difference.  See docstring above.
+    e_field = e_ref
+    e_field = e_field.at[cfg.x_lo, :, :].add(-coeff * h_lo_3d)
+    e_field = e_field.at[cfg.x_hi + 1, :, :].add(coeff * h_hi_3d)
 
     return state._replace(**{cfg.electric_component: e_field})
 
@@ -369,13 +388,19 @@ def apply_tfsf_2d_h(state, cfg: TFSF2DConfig, tfsf_st: TFSF2DState,
                      dx: float, dt: float):
     """Apply H-field TFSF correction using 2D aux grid (call AFTER update_h).
 
-    Hy[x_lo-1, j, :] -= (dt/(mu0*dx)) * Ez_inc[x_lo, j]
-    Hy[x_hi, j, :]   += (dt/(mu0*dx)) * Ez_inc[x_hi+1, j]
+    The 2D auxiliary grid's ``ez_2d`` serves as the incident electric
+    field for both polarizations (no sign conversion needed).  The
+    ``curl_sign`` correctly accounts for the Faraday curl difference
+    between Hy (Ez pol) and Hz (Ey pol).
+
+    H_mag[x_lo-1, j, :] -= curl_sign * (dt/(mu0*dx)) * E_aux[x_lo, j]
+    H_mag[x_hi, j, :]   += curl_sign * (dt/(mu0*dx)) * E_aux[x_hi+1, j]
     """
     coeff = dt / (MU_0 * dx)
     i0 = cfg.i0_x
-    ny_3d = state.hy.shape[1]
-    nz_3d = state.hy.shape[2]
+    h_ref = getattr(state, cfg.magnetic_component)
+    ny_3d = h_ref.shape[1]
+    nz_3d = h_ref.shape[2]
 
     e_inc_lo = _sample_ez_at_x(cfg, tfsf_st, i0, ny_3d)
     e_inc_hi = _sample_ez_at_x(cfg, tfsf_st, i0 + (cfg.x_hi + 1 - cfg.x_lo), ny_3d)
@@ -383,7 +408,7 @@ def apply_tfsf_2d_h(state, cfg: TFSF2DConfig, tfsf_st: TFSF2DState,
     e_lo_3d = jnp.broadcast_to(e_inc_lo[:, None], (ny_3d, nz_3d))
     e_hi_3d = jnp.broadcast_to(e_inc_hi[:, None], (ny_3d, nz_3d))
 
-    h_field = getattr(state, cfg.magnetic_component)
+    h_field = h_ref
     h_field = h_field.at[cfg.x_lo - 1, :, :].add(-cfg.curl_sign * coeff * e_lo_3d)
     h_field = h_field.at[cfg.x_hi, :, :].add(cfg.curl_sign * coeff * e_hi_3d)
 
