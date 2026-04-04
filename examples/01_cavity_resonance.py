@@ -19,6 +19,7 @@ import numpy as np
 from rfx import Simulation
 from rfx.grid import C0
 from rfx.sources.sources import ModulatedGaussian
+from rfx.simulation import SnapshotSpec
 
 # ---- Cavity dimensions (metres) ----
 a, b, d = 0.10, 0.10, 0.05
@@ -36,6 +37,9 @@ sim = Simulation(
     dx=0.001,
 )
 
+grid = sim._build_grid()
+nz = grid.nz
+
 # Soft source (impedance=0) near one corner to excite TM110.
 # ModulatedGaussian has zero DC content, preventing static charge
 # accumulation on PEC surfaces.
@@ -45,10 +49,18 @@ sim.add_source((a / 3, b / 3, d / 2), component="ez", waveform=src_waveform)
 # Probe at a spatially distinct location to record the ring-down.
 sim.add_probe((2 * a / 3, 2 * b / 3, d / 2), component="ez")
 
+# ---- SnapshotSpec: capture Ez slices at z=nz//2 every 100 steps ----
+snap = SnapshotSpec(
+    interval=100,
+    components=("ez",),
+    slice_axis=2,
+    slice_index=nz // 2,
+)
+
 # Run long enough for Harminv ring-down analysis (~80 periods at f_analytical).
-n_steps = int(np.ceil(80.0 / (f_analytical * sim._build_grid().dt)))
+n_steps = int(np.ceil(80.0 / (f_analytical * grid.dt)))
 print(f"Running {n_steps} steps ...")
-result = sim.run(n_steps=n_steps)
+result = sim.run(n_steps=n_steps, snapshot=snap)
 
 # ---- Resonance extraction via Harminv ----
 modes = result.find_resonances(
@@ -63,10 +75,10 @@ if modes:
 else:
     # Fall back to FFT peak if Harminv found nothing
     ts = np.asarray(result.time_series).ravel()
-    spectrum = np.abs(np.fft.rfft(ts, n=len(ts) * 8))
-    freqs_fft = np.fft.rfftfreq(len(ts) * 8, d=result.dt)
-    mask = (freqs_fft > f_analytical * 0.5) & (freqs_fft < f_analytical * 1.5)
-    f_sim = freqs_fft[np.argmax(spectrum * mask)]
+    spectrum_fb = np.abs(np.fft.rfft(ts, n=len(ts) * 8))
+    freqs_fb = np.fft.rfftfreq(len(ts) * 8, d=result.dt)
+    mask = (freqs_fb > f_analytical * 0.5) & (freqs_fb < f_analytical * 1.5)
+    f_sim = freqs_fb[np.argmax(spectrum_fb * mask)]
     Q_sim = float("nan")
 
 error_pct = abs(f_sim - f_analytical) / f_analytical * 100
@@ -75,9 +87,7 @@ print(f"Error:            {error_pct:.2f}%")
 if not np.isnan(Q_sim):
     print(f"Q factor:         {Q_sim:.1f}")
 
-# ---- Build helper objects for visualization ----
-grid = sim._build_grid()
-state = result.state
+# ---- Probe time series ----
 ts_arr = np.asarray(result.time_series)
 if ts_arr.ndim == 2:
     ts_probe = ts_arr[:, 0]
@@ -89,22 +99,41 @@ nfft = len(ts_probe) * 8
 spectrum = np.abs(np.fft.rfft(ts_probe, n=nfft))
 freqs_fft = np.fft.rfftfreq(nfft, d=result.dt) / 1e9  # GHz
 
+# ---- Pick best Ez snapshot frame (peak field energy) ----
+snaps_ez = None
+ez_label = "Ez field (snapshot)"
+if result.snapshots and "ez" in result.snapshots:
+    snaps = np.asarray(result.snapshots["ez"])  # (n_captures, nx, ny)
+    # Pick frame with maximum instantaneous field energy
+    peak_frame = int(np.argmax(np.max(np.abs(snaps), axis=(1, 2))))
+    snaps_ez = snaps[peak_frame]  # (nx, ny)
+    frac = peak_frame / max(snaps.shape[0] - 1, 1)
+    ez_label = f"Ez field (frame {peak_frame}, t={frac * n_steps * result.dt * 1e9:.1f} ns)"
+
+# ---- Physical coordinate axes (mm) ----
+nx_g, ny_g = grid.nx, grid.ny
+x_mm = np.linspace(0, a * 1e3, nx_g)
+y_mm = np.linspace(0, b * 1e3, ny_g)
+
 # ---- 4-panel figure ----
 fig, axes = plt.subplots(2, 2, figsize=(13, 9))
 fig.suptitle("PEC Cavity TM110 Resonance", fontsize=14, fontweight="bold")
 
-# Panel 1: Ez field slice at z = nz//2
+# Panel 1: Ez field pattern from snapshot (peak-energy frame)
 ax = axes[0, 0]
-ez_slice = np.asarray(state.ez)[:, :, grid.nz // 2]
-vmax = float(np.max(np.abs(ez_slice))) or 1.0
-im = ax.imshow(
-    ez_slice.T, origin="lower", cmap="RdBu_r",
-    vmin=-vmax, vmax=vmax, aspect="equal",
-)
-fig.colorbar(im, ax=ax, label="Ez (V/m)")
-ax.set_xlabel("x (cells)")
-ax.set_ylabel("y (cells)")
-ax.set_title(f"Ez field slice  z={grid.nz // 2}")
+if snaps_ez is not None:
+    vmax = float(np.max(np.abs(snaps_ez))) or 1.0
+    im = ax.pcolormesh(
+        x_mm, y_mm, snaps_ez.T,
+        cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto",
+    )
+    fig.colorbar(im, ax=ax, label="Ez (V/m)")
+else:
+    ax.text(0.5, 0.5, "No snapshot data", ha="center", va="center",
+            transform=ax.transAxes)
+ax.set_xlabel("x (mm)")
+ax.set_ylabel("y (mm)")
+ax.set_title(ez_label)
 
 # Panel 2: Time-domain probe signal
 ax = axes[0, 1]
@@ -115,7 +144,7 @@ ax.set_ylabel("Ez amplitude")
 ax.set_title("Probe time series")
 ax.grid(True, alpha=0.3)
 
-# Panel 3: Frequency spectrum with analytical line
+# Panel 3: Frequency spectrum with analytical marker
 ax = axes[1, 0]
 spec_db = 20 * np.log10(np.maximum(spectrum / (spectrum.max() or 1.0), 1e-10))
 band = (freqs_fft > 0.5) & (freqs_fft < 5.0)
@@ -131,7 +160,7 @@ ax.set_ylim(-60, 5)
 ax.legend(fontsize=8)
 ax.grid(True, alpha=0.3)
 
-# Panel 4: Text annotation
+# Panel 4: Summary text box
 ax = axes[1, 1]
 ax.axis("off")
 lines = [

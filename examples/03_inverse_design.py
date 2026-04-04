@@ -59,7 +59,7 @@ def objective(result):
 
 # ---- Capture initial eps_r distribution for visualization ----
 grid = sim._build_grid()
-materials_init, _, _, _ = sim._assemble_materials(grid)
+materials_init, _, _, _, _, _ = sim._assemble_materials(grid)
 eps_init = np.asarray(materials_init.eps_r)
 
 # ---- Run optimization ----
@@ -72,65 +72,70 @@ improvement = (1.0 - opt.loss_history[-1] / opt.loss_history[0]) * 100
 print(f"Improvement  : {improvement:.1f}%")
 
 # ---- Build optimized eps_r array for visualization ----
-# The optimized eps lives in the design region bounding box.
 lo_idx = grid.position_to_index(region.corner_lo)
 hi_idx = grid.position_to_index(region.corner_hi)
-eps_opt = np.asarray(materials_init.eps_r.at[
+eps_opt = np.array(eps_init)
+eps_opt[
     lo_idx[0]:hi_idx[0] + 1,
     lo_idx[1]:hi_idx[1] + 1,
     lo_idx[2]:hi_idx[2] + 1,
-].set(np.asarray(opt.eps_design)))
+] = np.asarray(opt.eps_design)
+
+# ---- Cross-section slices: xz plane at y=center ----
+iy_ctr = grid.ny // 2
+iz_ctr = grid.nz // 2
+x_mm = np.arange(grid.nx) * grid.dx * 1e3
+z_mm = np.arange(grid.nz) * grid.dx * 1e3
+
+# Design region rectangle for overlay (in mm, xz plane)
+dr_x0_mm = lo_idx[0] * grid.dx * 1e3
+dr_x1_mm = hi_idx[0] * grid.dx * 1e3
+dr_z0_mm = lo_idx[2] * grid.dx * 1e3
+dr_z1_mm = hi_idx[2] * grid.dx * 1e3
 
 # ---- 3-panel figure ----
 fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 fig.suptitle("Inverse Design: Matching Layer Optimization",
              fontsize=13, fontweight="bold")
 
-iz_ctr = grid.nz // 2
-x_mm = np.arange(grid.nx) * grid.dx * 1e3
+from matplotlib.patches import Rectangle
 
-# Panel 1: Initial eps_r (x-z cross-section at y=center)
+# Panel 1: Initial eps_r (xz cross-section at y=center, physical mm)
 ax = axes[0]
-iy_ctr = grid.ny // 2
-im1 = ax.imshow(
-    eps_init[:, iy_ctr, :].T, origin="lower", cmap="viridis",
-    aspect="auto", vmin=1.0, vmax=6.0,
+im1 = ax.pcolormesh(
+    x_mm, z_mm, eps_init[:, iy_ctr, :].T,
+    cmap="viridis", shading="auto", vmin=1.0, vmax=6.0,
 )
 fig.colorbar(im1, ax=ax, label="eps_r")
-# Highlight design region
-dr_x0 = lo_idx[0]
-dr_x1 = hi_idx[0]
-dr_z0 = lo_idx[2]
-dr_z1 = hi_idx[2]
-from matplotlib.patches import Rectangle
 ax.add_patch(Rectangle(
-    (dr_x0, dr_z0), dr_x1 - dr_x0, dr_z1 - dr_z0,
+    (dr_x0_mm, dr_z0_mm),
+    dr_x1_mm - dr_x0_mm, dr_z1_mm - dr_z0_mm,
     linewidth=2, edgecolor="red", facecolor="none",
     label="Design region",
 ))
-ax.set_xlabel("x (cells)")
-ax.set_ylabel("z (cells)")
+ax.set_xlabel("x (mm)")
+ax.set_ylabel("z (mm)")
 ax.set_title("Initial eps_r distribution")
 ax.legend(fontsize=8)
 
 # Panel 2: Optimized eps_r
 ax = axes[1]
-im2 = ax.imshow(
-    eps_opt[:, iy_ctr, :].T, origin="lower", cmap="viridis",
-    aspect="auto", vmin=1.0, vmax=6.0,
+im2 = ax.pcolormesh(
+    x_mm, z_mm, eps_opt[:, iy_ctr, :].T,
+    cmap="viridis", shading="auto", vmin=1.0, vmax=6.0,
 )
 fig.colorbar(im2, ax=ax, label="eps_r")
 ax.add_patch(Rectangle(
-    (dr_x0, dr_z0), dr_x1 - dr_x0, dr_z1 - dr_z0,
+    (dr_x0_mm, dr_z0_mm),
+    dr_x1_mm - dr_x0_mm, dr_z1_mm - dr_z0_mm,
     linewidth=2, edgecolor="red", facecolor="none",
     label="Design region",
 ))
-ax.set_xlabel("x (cells)")
-ax.set_ylabel("z (cells)")
+ax.set_xlabel("x (mm)")
+ax.set_ylabel("z (mm)")
 ax.set_title("Optimized eps_r distribution")
 ax.legend(fontsize=8)
 
-# Annotate peak eps_r value in region
 peak_eps = float(np.max(np.asarray(opt.eps_design)))
 ax.text(
     0.05, 0.05, f"Peak eps_r = {peak_eps:.2f}",
@@ -146,7 +151,6 @@ ax.set_xlabel("Iteration")
 ax.set_ylabel("Loss (neg. transmitted power)")
 ax.set_title("Convergence")
 ax.grid(True, alpha=0.3)
-# Annotate improvement
 ax.annotate(
     f"{improvement:.1f}% improvement",
     xy=(len(opt.loss_history) - 1, opt.loss_history[-1]),
