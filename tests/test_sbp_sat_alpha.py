@@ -51,7 +51,7 @@ class TestSBPSATAlpha:
         sim = self._make_sim(tau=0.75)
         # Build the grid and config to verify tau reaches SubgridConfig3D
         grid = sim._build_grid()
-        base_materials, _, _, pec_mask = sim._assemble_materials(grid)
+        base_materials, _, _, pec_mask, _ = sim._assemble_materials(grid)
 
         # Patch run to capture config instead of running full sim
         ref = sim._refinement
