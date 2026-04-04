@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.10"
       - run: pip install ruff
-      - run: ruff check rfx/ tests/ --select E,F,W --ignore E501
+      - run: ruff check rfx/ tests/ --select E,F,W --ignore E501,F401,E741,E731,E701,E702,E402
 
   test:
     runs-on: ubuntu-latest

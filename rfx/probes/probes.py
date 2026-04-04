@@ -857,6 +857,7 @@ def extract_s_matrix_wire(
                 )
             else:
                 # Sij: wave decomposition with negated V (FDTD sign)
+                from rfx.sources.sources import _wire_port_cells
                 n_cells_i = len(_wire_port_cells(grid, ports[i]))
                 z0_cell_i = z0_i / max(n_cells_i, 1)
                 b_i = (-sprobes[i].v_dft - z0_cell_i * sprobes[i].i_dft) / (
