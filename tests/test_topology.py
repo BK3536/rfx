@@ -8,9 +8,12 @@ Validates:
 5. topology_optimize reduces loss on a small example
 """
 
+import importlib.util
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from rfx.topology import (
     TopologyDesignRegion,
@@ -333,6 +336,10 @@ class TestBetaSchedule:
 class TestTopologyOptimize:
     """Integration test for the full topology optimization loop."""
 
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("optax"),
+        reason="optax not installed",
+    )
     def test_topology_optimize_reduces_loss(self):
         """Topology optimization should reduce the objective over iterations.
 
