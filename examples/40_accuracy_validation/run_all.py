@@ -40,8 +40,9 @@ for script, name, max_err in cases:
         # Ensure numpy 2.x is available (jax 0.6.2 requires it).
         # Some environments revert numpy between subprocess calls.
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", "numpy>=2.0"],
-            capture_output=True, timeout=60,
+            [sys.executable, "-m", "pip", "install", "-q",
+             "--force-reinstall", "--no-deps", "numpy==2.0.2"],
+            capture_output=True, timeout=120,
         )
         r = subprocess.run(
             [sys.executable, script_path],
