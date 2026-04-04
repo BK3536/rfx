@@ -33,8 +33,9 @@ dependencies = [
 [project.optional-dependencies]
 optimization = ["optax>=0.1.7"]
 visualization = ["matplotlib>=3.7", "pillow"]
+dashboard = ["streamlit>=1.30"]
 dev = ["pytest>=7.0", "pytest-xdist", "ruff"]
-all = ["rfx[optimization,visualization,dev]"]
+all = ["rfx[optimization,visualization,dashboard,dev]"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
