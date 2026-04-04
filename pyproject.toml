@@ -1,9 +1,9 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=64,<80", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rfx"
+name = "rfx-fdtd"
 version = "1.0.0"
 description = "JAX-native 3D FDTD electromagnetic simulator for RF engineering"
 readme = "README.md"
