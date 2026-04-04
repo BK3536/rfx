@@ -9,13 +9,16 @@ Physics:
   frequency depends only on L and C:
     f_res = 1 / (2*pi*sqrt(L*C))
 
-  In a PEC cavity, a lumped RLC element driven by a broadband pulse
-  will ring at its natural resonance.  We extract this resonance from
-  the time-domain probe signal via FFT and compare with the analytical
-  prediction.
+  A lumped RLC element driven by a broadband pulse will ring at its
+  natural resonance.  We extract this resonance from the time-domain
+  probe signal via Harminv (with FFT fallback) and compare with the
+  analytical prediction.
+
+  CPML boundaries are used to prevent PEC cavity modes from
+  contaminating the RLC resonance measurement.
 
 Validation criteria:
-  - FFT peak frequency within 5% of analytical f_res
+  - Resonance frequency within 5% of analytical f_res
   - Sweeping L shifts the resonance in the correct direction
     (higher L -> lower f_res)
 
@@ -44,28 +47,33 @@ OUT_DIR = SCRIPT_DIR
 THRESHOLD_PCT = 5.0  # max allowed frequency error
 
 
-def run_rlc_sim(L_val, C_val, R_val=5.0, dx=1.0e-3, n_steps=3000):
-    """Run a PEC cavity simulation with a lumped series RLC element."""
+def run_rlc_sim(L_val, C_val, R_val=5.0, dx=1.0e-3, n_steps=5000):
+    """Run a CPML-bounded simulation with a lumped series RLC element.
+
+    Uses CPML (absorbing) boundaries instead of PEC to avoid cavity
+    modes contaminating the RLC resonance extraction.
+    """
     f0_est = 1.0 / (2 * np.pi * np.sqrt(L_val * C_val))
     f_max = f0_est * 3
 
-    dom = 0.025  # 25 mm cube
+    dom = 0.030  # 30 mm cube (enough margin for CPML)
 
     sim = Simulation(
         freq_max=f_max,
         domain=(dom, dom, dom),
-        boundary="pec",
+        boundary="cpml",
+        cpml_layers=8,
         dx=dx,
     )
 
     center = dom / 2
 
-    # Broadband excitation port
+    # Broadband excitation port, co-located with RLC element
     sim.add_port(
-        (dom * 0.3, center, center),
+        (center, center, center),
         component="ez",
         impedance=50.0,
-        waveform=GaussianPulse(f0=f0_est, bandwidth=0.9),
+        waveform=GaussianPulse(f0=f0_est, bandwidth=0.6),
     )
 
     # Series RLC element at the centre
@@ -86,18 +94,39 @@ def run_rlc_sim(L_val, C_val, R_val=5.0, dx=1.0e-3, n_steps=3000):
 
 
 def extract_peak_freq(time_series, dt, f_min, f_max):
-    """Extract the dominant frequency from a probe signal via FFT."""
+    """Extract the dominant frequency from a probe signal via Harminv + FFT.
+
+    Uses Harminv (Matrix Pencil Method) as the primary extraction method
+    for superior frequency resolution on short time series. Falls back
+    to zero-padded FFT if Harminv finds no modes.
+    """
     signal = np.asarray(time_series).ravel()
     # Skip the first portion (source excitation)
-    skip = len(signal) // 4
-    signal = signal[skip:]
-    signal = signal - np.mean(signal)
+    skip = len(signal) // 3
+    signal_ring = signal[skip:]
+    signal_ring = signal_ring - np.mean(signal_ring)
 
-    nfft = len(signal) * 4
-    spectrum = np.abs(np.fft.rfft(signal, n=nfft))
+    # Primary: Harminv for accurate resonance extraction
+    from rfx.harminv import harminv_from_probe
+    f_center = (f_min + f_max) / 2
+    modes = harminv_from_probe(
+        signal, dt,
+        freq_range=(f_min, f_max),
+        source_decay_time=skip * dt,
+        min_Q=2.0,
+    )
+
+    # For FFT plot data (always compute)
+    nfft = len(signal_ring) * 8  # generous zero-padding for resolution
+    spectrum = np.abs(np.fft.rfft(signal_ring, n=nfft))
     freqs = np.fft.rfftfreq(nfft, d=dt)
 
-    # Restrict to search range
+    if modes:
+        # Pick the mode closest to the expected center frequency
+        best = min(modes, key=lambda m: abs(m.freq - f_center))
+        return best.freq, freqs, spectrum
+
+    # Fallback: zero-padded FFT peak
     mask = (freqs >= f_min) & (freqs <= f_max)
     if not np.any(mask):
         return None, None, None
@@ -139,7 +168,7 @@ def main():
 
         print(f"  L = {L_val*1e9:.0f} nH -> f_analytical = {f_analytical/1e9:.3f} GHz ...", end=" ")
 
-        result = run_rlc_sim(L_val, C_fixed, R_val=R_fixed, dx=dx, n_steps=3000)
+        result = run_rlc_sim(L_val, C_fixed, R_val=R_fixed, dx=dx, n_steps=5000)
         dt = float(result.dt)
         ts = np.asarray(result.time_series)
 
