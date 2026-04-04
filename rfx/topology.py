@@ -487,9 +487,21 @@ def topology_optimize(
         for pe in sim._probes:
             probes.append(make_probe(grid, pe.position, pe.component))
 
+        # Auto-register probes at port positions when none are set
+        if not probes and sim._ports:
+            for pe in sim._ports:
+                probes.append(make_probe(grid, pe.position, pe.component))
+
         _, debye, lorentz = sim._init_dispersion(
             materials, grid.dt, debye_spec, lorentz_spec,
         )
+
+        # NTFF box for far-field objectives
+        ntff_box_local = None
+        if sim._ntff is not None:
+            from rfx.farfield import make_ntff_box
+            corner_lo, corner_hi, freqs = sim._ntff
+            ntff_box_local = make_ntff_box(grid, corner_lo, corner_hi, freqs)
 
         result = _run(
             grid, materials, n_steps,
@@ -498,8 +510,13 @@ def topology_optimize(
             lorentz=lorentz,
             sources=sources,
             probes=probes,
+            ntff=ntff_box_local,
             checkpoint=True,
         )
+        import inspect
+        sig = inspect.signature(objective)
+        if 'ntff_box' in sig.parameters:
+            return objective(result, ntff_box=ntff_box_local)
         return objective(result)
 
     for it in range(n_iterations):
