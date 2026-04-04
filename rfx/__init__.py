@@ -62,6 +62,8 @@ from rfx.optimize_objectives import (
     target_impedance,
     maximize_bandwidth,
     maximize_directivity,
+    minimize_reflected_energy,
+    maximize_transmitted_energy,
 )
 try:
     from rfx.eigenmode import WaveguideMode, solve_waveguide_modes
