@@ -19,13 +19,14 @@
 
 ## v1.0.0 Highlights
 
-- Non-uniform mesh with JIT-compiled subgridding
-- Lumped RLC elements (series/parallel/shunt)
-- Via and curved patch geometry primitives
-- Oblique-incidence TFSF plane-wave source
-- Field animation export (`save_field_animation`)
-- Auto-configuration from geometry and frequency
-- 260+ tests, three-way cross-validation (rfx / Meep / OpenEMS)
+- **Non-uniform z mesh** via `dz_profile` for thin substrates
+- **SBP-SAT subgridding** research path with JIT support
+- **Lumped RLC elements** (series / parallel)
+- **Via** and **CurvedPatch** geometry helpers
+- **Oblique-incidence TFSF** plane-wave source
+- **Field animation export** via `save_field_animation`
+- **Auto-configuration** from geometry + frequency range
+- **260+ tests** with strong cavity/waveguide benchmarking and active antenna validation work
 
 ## At a Glance
 
@@ -33,7 +34,7 @@
 |---|---|
 | **GPU-accelerated** | ~3,000 Mcells/s on RTX 4090 via `jax.lax.scan` JIT |
 | **Differentiable** | `jax.grad` through full time-stepping for inverse design |
-| **Cross-validated** | 0.000--0.007% agreement vs Meep and OpenEMS |
+| **Benchmarked** | Strong agreement vs Meep/OpenEMS on core cavity and waveguide cases |
 | **Non-uniform mesh** | Graded z-profiles for thin substrates without global refinement |
 | **Auto-configuration** | `auto_configure()` derives dx, domain, CPML, timesteps from geometry |
 | **Lumped RLC** | Series, parallel, and shunt lumped elements in any cell |
@@ -43,7 +44,12 @@
 ## Installation
 
 ```bash
-# From source (recommended)
+pip install rfx-fdtd
+```
+
+For development:
+
+```bash
 git clone https://github.com/BK3536/rfx.git
 cd rfx
 pip install -e ".[dev]"
@@ -63,8 +69,12 @@ sim.add_material("slab", eps_r=2.2)
 sim.add(Box((0.016, 0, 0), (0.032, 0.032, 0.032)), material="slab")
 
 # Lumped port + probe
-sim.add_port((0.006, 0.016, 0.016), "ez", impedance=50.0,
-             waveform=GaussianPulse(f0=5e9, bandwidth=0.8))
+sim.add_port(
+    (0.006, 0.016, 0.016),
+    "ez",
+    impedance=50.0,
+    waveform=GaussianPulse(f0=5e9, bandwidth=0.8),
+)
 sim.add_probe((0.042, 0.016, 0.016), "ez")
 
 result = sim.run(num_periods=30)
@@ -129,18 +139,20 @@ print(f"Final loss: {result.loss_history[-1]:.4f}")
 ### Simulation Engine
 - 3D/2D Yee solver with CFS-CPML absorbing boundaries
 - True PEC mask (component-specific tangential zeroing)
-- Non-uniform z mesh with JIT-compiled subgridding for thin substrates
-- Periodic boundaries, oblique-incidence TFSF plane-wave source
-- Auto-configuration: `auto_configure()` derives dx, domain, CPML, timesteps
-- Lumped RLC elements (series, parallel, shunt configurations)
+- Non-uniform z mesh for thin substrates
+- SBP-SAT subgridding research path
+- Periodic boundaries and oblique-incidence TFSF plane-wave source
+- Auto-configuration: `auto_configure()` derives dx, domain, CPML, timesteps, and source recommendation
+- Lumped RLC elements (series and parallel topologies)
 
 ### Geometry
 - CSG primitives: Box, Sphere, Cylinder
-- Curved patch for conformal antenna surfaces
-- Via for PCB through-hole and blind-via modeling
+- CurvedPatch for staircase-approximated curved antenna layouts
+- Via for PCB through-hole / plated interconnect modeling
 
 ### Sources & Ports
 - GaussianPulse, ModulatedGaussian, CW, custom waveforms
+- Soft sources and polarized sources
 - Lumped ports and multi-cell wire ports (conductor-to-conductor)
 - Waveguide ports with modal decomposition (eigenmode solver)
 - Polarized sources (Jones vector: circular, LHCP, slant45)
@@ -150,7 +162,7 @@ print(f"Final loss: {result.loss_history[-1]:.4f}")
 - Magnetic (`mu_r` validated)
 - Thin conductors with subcell correction
 - Subpixel smoothing (Farjadpour/Kottke)
-- Built-in library: PEC, FR4, Rogers 4003C, copper, alumina, PTFE, water
+- Built-in library: `pec`, `fr4`, `rogers4003c`, `copper`, `alumina`, `ptfe`, `water_20c`, and others
 
 ### Analysis
 - S-parameters: lumped, wire (JIT-DFT), waveguide (N-port matrix)
@@ -163,11 +175,11 @@ print(f"Final loss: {result.loss_history[-1]:.4f}")
 ### Optimization
 - Design regions with `jax.grad` through full simulation
 - Adam optimizer, gradient checkpointing
-- Objective library: minimize_s11, maximize_s21, target_impedance, maximize_bandwidth, maximize_directivity
+- Objective library: `minimize_s11`, `maximize_s21`, `target_impedance`, `maximize_bandwidth`, `maximize_directivity`
 
-## Cross-Validation
+## Benchmark Snapshot
 
-Three-way validation against Meep and OpenEMS:
+Core benchmark areas currently documented most strongly:
 
 | Geometry | rfx vs Meep | rfx vs OpenEMS | rfx vs Analytical |
 |----------|-------------|----------------|-------------------|
@@ -176,6 +188,10 @@ Three-way validation against Meep and OpenEMS:
 | Rogers (eps=3.55) | 0.007% | — | 0.026% |
 | PTFE (eps=2.2) | 0.004% | — | 0.004% |
 | Alumina (eps=9.8) | 0.005% | — | 0.038% |
+
+Patch/microstrip resonance workflows are also active, but feed/port
+interpretation should be documented more carefully than the cavity/waveguide
+benchmarks.
 
 ## GPU Performance (RTX 4090)
 
@@ -190,7 +206,8 @@ Gradient (reverse-mode AD): ~0.31s for all grid sizes.
 
 ## Documentation
 
-Full documentation: **[remilab.ai/rfx](https://remilab.ai/rfx/)**
+Full documentation: **[remilab.ai/rfx](https://remilab.ai/rfx/)** and
+repo-local guides under [`docs/guide/`](docs/guide/index.md).
 
 - [User Guide](https://remilab.ai/rfx/guide/) — Installation, API, materials, sources, probes
 - [AI Agent Guide](https://remilab.ai/rfx/agent/) — Auto-configuration, prompt templates, design workflows
