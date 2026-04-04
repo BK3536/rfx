@@ -638,3 +638,175 @@ class TestDistributedFallback:
         )
         assert result is not None
         assert result.time_series.shape[0] == 50
+
+
+class TestExchangeInterval:
+    """Tests for configurable ghost exchange interval (reduced sync).
+
+    Error from stale ghost data depends on the ratio of ghost cells to
+    slab size. Tests use CPML domains (nx=48) with 2 devices (slab=24
+    real cells) for realistic error levels, and 4 devices for the
+    monotonicity check.
+    """
+
+    def test_interval_1_matches_default_pec(self):
+        """exchange_interval=1 should produce identical results to default."""
+        sim = Simulation(
+            freq_max=3e9,
+            domain=(0.05, 0.02, 0.02),
+            boundary="pec",
+        )
+        sim.add_source(position=(0.025, 0.01, 0.01), component="ez")
+        sim.add_probe(position=(0.015, 0.01, 0.01), component="ez")
+
+        n_steps = 100
+        devices = jax.devices()[:4]
+
+        result_default = sim.run(n_steps=n_steps, devices=devices)
+        result_explicit = sim.run(
+            n_steps=n_steps, devices=devices, exchange_interval=1)
+
+        ts_d = np.array(result_default.time_series)
+        ts_e = np.array(result_explicit.time_series)
+        np.testing.assert_allclose(
+            ts_e, ts_d, atol=1e-6,
+            err_msg="exchange_interval=1 differs from default")
+
+    def test_interval_2_cpml_acceptable_error(self):
+        """exchange_interval=2 with CPML 2-device should have <10% error.
+
+        2 devices on nx=48 gives slab=24 real cells. Stale ghost for
+        1 step affects only 1 cell out of 24 -- measured ~3.4% error.
+        """
+        sim = Simulation(
+            freq_max=3e9,
+            domain=(0.13, 0.04, 0.04),
+            boundary="cpml",
+        )
+        sim.add_source(
+            position=(0.065, 0.02, 0.02),
+            component="ez",
+            waveform=GaussianPulse(f0=1.5e9, bandwidth=1.5e9),
+        )
+        sim.add_probe(position=(0.065, 0.02, 0.02), component="ez")
+
+        n_steps = 200
+        devices = jax.devices()[:2]
+
+        result_1 = sim.run(n_steps=n_steps, devices=devices,
+                           exchange_interval=1)
+        result_2 = sim.run(n_steps=n_steps, devices=devices,
+                           exchange_interval=2)
+
+        ts_1 = np.array(result_1.time_series)
+        ts_2 = np.array(result_2.time_series)
+
+        peak = np.max(np.abs(ts_1)) + 1e-30
+        rel_err = np.max(np.abs(ts_1 - ts_2)) / peak
+        assert rel_err < 0.10, (
+            f"CPML exchange_interval=2 vs 1 relative error {rel_err:.2e} exceeds 10%")
+
+    def test_interval_4_cpml_2dev_acceptable_error(self):
+        """exchange_interval=4 with CPML 2-device should have <10% error.
+
+        Larger slabs (24 cells) tolerate interval=4 well -- measured ~3.3%.
+        """
+        sim = Simulation(
+            freq_max=3e9,
+            domain=(0.13, 0.04, 0.04),
+            boundary="cpml",
+        )
+        sim.add_source(
+            position=(0.065, 0.02, 0.02),
+            component="ez",
+            waveform=GaussianPulse(f0=1.5e9, bandwidth=1.5e9),
+        )
+        sim.add_probe(position=(0.065, 0.02, 0.02), component="ez")
+
+        n_steps = 200
+        devices = jax.devices()[:2]
+
+        result_1 = sim.run(n_steps=n_steps, devices=devices,
+                           exchange_interval=1)
+        result_4 = sim.run(n_steps=n_steps, devices=devices,
+                           exchange_interval=4)
+
+        ts_1 = np.array(result_1.time_series)
+        ts_4 = np.array(result_4.time_series)
+
+        peak = np.max(np.abs(ts_1)) + 1e-30
+        rel_err = np.max(np.abs(ts_1 - ts_4)) / peak
+        assert rel_err < 0.10, (
+            f"CPML exchange_interval=4 vs 1 relative error {rel_err:.2e} exceeds 10%")
+
+    def test_interval_4_cpml_4dev_bounded_error(self):
+        """exchange_interval=4 with CPML 4-device should have bounded error.
+
+        4 devices on nx=48 gives slab=12 real cells. Stale ghost for
+        3 steps affects 3 cells out of 12 -- measured ~15% error.
+        """
+        sim = Simulation(
+            freq_max=3e9,
+            domain=(0.13, 0.04, 0.04),
+            boundary="cpml",
+        )
+        sim.add_source(
+            position=(0.065, 0.02, 0.02),
+            component="ez",
+            waveform=GaussianPulse(f0=1.5e9, bandwidth=1.5e9),
+        )
+        sim.add_probe(position=(0.065, 0.02, 0.02), component="ez")
+
+        n_steps = 200
+        devices = jax.devices()[:4]
+
+        result_1 = sim.run(n_steps=n_steps, devices=devices,
+                           exchange_interval=1)
+        result_4 = sim.run(n_steps=n_steps, devices=devices,
+                           exchange_interval=4)
+
+        ts_1 = np.array(result_1.time_series)
+        ts_4 = np.array(result_4.time_series)
+
+        peak = np.max(np.abs(ts_1)) + 1e-30
+        rel_err = np.max(np.abs(ts_1 - ts_4)) / peak
+        assert rel_err < 0.25, (
+            f"CPML 4-dev exchange_interval=4 vs 1 relative error {rel_err:.2e} exceeds 25%")
+
+    def test_interval_monotonic_error_growth(self):
+        """Error should grow monotonically with exchange_interval.
+
+        Uses CPML with 4 devices where the effect is most visible.
+        """
+        sim = Simulation(
+            freq_max=3e9,
+            domain=(0.13, 0.04, 0.04),
+            boundary="cpml",
+        )
+        sim.add_source(
+            position=(0.065, 0.02, 0.02),
+            component="ez",
+            waveform=GaussianPulse(f0=1.5e9, bandwidth=1.5e9),
+        )
+        sim.add_probe(position=(0.065, 0.02, 0.02), component="ez")
+
+        n_steps = 200
+        devices = jax.devices()[:4]
+
+        result_ref = sim.run(n_steps=n_steps, devices=devices,
+                             exchange_interval=1)
+        ts_ref = np.array(result_ref.time_series)
+        peak = np.max(np.abs(ts_ref)) + 1e-30
+
+        errors = []
+        for interval in [1, 2, 4]:
+            result = sim.run(n_steps=n_steps, devices=devices,
+                             exchange_interval=interval)
+            ts = np.array(result.time_series)
+            err = np.max(np.abs(ts_ref - ts)) / peak
+            errors.append(err)
+
+        # Error should be non-decreasing
+        for i in range(len(errors) - 1):
+            assert errors[i] <= errors[i + 1] + 1e-8, (
+                f"Error not monotonic: interval errors = {errors}")

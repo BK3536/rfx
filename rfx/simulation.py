@@ -18,6 +18,7 @@ from rfx.grid import Grid
 from rfx.core.yee import (
     FDTDState, MaterialArrays, init_state,
     update_e, update_e_aniso, update_h, EPS_0, _shift_bwd,
+    precompute_coeffs, update_he_fast,
 )
 from rfx.boundaries.pec import apply_pec
 
@@ -475,6 +476,24 @@ def run(
     use_wire_sparams = len(wire_port_sparams) > 0
     lumped_rlc = lumped_rlc or []
     use_lumped_rlc = len(lumped_rlc) > 0
+
+    # ---- fast-path: pre-baked coefficients with PEC folded in ----
+    # Eligible when the scan body only needs H update + E update + PEC —
+    # no CPML, no TFSF, no dispersion, no anisotropic eps, no PEC mask,
+    # no conformal, no lumped RLC, and no periodic axes.
+    use_fast_he = (
+        not use_cpml
+        and not use_tfsf
+        and not use_debye
+        and not use_lorentz
+        and not use_pec_mask
+        and not use_conformal
+        and not use_lumped_rlc
+        and aniso_eps is None
+        and periodic == (False, False, False)
+    )
+    if use_fast_he:
+        _fast_coeffs = precompute_coeffs(materials, dt, dx, pec_axes=pec_axes)
 
     # ---- initialise states ----
     fdtd = init_state(grid.shape)

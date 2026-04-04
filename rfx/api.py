@@ -1765,6 +1765,7 @@ class Simulation:
         conformal_pec: bool = False,
         conformal_min_weight: float = 0.1,
         devices: list | None = None,
+        exchange_interval: int = 1,
     ) -> Result:
         """Run the simulation.
 
@@ -1808,6 +1809,11 @@ class Simulation:
             distributed across those devices using 1D slab decomposition
             along the x-axis (via ``jax.pmap``).  Phase 1 supports PEC
             boundary, soft sources, and point probes.
+        exchange_interval : int, optional
+            How often (in timesteps) to perform ghost cell exchange in
+            the distributed runner.  Default 1 (every step).  Higher
+            values (2-4) reduce synchronization overhead at the cost of
+            O(interval * dt) boundary error.
 
         Returns
         -------
@@ -1819,7 +1825,10 @@ class Simulation:
                 grid = self._build_grid()
                 n_steps = grid.num_timesteps(num_periods=num_periods)
             from rfx.runners.distributed import run_distributed
-            return run_distributed(self, n_steps=n_steps, devices=devices)
+            return run_distributed(
+                self, n_steps=n_steps, devices=devices,
+                exchange_interval=exchange_interval,
+            )
 
         # ---- Non-uniform mesh path ----
         if self._dz_profile is not None:
