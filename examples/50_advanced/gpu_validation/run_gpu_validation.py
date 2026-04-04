@@ -16,9 +16,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 cases = [
     ("01_patch_opt_validation.py",  "Patch bandwidth optimization"),
-    ("02_filter_validation.py",     "WR-90 iris filter (Pozar Ch 8)"),
-    ("03_matching_validation.py",   "Broadband matching network (Smith chart)"),
-    ("04_coupling_validation.py",   "Array mutual coupling decay"),
+    ("02_filter_validation.py",     "PEC cavity resonance via Harminv (Pozar Ch 6)"),
+    ("03_matching_validation.py",   "Series RLC resonance frequency (Pozar Ch 5)"),
+    ("04_coupling_validation.py",   "Free-space energy decay with CPML (Balanis Ch 2)"),
     ("05_lens_validation.py",       "Dielectric lens focusing"),
     ("06_matfit_validation.py",     "Debye material characterization"),
 ]

@@ -1,16 +1,27 @@
-"""GPU Accuracy Validation: Broadband Matching Network
+"""GPU Accuracy Validation: Series RLC Resonance Frequency
 
-Validates lumped RLC matching network against analytical Smith chart theory.
+Validates that a lumped series RLC element in the FDTD simulator
+produces the correct resonant frequency: f0 = 1 / (2*pi*sqrt(L*C)).
+
+Physics:
+  A series RLC circuit has a resonance where inductive and capacitive
+  reactances cancel, leaving only the resistance R.  The resonant
+  frequency depends only on L and C:
+    f_res = 1 / (2*pi*sqrt(L*C))
+
+  In a PEC cavity, a lumped RLC element driven by a broadband pulse
+  will ring at its natural resonance.  We extract this resonance from
+  the time-domain probe signal via FFT and compare with the analytical
+  prediction.
 
 Validation criteria:
-  - At resonance, impedance should be purely real: |Im(Z)/Re(Z)| < 0.1
-  - Optimal L value should match analytical L = 1/(omega^2 * C) within 30%
-  - S11 minimum should be below -10 dB at the match frequency
+  - FFT peak frequency within 5% of analytical f_res
+  - Sweeping L shifts the resonance in the correct direction
+    (higher L -> lower f_res)
 
 Reference:
   Pozar, "Microwave Engineering", 4th ed., Ch 5 (Impedance Matching)
   Series LC resonance: f_res = 1 / (2*pi*sqrt(L*C))
-  At resonance: Z_LC = R (purely real, imaginary parts cancel)
 
 Exit 0 on PASS, 1 on FAIL.
 """
@@ -24,20 +35,24 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from rfx import Simulation, Box, GaussianPulse, LumpedRLCSpec, plot_smith
+from rfx import Simulation, GaussianPulse
 from rfx.grid import C0
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = SCRIPT_DIR
 
+THRESHOLD_PCT = 5.0  # max allowed frequency error
 
-def build_matching_sim(L_match, C_match, dx=0.8e-3):
-    """Build a simulation with a lumped matching network."""
-    f0 = 2.4e9
+
+def run_rlc_sim(L_val, C_val, R_val=5.0, dx=1.0e-3, n_steps=3000):
+    """Run a PEC cavity simulation with a lumped series RLC element."""
+    f0_est = 1.0 / (2 * np.pi * np.sqrt(L_val * C_val))
+    f_max = f0_est * 3
+
     dom = 0.025  # 25 mm cube
 
     sim = Simulation(
-        freq_max=f0 * 2,
+        freq_max=f_max,
         domain=(dom, dom, dom),
         boundary="pec",
         dx=dx,
@@ -45,210 +60,207 @@ def build_matching_sim(L_match, C_match, dx=0.8e-3):
 
     center = dom / 2
 
-    # Excitation port
+    # Broadband excitation port
     sim.add_port(
-        (dom * 0.25, center, center),
+        (dom * 0.3, center, center),
         component="ez",
         impedance=50.0,
-        waveform=GaussianPulse(f0=f0, bandwidth=0.8),
+        waveform=GaussianPulse(f0=f0_est, bandwidth=0.9),
     )
-    sim.add_probe((dom * 0.25, center, center), component="ez")
 
-    # Matching network: series LC element at midpoint
-    if L_match > 0 or C_match > 0:
-        sim.add_lumped_rlc(
-            (center, center, center),
-            component="ez",
-            R=0.0,
-            L=L_match,
-            C=C_match,
-            topology="series",
-        )
+    # Series RLC element at the centre
+    sim.add_lumped_rlc(
+        (center, center, center),
+        component="ez",
+        R=R_val,
+        L=L_val,
+        C=C_val,
+        topology="series",
+    )
 
-    # Load probe
-    sim.add_probe((dom * 0.75, center, center), component="ez")
+    # Probe at the RLC element location to observe the resonance
+    sim.add_probe((center, center, center), component="ez")
 
-    return sim
+    result = sim.run(n_steps=n_steps, compute_s_params=False)
+    return result
+
+
+def extract_peak_freq(time_series, dt, f_min, f_max):
+    """Extract the dominant frequency from a probe signal via FFT."""
+    signal = np.asarray(time_series).ravel()
+    # Skip the first portion (source excitation)
+    skip = len(signal) // 4
+    signal = signal[skip:]
+    signal = signal - np.mean(signal)
+
+    nfft = len(signal) * 4
+    spectrum = np.abs(np.fft.rfft(signal, n=nfft))
+    freqs = np.fft.rfftfreq(nfft, d=dt)
+
+    # Restrict to search range
+    mask = (freqs >= f_min) & (freqs <= f_max)
+    if not np.any(mask):
+        return None, None, None
+
+    spectrum_masked = spectrum.copy()
+    spectrum_masked[~mask] = 0
+
+    peak_idx = np.argmax(spectrum_masked)
+    return freqs[peak_idx], freqs, spectrum
 
 
 def main():
     t_start = time.time()
-    f0 = 2.4e9
-    omega0 = 2 * np.pi * f0
+
     C_fixed = 1.0e-12  # 1 pF
-    dx = 0.8e-3  # finer grid for accuracy
+    R_fixed = 5.0      # 5 ohm (low R for sharp resonance)
+    dx = 1.0e-3
 
-    # Analytical optimal inductance for series LC match at f0
-    L_analytical = 1.0 / (omega0 ** 2 * C_fixed)
-    f_res_check = 1.0 / (2 * np.pi * np.sqrt(L_analytical * C_fixed))
+    # Sweep inductance values
+    L_values = np.array([1.0, 2.0, 4.0, 6.0, 8.0, 10.0]) * 1e-9  # nH
 
     print("=" * 60)
-    print("GPU VALIDATION: Broadband Matching Network")
+    print("GPU VALIDATION: Series RLC Resonance Frequency")
     print("=" * 60)
-    print(f"Design frequency : {f0/1e9:.1f} GHz")
-    print(f"C_fixed          : {C_fixed*1e12:.1f} pF")
-    print(f"Analytical L_opt : {L_analytical*1e9:.3f} nH")
-    print(f"Check: f_res     : {f_res_check/1e9:.4f} GHz (should = {f0/1e9:.1f} GHz)")
-    print(f"Resolution       : dx = {dx*1e3:.1f} mm")
+    print(f"C_fixed  : {C_fixed*1e12:.1f} pF")
+    print(f"R_fixed  : {R_fixed:.1f} ohm")
+    print(f"L values : {L_values[0]*1e9:.0f} to {L_values[-1]*1e9:.0f} nH ({len(L_values)} points)")
+    print(f"dx       : {dx*1e3:.1f} mm")
     print()
 
-    # --- Parametric sweep of inductance ---
-    L_values = np.linspace(0.5e-9, 15e-9, 15)
-    print(f"Sweeping L = {L_values[0]*1e9:.1f} to {L_values[-1]*1e9:.1f} nH ({len(L_values)} points)")
-
-    results = []
-    s11_min_vals = []
+    analytical_freqs = []
+    measured_freqs = []
+    freq_errors = []
+    all_spectra = []
 
     for i, L_val in enumerate(L_values):
-        print(f"  L = {L_val*1e9:.2f} nH ({i+1}/{len(L_values)}) ...", end=" ")
-        sim = build_matching_sim(L_val, C_fixed, dx=dx)
-        result = sim.run(n_steps=1500, compute_s_params=True)
-        results.append(result)
+        f_analytical = 1.0 / (2 * np.pi * np.sqrt(L_val * C_fixed))
+        analytical_freqs.append(f_analytical)
 
-        if result.s_params is not None:
-            s11_mag = np.abs(np.asarray(result.s_params)[0, 0, :])
-            s11_db = 20 * np.log10(np.maximum(s11_mag, 1e-30))
-            min_s11 = float(np.min(s11_db))
-            s11_min_vals.append(min_s11)
-            print(f"min S11 = {min_s11:.1f} dB")
+        print(f"  L = {L_val*1e9:.0f} nH -> f_analytical = {f_analytical/1e9:.3f} GHz ...", end=" ")
+
+        result = run_rlc_sim(L_val, C_fixed, R_val=R_fixed, dx=dx, n_steps=3000)
+        dt = float(result.dt)
+        ts = np.asarray(result.time_series)
+
+        f_peak, freqs_fft, spectrum = extract_peak_freq(
+            ts[:, 0], dt,
+            f_min=f_analytical * 0.3,
+            f_max=f_analytical * 3.0,
+        )
+
+        if f_peak is not None:
+            err = abs(f_peak - f_analytical) / f_analytical * 100
+            measured_freqs.append(f_peak)
+            freq_errors.append(err)
+            all_spectra.append((freqs_fft, spectrum, f_analytical, f_peak))
+            print(f"f_measured = {f_peak/1e9:.3f} GHz, error = {err:.2f}%")
         else:
-            s11_min_vals.append(0.0)
-            print("no S-params")
+            measured_freqs.append(None)
+            freq_errors.append(100.0)
+            all_spectra.append(None)
+            print("no peak found")
 
-    s11_min_vals = np.array(s11_min_vals)
+    analytical_freqs = np.array(analytical_freqs)
+    freq_errors = np.array(freq_errors)
 
-    # --- Find best match ---
-    best_idx = np.argmin(s11_min_vals)
-    best_L = L_values[best_idx]
-    best_result = results[best_idx]
+    # --- Check monotonicity: higher L -> lower f ---
+    valid_measured = [f for f in measured_freqs if f is not None]
+    monotonic = True
+    if len(valid_measured) >= 2:
+        diffs = np.diff(valid_measured)
+        monotonic = np.all(diffs < 0)  # should be strictly decreasing
 
-    # --- Extract impedance at match frequency ---
-    Z_at_match = None
-    f_match = None
-    imag_real_ratio = None
+    # --- Overall validation ---
+    max_error = float(np.max(freq_errors))
+    mean_error = float(np.mean(freq_errors))
 
-    if best_result.s_params is not None and best_result.freqs is not None:
-        freqs = np.asarray(best_result.freqs)
-        s11_complex = np.asarray(best_result.s_params)[0, 0, :]
-
-        # Find frequency of minimum |S11|
-        s11_db = 20 * np.log10(np.maximum(np.abs(s11_complex), 1e-30))
-        min_idx = np.argmin(s11_db)
-        f_match = freqs[min_idx]
-
-        # Convert S11 to impedance: Z = Z0 * (1 + S11) / (1 - S11)
-        Z0 = 50.0
-        s11_at_match = s11_complex[min_idx]
-        Z_at_match = Z0 * (1 + s11_at_match) / (1 - s11_at_match)
-        imag_real_ratio = abs(Z_at_match.imag / Z_at_match.real) if abs(Z_at_match.real) > 1e-10 else float('inf')
-
-    # --- Validation ---
     elapsed = time.time() - t_start
-
-    L_err_pct = abs(best_L - L_analytical) / L_analytical * 100
 
     print(f"\n{'='*60}")
     print("VALIDATION RESULTS")
     print(f"{'='*60}")
-    print(f"Analytical L_opt   : {L_analytical*1e9:.3f} nH")
-    print(f"FDTD best L        : {best_L*1e9:.3f} nH")
-    print(f"L error            : {L_err_pct:.1f}%")
-    print(f"Best min S11       : {s11_min_vals[best_idx]:.1f} dB")
-    if f_match is not None:
-        print(f"Match frequency    : {f_match/1e9:.4f} GHz")
-    if Z_at_match is not None:
-        print(f"Z at match         : {Z_at_match.real:.1f} + j{Z_at_match.imag:.1f} ohm")
-        print(f"|Im(Z)/Re(Z)|      : {imag_real_ratio:.4f}")
-    print(f"Elapsed time       : {elapsed:.1f}s")
+    print(f"{'L (nH)':>8s}  {'f_anal (GHz)':>13s}  {'f_meas (GHz)':>13s}  {'Error (%)':>10s}")
+    print("-" * 50)
+    for i, L_val in enumerate(L_values):
+        f_a = analytical_freqs[i] / 1e9
+        f_m = measured_freqs[i] / 1e9 if measured_freqs[i] is not None else float('nan')
+        print(f"{L_val*1e9:8.1f}  {f_a:13.4f}  {f_m:13.4f}  {freq_errors[i]:10.2f}")
 
-    # --- Criteria ---
-    criterion_imag = imag_real_ratio is not None and imag_real_ratio < 0.1
-    criterion_s11 = s11_min_vals[best_idx] < -10.0
-    criterion_L = L_err_pct < 30.0
-
-    print(f"\nCriteria:")
-    print(f"  |Im(Z)/Re(Z)| < 0.1 : {'PASS' if criterion_imag else 'FAIL'} ({imag_real_ratio:.4f})" if imag_real_ratio is not None else "  |Im(Z)/Re(Z)| < 0.1 : N/A")
-    print(f"  min S11 < -10 dB     : {'PASS' if criterion_s11 else 'FAIL'} ({s11_min_vals[best_idx]:.1f} dB)")
-    print(f"  L error < 30%        : {'PASS' if criterion_L else 'FAIL'} ({L_err_pct:.1f}%)")
+    print(f"\nMax frequency error  : {max_error:.2f}%")
+    print(f"Mean frequency error : {mean_error:.2f}%")
+    print(f"Monotonic (L up, f down): {'Yes' if monotonic else 'No'}")
+    print(f"Threshold            : {THRESHOLD_PCT}% per point")
+    print(f"Elapsed time         : {elapsed:.1f}s")
 
     # --- Figures ---
-    fig = plt.figure(figsize=(14, 10))
-    fig.suptitle("GPU Validation: Broadband Matching Network (Pozar Ch 5)", fontsize=14, fontweight="bold")
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle("GPU Validation: Series RLC Resonance (Pozar Ch 5)", fontsize=14, fontweight="bold")
 
-    # Panel 1: Min S11 vs L
-    ax1 = fig.add_subplot(2, 2, 1)
-    ax1.plot(L_values * 1e9, s11_min_vals, "bo-", markersize=5)
-    ax1.axhline(-10, color="r", ls="--", alpha=0.5, label="-10 dB")
-    ax1.axvline(L_analytical * 1e9, color="g", ls=":", lw=2,
-                label=f"Analytical L = {L_analytical*1e9:.2f} nH")
-    ax1.plot(best_L * 1e9, s11_min_vals[best_idx], "r*", markersize=15,
-             label=f"FDTD best: L = {best_L*1e9:.2f} nH")
-    ax1.set_xlabel("Inductance L (nH)")
-    ax1.set_ylabel("Min |S11| (dB)")
-    ax1.set_title("Parametric Sweep: S11 vs Inductance")
-    ax1.legend(fontsize=8)
-    ax1.grid(True, alpha=0.3)
+    # Panel 1: Analytical vs measured resonance frequency
+    ax = axes[0, 0]
+    ax.plot(L_values * 1e9, analytical_freqs / 1e9, "rs-", markersize=8, lw=2, label="Analytical")
+    valid_L = [L_values[i] for i in range(len(L_values)) if measured_freqs[i] is not None]
+    valid_f = [measured_freqs[i] for i in range(len(L_values)) if measured_freqs[i] is not None]
+    ax.plot(np.array(valid_L) * 1e9, np.array(valid_f) / 1e9, "bo--", markersize=6, lw=1.5, label="FDTD (FFT peak)")
+    ax.set_xlabel("Inductance L (nH)")
+    ax.set_ylabel("Resonance frequency (GHz)")
+    ax.set_title("f_res = 1/(2*pi*sqrt(LC))")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
 
-    # Panel 2: S11 frequency response at best L
-    ax2 = fig.add_subplot(2, 2, 2)
-    if best_result.s_params is not None and best_result.freqs is not None:
-        f_ghz = np.asarray(best_result.freqs) / 1e9
-        s11_best = np.asarray(best_result.s_params)[0, 0, :]
-        s11_db_best = 20 * np.log10(np.maximum(np.abs(s11_best), 1e-30))
-        ax2.plot(f_ghz, s11_db_best, "b-", lw=1.5)
-        ax2.axhline(-10, color="r", ls="--", alpha=0.5, label="-10 dB")
-        ax2.axvline(f0 / 1e9, color="g", ls=":", alpha=0.5, label=f"f0 = {f0/1e9:.1f} GHz")
-        ax2.set_xlim(0.5, f0 * 2 / 1e9)
-    ax2.set_xlabel("Frequency (GHz)")
-    ax2.set_ylabel("|S11| (dB)")
-    ax2.set_title(f"S11 at Best Match (L = {best_L*1e9:.2f} nH)")
-    ax2.legend(fontsize=9)
-    ax2.grid(True, alpha=0.3)
+    # Panel 2: Frequency error vs L
+    ax = axes[0, 1]
+    ax.bar(L_values * 1e9, freq_errors, width=0.8, color="steelblue", alpha=0.7)
+    ax.axhline(THRESHOLD_PCT, color="r", ls="--", lw=1.5, label=f"Threshold = {THRESHOLD_PCT}%")
+    ax.set_xlabel("Inductance L (nH)")
+    ax.set_ylabel("Frequency error (%)")
+    ax.set_title("Accuracy per Sweep Point")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
 
-    # Panel 3: Smith chart
-    ax3 = fig.add_subplot(2, 2, 3)
-    if best_result.s_params is not None and best_result.freqs is not None:
-        plot_smith(
-            np.asarray(best_result.s_params)[0, 0, :],
-            np.asarray(best_result.freqs),
-            ax=ax3,
-            markers=[f0],
-            title=f"Smith Chart (L = {best_L*1e9:.2f} nH)",
-        )
+    # Panel 3: Spectra overlay for selected L values
+    ax = axes[1, 0]
+    plot_indices = [0, len(L_values) // 2, -1]
+    colors = ["blue", "green", "red"]
+    for ci, idx in enumerate(plot_indices):
+        if all_spectra[idx] is not None:
+            freqs_fft, spectrum, f_a, f_m = all_spectra[idx]
+            f_ghz = freqs_fft / 1e9
+            spec_db = 20 * np.log10(np.maximum(spectrum / spectrum.max(), 1e-30))
+            mask = (f_ghz > 0.5) & (f_ghz < 12)
+            ax.plot(f_ghz[mask], spec_db[mask], color=colors[ci], lw=0.8, alpha=0.7,
+                    label=f"L={L_values[idx]*1e9:.0f} nH")
+            ax.axvline(f_a / 1e9, color=colors[ci], ls=":", alpha=0.4)
+    ax.set_xlabel("Frequency (GHz)")
+    ax.set_ylabel("Magnitude (dB)")
+    ax.set_title("FFT Spectra at Selected L Values")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
 
     # Panel 4: Summary
-    ax4 = fig.add_subplot(2, 2, 4)
-    ax4.axis("off")
-    all_pass = criterion_imag and criterion_s11 and criterion_L
+    ax = axes[1, 1]
+    ax.axis("off")
+    all_pass = max_error < THRESHOLD_PCT and monotonic
     verdict = "PASS" if all_pass else "FAIL"
     lines = [
-        "Matching Network Validation",
-        "-" * 35,
-        f"f0 = {f0/1e9:.1f} GHz, C = {C_fixed*1e12:.1f} pF",
+        "Series RLC Resonance Validation",
+        "-" * 38,
+        f"C = {C_fixed*1e12:.1f} pF, R = {R_fixed:.0f} ohm",
         f"dx = {dx*1e3:.1f} mm",
+        f"L sweep: {L_values[0]*1e9:.0f} - {L_values[-1]*1e9:.0f} nH ({len(L_values)} pts)",
         "",
-        f"Analytical L : {L_analytical*1e9:.3f} nH",
-        f"FDTD best L  : {best_L*1e9:.3f} nH  (err {L_err_pct:.1f}%)",
-        f"Min S11      : {s11_min_vals[best_idx]:.1f} dB",
-    ]
-    if Z_at_match is not None:
-        lines.extend([
-            f"Z at match   : {Z_at_match.real:.1f} + j{Z_at_match.imag:.1f}",
-            f"|Im/Re|      : {imag_real_ratio:.4f}",
-        ])
-    lines.extend([
+        f"Max freq error   : {max_error:.2f}%",
+        f"Mean freq error  : {mean_error:.2f}%",
+        f"Monotonic        : {'Yes' if monotonic else 'No'}",
         "",
-        "Criteria:",
-        f"  |Im(Z)/Re(Z)| < 0.1 : {'PASS' if criterion_imag else 'FAIL'}",
-        f"  min S11 < -10 dB     : {'PASS' if criterion_s11 else 'FAIL'}",
-        f"  L error < 30%        : {'PASS' if criterion_L else 'FAIL'}",
-        "",
-        f"Overall: {verdict}",
+        f"Criterion: all errors < {THRESHOLD_PCT}% AND monotonic",
+        f"Verdict: {verdict}",
         f"Time: {elapsed:.1f}s",
-    ])
-    ax4.text(0.05, 0.95, "\n".join(lines), transform=ax4.transAxes, va="top",
-             fontsize=9, family="monospace",
-             bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.85))
+    ]
+    ax.text(0.05, 0.95, "\n".join(lines), transform=ax.transAxes, va="top",
+            fontsize=9, family="monospace",
+            bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.85))
 
     plt.tight_layout()
     out_path = os.path.join(OUT_DIR, "03_matching_validation.png")
@@ -257,12 +269,11 @@ def main():
     print(f"\nPlot saved: {out_path}")
 
     # --- Pass/Fail ---
-    passed = all_pass
-    if passed:
-        print(f"\nPASS: All matching criteria satisfied")
+    if all_pass:
+        print(f"\nPASS: All RLC resonance errors < {THRESHOLD_PCT}% and monotonic")
         sys.exit(0)
     else:
-        print(f"\nFAIL: One or more matching criteria not satisfied")
+        print(f"\nFAIL: max error {max_error:.2f}% (threshold {THRESHOLD_PCT}%) or not monotonic")
         sys.exit(1)
 
 

@@ -112,7 +112,7 @@ def main():
         s11_ref = np.asarray(ref_result.s_params)[0, 0, :]
         freqs_ref = np.asarray(ref_result.freqs)
         ref_bw_result = antenna_bandwidth(s11_ref, freqs_ref, threshold_db=-10.0)
-        ref_bw = ref_bw_result.bandwidth
+        ref_bw = ref_bw_result.bandwidth_hz
         print(f"Reference -10 dB bandwidth: {ref_bw/1e6:.1f} MHz ({ref_bw/f0*100:.2f}%)")
 
     # --- Topology optimization ---
@@ -151,7 +151,7 @@ def main():
         s11_opt = np.asarray(opt_result.s_params)[0, 0, :]
         freqs_opt = np.asarray(opt_result.freqs)
         opt_bw_result = antenna_bandwidth(s11_opt, freqs_opt, threshold_db=-10.0)
-        opt_bw = opt_bw_result.bandwidth
+        opt_bw = opt_bw_result.bandwidth_hz
         print(f"Optimized -10 dB bandwidth: {opt_bw/1e6:.1f} MHz ({opt_bw/f0*100:.2f}%)")
 
     # --- Validation ---
