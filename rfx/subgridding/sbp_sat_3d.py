@@ -76,10 +76,17 @@ def init_subgrid_3d(
     fine_region: tuple[int, int, int, int, int, int] = (15, 25, 15, 25, 15, 25),
     ratio: int = 3,
     courant: float = 0.45,
+    tau: float = 0.5,
 ) -> tuple[SubgridConfig3D, SubgridState3D]:
     """Initialize 3D subgridded domain.
 
     Uses a GLOBAL timestep for both grids (no temporal sub-stepping).
+
+    Parameters
+    ----------
+    tau : float
+        SAT penalty coefficient (default 0.5). Higher values give
+        stronger coupling but more dissipation.
     """
     nx_c, ny_c, nz_c = shape_c
     fi_lo, fi_hi, fj_lo, fj_hi, fk_lo, fk_hi = fine_region
@@ -96,7 +103,7 @@ def init_subgrid_3d(
         fj_lo=fj_lo, fj_hi=fj_hi,
         fk_lo=fk_lo, fk_hi=fk_hi,
         nx_f=nx_f, ny_f=ny_f, nz_f=nz_f, dx_f=dx_f,
-        dt=float(dt), ratio=ratio, tau=0.5,
+        dt=float(dt), ratio=ratio, tau=tau,
     )
 
     z = lambda s: jnp.zeros(s, dtype=jnp.float32)

@@ -38,6 +38,7 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
     ref = sim._refinement
     ratio = ref["ratio"]
     z_lo, z_hi = ref["z_range"]
+    tau = ref.get("tau", 0.5)
     dx_c = grid_coarse.dx
     dx_f = dx_c / ratio
     xy_margin = ref["xy_margin"] if ref["xy_margin"] is not None else 2 * dx_c
@@ -69,7 +70,7 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
         fj_lo=fj_lo, fj_hi=fj_hi,
         fk_lo=fk_lo, fk_hi=fk_hi,
         nx_f=nx_f, ny_f=ny_f, nz_f=nz_f,
-        dx_f=dx_f, dt=float(dt), ratio=ratio, tau=0.5,
+        dx_f=dx_f, dt=float(dt), ratio=ratio, tau=tau,
     )
 
     # Build fine-grid materials by rasterizing geometry at fine resolution

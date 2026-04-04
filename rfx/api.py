@@ -388,6 +388,7 @@ class Simulation:
         *,
         ratio: int = 4,
         xy_margin: float | None = None,
+        tau: float = 0.5,
     ) -> "Simulation":
         """Add a z-axis refinement region for SBP-SAT subgridding.
 
@@ -403,6 +404,9 @@ class Simulation:
         xy_margin : float or None
             Extra xy margin around geometry for the fine region.
             Default: 2 * dx_coarse.
+        tau : float
+            SAT penalty coefficient (default 0.5). Higher values give
+            stronger coupling but more dissipation.
         """
         if self._refinement is not None:
             raise ValueError("Only one refinement region is supported")
@@ -410,6 +414,7 @@ class Simulation:
             "z_range": z_range,
             "ratio": ratio,
             "xy_margin": xy_margin,
+            "tau": tau,
         }
         return self
 
