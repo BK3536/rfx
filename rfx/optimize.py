@@ -175,6 +175,11 @@ def optimize(
         for pe in sim._probes:
             probes.append(make_probe(grid, pe.position, pe.component))
 
+        # Auto-register a probe at each port position when no probes are set.
+        if not probes and sim._ports:
+            for pe in sim._ports:
+                probes.append(make_probe(grid, pe.position, pe.component))
+
         _, debye, lorentz = sim._init_dispersion(
             materials, grid.dt, debye_spec, lorentz_spec)
 
