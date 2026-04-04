@@ -4,6 +4,10 @@ Thank you for your interest in contributing to rfx. This guide covers
 development setup, coding conventions, and the workflow for submitting
 changes.
 
+> This is a **developer / maintainer guide**. If you are learning how to use
+> `rfx`, start with the user-facing guides such as Quick Start, Simulation API,
+> Sources & Ports, and Non-Uniform Mesh first.
+
 ---
 
 ## Development Setup
@@ -14,7 +18,7 @@ cd rfx
 pip install -e ".[dev]"
 ```
 
-The `dev` extra installs pytest and pytest-xdist. For GPU testing, ensure
+The `dev` extra installs pytest, pytest-xdist, and ruff. For GPU testing, ensure
 JAX is installed with CUDA support:
 
 ```bash
@@ -25,7 +29,7 @@ python -c "import jax; print(jax.devices())"
 ## Running Tests
 
 ```bash
-# Run the full suite (260+ tests, ~13 min on GPU)
+# Run the full suite (260+ tests)
 pytest tests/ -x -q
 
 # Run a specific test file
@@ -34,7 +38,7 @@ pytest tests/test_lumped_rlc.py -x -q
 # Run tests in parallel (requires pytest-xdist)
 pytest tests/ -x -q -n auto
 
-# Skip slow SBP-SAT subgridding tests
+# Skip slow tests when iterating locally
 pytest tests/ -x -q -m "not slow"
 ```
 
@@ -157,24 +161,26 @@ rfx uses a standard GitHub pull request workflow:
 ```
 rfx/
   __init__.py          # Public API re-exports
-  simulation.py        # High-level Simulation builder
+  api.py               # High-level Simulation / Result interface
+  simulation.py        # Compiled uniform-grid time loop
   auto_config.py       # Auto-configuration logic
+  nonuniform.py        # Graded-z non-uniform runner
+  lumped.py            # Lumped RLC elements
   grid.py              # Grid, constants, time step
   core/                # Yee update equations
   boundaries/          # CPML, PEC
-  sources/             # Gaussian pulse, TFSF, waveforms
-  geometry/            # CSG primitives (Box, Sphere, Cylinder, Via, ...)
+  sources/             # Waveforms, TFSF, waveguide ports
+  geometry/            # CSG primitives + Via / CurvedPatch
   materials/           # Material library, dispersive models
-  runners/             # Compiled simulation runners
-  subgridding/         # SBP-SAT subgrid implementation
+  runners/             # High-level uniform / non-uniform runners
+  subgridding/         # SBP-SAT research implementation
   probes/              # DFT and time-domain probes
   harminv.py           # Matrix Pencil resonance extraction
   farfield.py          # Near-to-far-field transform
   rcs.py               # Radar cross section pipeline
   optimize.py          # Inverse design optimizer
-  animation.py         # MP4/GIF field animation
+  animation.py         # MP4/GIF field animation export
   visualize.py         # 2D plotting utilities
-  lumped.py            # Lumped RLC elements
 tests/                 # 260+ pytest tests
 examples/              # Self-contained example scripts
 docs/guide/            # User-facing documentation

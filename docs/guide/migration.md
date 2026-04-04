@@ -10,7 +10,7 @@ concepts are familiar -- the API surface is different.
 
 | Concept | Meep | OpenEMS | rfx |
 |---------|------|---------|-----|
-| Grid setup | `Simulation(resolution=N)` | `InitCSX()` + `InitFDTD()` | `Simulation(freq_max=N)` or `.auto()` |
+| Grid setup | `Simulation(resolution=N)` | `InitCSX()` + `InitFDTD()` | `Simulation(freq_max=...)` or `Simulation.auto(...)` |
 | Cell size | `resolution` (cells/unit) | `SetDeltaUnit(1e-3)` | `dx=` in metres (auto-calculated from `freq_max`) |
 | Source | `EigenModeSource`, `Source` | `AddExcitation` | `add_port()`, `add_source()` |
 | S-parameters | `add_flux()` + post-processing | `CalcPort` | `compute_s_params=True` in `run()` |
@@ -22,8 +22,8 @@ concepts are familiar -- the API surface is different.
 | Dispersive media | `LorentzianSusceptibility` | `AddLorentzMaterial` | `DebyePole`, `LorentzPole`, `drude_pole()` |
 | Differentiable | Not available | Not available | `jax.grad(loss_fn)(params)` |
 | Inverse design | Not native (adjoint plugin) | Not native | `rfx.optimize(sim, design_region, objective)` |
-| Subgridding | Not available | Not available | `sim.add_refinement(region, factor=2)` |
-| Non-uniform mesh | Not native | `SmoothMeshLines` | Built-in, auto-selected from `freq_max` |
+| Subgridding | Not available | Not available | experimental / specialized |
+| Non-uniform mesh | Not native | `SmoothMeshLines` | `dz_profile` or `auto_configure()` |
 
 ---
 
@@ -80,7 +80,11 @@ from rfx import Simulation, Box
 
 sim = Simulation(freq_max=15e9, domain=(0.04, 0.02, 0.01), boundary="cpml")
 sim.add(Box((0, 0, 0), (0.04, 0.02, 0.01)), material="pec")
-sim.add_port(position=(0.005, 0.01, 0.005), component="ez")
+sim.add_port(
+    position=(0.005, 0.01, 0.005),
+    component="ez",
+    waveform=GaussianPulse(f0=10e9),
+)
 result = sim.run(until_decay=1e-5, compute_s_params=True)
 s11 = result.s_params[0, 0, :]
 ```
@@ -134,7 +138,7 @@ field snapshots are computed automatically based on what was requested.
 
 ### Built-in Material Library
 
-Eleven common RF materials (`FR4`, `Rogers4003C`, `alumina`, `silicon`,
+Eleven common RF materials (`fr4`, `rogers4003c`, `alumina`, `silicon`,
 `copper`, `pec`, etc.) are available by name. No need to look up
 permittivity tables for standard substrates and conductors.
 
@@ -144,12 +148,11 @@ permittivity tables for standard substrates and conductors.
 thickness, and source waveform. For most antenna and waveguide problems you
 only need to specify `freq_max` and `domain`.
 
-### SBP-SAT Subgridding
+### Non-Uniform Z for Thin Substrates
 
-rfx supports provably stable subgridding using summation-by-parts (SBP)
-operators with simultaneous approximation terms (SAT). This is not available
-in Meep or OpenEMS and enables local mesh refinement around fine features
-without re-meshing the entire domain.
+For PCB and patch-style problems, the most practical recent `rfx` workflow is
+graded z meshing via `dz_profile` / `auto_configure()`, rather than assuming
+one globally fine uniform mesh.
 
 ---
 
@@ -168,7 +171,9 @@ without re-meshing the entire domain.
 ## Further Reading
 
 - [Quick Start](quickstart.md) -- first simulation in 15 minutes
-- [Simulation API](simulation_api.md) -- full builder reference
+- [Simulation API](simulation_api.md) -- current builder reference
+- [Sources & Ports](sources_ports.md) -- source vs. port workflows
+- [Non-Uniform Mesh](nonuniform_mesh.md) -- thin-substrate workflow
 - [Inverse Design](inverse_design.md) -- gradient-based optimization
 - [Advanced Features](advanced.md) -- dispersive materials, CFS-CPML
 - [Geometry & Limitations](geometry_and_limitations.md) -- tool comparison

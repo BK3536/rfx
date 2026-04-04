@@ -27,13 +27,24 @@ engineering. The guide set below focuses on the current v1.0 surface:
 | [Geometry & Limitations](geometry_and_limitations.md) | Primitives, CSG, current boundaries/limitations |
 | [Visualization & Analysis](visualization_and_analysis.md) | Plots, exports, post-processing, interpretation |
 
-## Project / Contributor Guides
+## Start Here
+
+If you are new to `rfx`, the shortest path is usually:
+
+1. [Installation](installation.md)
+2. [Quick Start](quickstart.md)
+3. [Simulation API](simulation_api.md)
+4. [Sources & Ports](sources_ports.md)
+5. [Non-Uniform Mesh](nonuniform_mesh.md)
+6. [Validation](validation.md)
+
+## Project / Maintainer Guides
 
 | Guide | Description |
 |---|---|
 | [Migration Guide](migration.md) | Mapping Meep/OpenEMS workflows into rfx |
 | [Changelog](changelog.md) | Release notes and major capability changes |
-| [Contributing](contributing.md) | Dev workflow, testing, coding conventions |
+| [Contributing](contributing.md) | Developer / maintainer workflow, testing, and coding conventions |
 
 ## API Reference
 

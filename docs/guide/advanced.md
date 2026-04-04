@@ -1,5 +1,7 @@
 # Advanced Features
 
+This page collects features beyond the minimal builder workflow.
+
 ## Dispersive Materials
 
 ### Debye Model (water, biological tissue)
@@ -35,6 +37,47 @@ sim.add_material("ferrite", eps_r=12.0, mu_r=100.0)
 ```
 
 Validated: Fresnel reflection |R| = 3.1% error, phase velocity 0.0% error for mu_r=4.
+
+## Non-Uniform Z Mesh
+
+For thin substrates and layered RF structures, `rfx` supports graded z spacing:
+
+```python
+sim = Simulation(
+    freq_max=4e9,
+    domain=(0.08, 0.06, 0.0),
+    dx=5e-4,
+    dz_profile=dz_profile,
+)
+```
+
+See [Non-Uniform Mesh](nonuniform_mesh.md) for the recommended workflow.
+
+## Lumped RLC Elements
+
+Model discrete R/L/C behavior inside the FDTD grid:
+
+```python
+sim.add_lumped_rlc(
+    position=(0.02, 0.02, 0.01),
+    component="ez",
+    R=50.0,
+    L=1e-9,
+    C=1e-12,
+    topology="series",
+)
+```
+
+## Via and Curved Geometry Helpers
+
+Two useful PCB/antenna helper primitives now exposed at top level:
+
+```python
+from rfx import Via, CurvedPatch
+```
+
+- `Via` for through-hole / plated interconnect style modeling
+- `CurvedPatch` for staircase-approximated curved patch layouts
 
 ## CFS-CPML (Enhanced Absorption)
 
@@ -119,3 +162,13 @@ print(jax.default_backend())  # "gpu" if available, "cpu" otherwise
 ```
 
 No code changes needed. Same script runs on CPU or GPU transparently. Typical speedup: 10-50x on NVIDIA RTX 4090 / A6000.
+
+## Field Animation Export
+
+Export time-domain field evolution directly:
+
+```python
+from rfx import save_field_animation
+
+save_field_animation(result, "field_evolution.gif")
+```

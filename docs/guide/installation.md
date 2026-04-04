@@ -6,7 +6,7 @@
 pip install rfx
 ```
 
-Requires Python 3.9+ and installs JAX, matplotlib, and h5py automatically.
+Requires Python 3.10+ and installs JAX, NumPy, SciPy, matplotlib, and h5py.
 
 ## GPU Support
 
@@ -31,7 +31,7 @@ cd rfx
 pip install -e ".[dev]"
 ```
 
-The `dev` extra includes pytest and pytest-xdist for running tests:
+The `dev` extra includes pytest, pytest-xdist, and ruff:
 
 ```bash
 pytest -x -q  # Run all tests
@@ -50,4 +50,4 @@ pytest -x -q  # Run all tests
 - **CPU**: Any modern x86_64 (ARM via JAX experimental)
 - **GPU**: NVIDIA with CUDA 12+ and cuDNN 8.9+ (optional, 10-50x speedup)
 - **RAM**: 4GB minimum, 16GB+ recommended for large 3D grids
-- **Python**: 3.9, 3.10, 3.11, 3.12
+- **Python**: 3.10, 3.11, 3.12
