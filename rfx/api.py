@@ -1524,8 +1524,8 @@ class Simulation:
 
     def _assemble_materials_nu(
         self, grid: NonUniformGrid,
-    ) -> tuple[MaterialArrays, jnp.ndarray | None]:
-        """Build material arrays for non-uniform grid."""
+    ) -> tuple[MaterialArrays, object, object, jnp.ndarray | None]:
+        """Build material arrays and dispersion specs for non-uniform grid."""
         from rfx.runners.nonuniform import assemble_materials_nu
         return assemble_materials_nu(self, grid)
 

@@ -7,6 +7,8 @@ import jax.numpy as jnp
 
 from rfx.grid import C0
 from rfx.core.yee import MaterialArrays, EPS_0
+from rfx.materials.debye import DebyePole, init_debye
+from rfx.materials.lorentz import LorentzPole, init_lorentz
 from rfx.nonuniform import NonUniformGrid, make_nonuniform_grid, run_nonuniform, make_current_source
 
 
@@ -27,21 +29,16 @@ def build_nonuniform_grid(
 def assemble_materials_nu(
     sim,
     grid: NonUniformGrid,
-) -> tuple[MaterialArrays, jnp.ndarray | None]:
-    """Build material arrays for non-uniform grid.
+) -> tuple[MaterialArrays, object, object, jnp.ndarray | None]:
+    """Build material arrays and dispersion specs for non-uniform grid.
 
-    Raises ValueError if Debye/Lorentz dispersive materials are used,
-    since the non-uniform runner does not yet support ADE dispersion.
+    Returns
+    -------
+    materials : MaterialArrays
+    debye_spec : (poles, masks) or None
+    lorentz_spec : (poles, masks) or None
+    pec_mask : bool array or None
     """
-    # Check for unsupported dispersive materials
-    for entry in sim._geometry:
-        mat = sim._resolve_material(entry.material_name)
-        if mat.debye_poles or mat.lorentz_poles:
-            raise ValueError(
-                f"Material '{entry.material_name}' uses Debye/Lorentz "
-                f"dispersion which is not yet supported on non-uniform grids. "
-                f"Use sigma-only conductivity or switch to uniform grid."
-            )
     shape = (grid.nx, grid.ny, grid.nz)
     eps_r = jnp.ones(shape, dtype=jnp.float32)
     sigma = jnp.zeros(shape, dtype=jnp.float32)
@@ -56,6 +53,10 @@ def assemble_materials_nu(
     z_cumsum = np.insert(z_cumsum, 0, 0.0)
 
     PEC_SIGMA_THRESHOLD = sim._PEC_SIGMA_THRESHOLD
+
+    # Per-pole dispersion masks (same approach as uniform _assemble_materials)
+    debye_masks_by_pole: dict[DebyePole, jnp.ndarray] = {}
+    lorentz_masks_by_pole: dict[LorentzPole, jnp.ndarray] = {}
 
     for entry in sim._geometry:
         mat = sim._resolve_material(entry.material_name)
@@ -87,9 +88,41 @@ def assemble_materials_nu(
                     sigma = sigma.at[ix0:ix1, iy0:iy1, iz0:iz1].set(mat.sigma)
                     mu_r = mu_r.at[ix0:ix1, iy0:iy1, iz0:iz1].set(mat.mu_r)
 
+                # Build spatial mask for this box (for dispersion pole lookup)
+                if mat.debye_poles or mat.lorentz_poles:
+                    box_mask = jnp.zeros(shape, dtype=jnp.bool_)
+                    box_mask = box_mask.at[ix0:ix1, iy0:iy1, iz0:iz1].set(True)
+
+                    if mat.debye_poles:
+                        for pole in mat.debye_poles:
+                            if pole in debye_masks_by_pole:
+                                debye_masks_by_pole[pole] = debye_masks_by_pole[pole] | box_mask
+                            else:
+                                debye_masks_by_pole[pole] = box_mask
+
+                    if mat.lorentz_poles:
+                        for pole in mat.lorentz_poles:
+                            if pole in lorentz_masks_by_pole:
+                                lorentz_masks_by_pole[pole] = lorentz_masks_by_pole[pole] | box_mask
+                            else:
+                                lorentz_masks_by_pole[pole] = box_mask
+
     materials = MaterialArrays(eps_r=eps_r, sigma=sigma, mu_r=mu_r)
+
+    debye_spec = None
+    if debye_masks_by_pole:
+        debye_poles = list(debye_masks_by_pole)
+        debye_masks = [debye_masks_by_pole[pole] for pole in debye_poles]
+        debye_spec = (debye_poles, debye_masks)
+
+    lorentz_spec = None
+    if lorentz_masks_by_pole:
+        lorentz_poles = list(lorentz_masks_by_pole)
+        lorentz_masks = [lorentz_masks_by_pole[pole] for pole in lorentz_poles]
+        lorentz_spec = (lorentz_poles, lorentz_masks)
+
     has_pec = bool(jnp.any(pec_mask))
-    return materials, pec_mask if has_pec else None
+    return materials, debye_spec, lorentz_spec, pec_mask if has_pec else None
 
 
 def pos_to_nu_index(grid: NonUniformGrid, pos) -> tuple[int, int, int]:
@@ -128,7 +161,18 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
     grid = build_nonuniform_grid(
         sim._freq_max, sim._domain, sim._dx, sim._cpml_layers, sim._dz_profile
     )
-    materials, pec_mask = assemble_materials_nu(sim, grid)
+    materials, debye_spec, lorentz_spec, pec_mask = assemble_materials_nu(sim, grid)
+
+    # Initialize Debye/Lorentz dispersion coefficients
+    debye = None
+    if debye_spec is not None:
+        debye_poles, debye_masks = debye_spec
+        debye = init_debye(debye_poles, materials, grid.dt, mask=debye_masks)
+
+    lorentz = None
+    if lorentz_spec is not None:
+        lorentz_poles, lorentz_masks = lorentz_spec
+        lorentz = init_lorentz(lorentz_poles, materials, grid.dt, mask=lorentz_masks)
 
     sources = []
     probes = []
@@ -235,6 +279,8 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
         probes=probes,
         wire_ports=wire_port_specs if wire_port_specs else None,
         s_param_freqs=sp_freqs,
+        debye=debye,
+        lorentz=lorentz,
     )
 
     s_params = r.get("s_params")

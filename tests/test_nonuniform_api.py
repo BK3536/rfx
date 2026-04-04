@@ -177,3 +177,92 @@ class TestAutoConfigNonUniform:
         )
         s = config.summary()
         assert "non-uniform" in s
+
+
+class TestNonUniformDispersive:
+    """Test dispersive materials (Debye/Lorentz) on non-uniform mesh."""
+
+    def test_nonuniform_with_debye(self):
+        """Debye dispersive material should run on non-uniform grid."""
+        from rfx.materials.debye import DebyePole
+        sim = Simulation(freq_max=5e9, domain=(0.02, 0.02, 0.005),
+                         boundary="cpml", dz_profile=np.array([0.5e-3]*10))
+        sim.add_material("lossy_dielectric", eps_r=4.0,
+                         debye_poles=[DebyePole(delta_eps=1.0, tau=1e-11)])
+        sim.add(Box(corner_lo=(0, 0, 0), corner_hi=(0.02, 0.02, 0.005)),
+                material="lossy_dielectric")
+        sim.add_source(position=(0.01, 0.01, 0.0025), component="ez")
+        result = sim.run(n_steps=100)
+        assert result is not None
+        assert result.dt > 0
+
+    def test_nonuniform_with_lorentz(self):
+        """Lorentz dispersive material should run on non-uniform grid."""
+        from rfx.materials.lorentz import lorentz_pole
+        sim = Simulation(freq_max=5e9, domain=(0.02, 0.02, 0.005),
+                         boundary="cpml", dz_profile=np.array([0.5e-3]*10))
+        sim.add_material("lorentz_mat", eps_r=2.0,
+                         lorentz_poles=[lorentz_pole(delta_eps=1.5,
+                                       omega_0=2*np.pi*3e9, delta=1e9)])
+        sim.add(Box(corner_lo=(0, 0, 0), corner_hi=(0.02, 0.02, 0.005)),
+                material="lorentz_mat")
+        sim.add_source(position=(0.01, 0.01, 0.0025), component="ez")
+        result = sim.run(n_steps=50)
+        assert result is not None
+        assert result.dt > 0
+
+    def test_nonuniform_mixed_debye_lorentz(self):
+        """Mixed Debye + Lorentz materials should run on non-uniform grid."""
+        from rfx.materials.debye import DebyePole
+        from rfx.materials.lorentz import lorentz_pole
+        sim = Simulation(freq_max=5e9, domain=(0.02, 0.02, 0.005),
+                         boundary="cpml", dz_profile=np.array([0.5e-3]*10))
+        sim.add_material("debye_mat", eps_r=3.0,
+                         debye_poles=[DebyePole(delta_eps=1.0, tau=1e-11)])
+        sim.add_material("lorentz_mat", eps_r=2.0,
+                         lorentz_poles=[lorentz_pole(delta_eps=1.5,
+                                       omega_0=2*np.pi*3e9, delta=1e9)])
+        sim.add(Box(corner_lo=(0, 0, 0), corner_hi=(0.02, 0.02, 0.0025)),
+                material="debye_mat")
+        sim.add(Box(corner_lo=(0, 0, 0.0025), corner_hi=(0.02, 0.02, 0.005)),
+                material="lorentz_mat")
+        sim.add_source(position=(0.01, 0.01, 0.0025), component="ez")
+        result = sim.run(n_steps=50)
+        assert result is not None
+        assert result.dt > 0
+
+    def test_nonuniform_debye_energy_bounded(self):
+        """Debye on non-uniform grid should not blow up (energy bounded)."""
+        from rfx.materials.debye import DebyePole
+        dz = np.array([0.2e-3]*4 + [0.5e-3]*6)
+        sim = Simulation(freq_max=5e9, domain=(0.02, 0.02, 0.005),
+                         boundary="cpml", dz_profile=dz, dx=0.5e-3)
+        sim.add_material("dispersive", eps_r=4.0,
+                         debye_poles=[DebyePole(delta_eps=2.0, tau=5e-12)])
+        sim.add(Box(corner_lo=(0, 0, 0), corner_hi=(0.02, 0.02, 0.005)),
+                material="dispersive")
+        sim.add_source(position=(0.01, 0.01, 0.0025), component="ez")
+        sim.add_probe((0.01, 0.01, 0.0025), "ez")
+        result = sim.run(n_steps=200)
+        ts = np.asarray(result.time_series)
+        # Energy should not diverge: peak field should stay finite
+        assert np.all(np.isfinite(ts))
+        assert np.max(np.abs(ts)) < 1e10
+
+    def test_nonuniform_debye_with_probe(self):
+        """Probe should record non-zero signal with dispersive material."""
+        from rfx.materials.debye import DebyePole
+        sim = Simulation(freq_max=5e9, domain=(0.02, 0.02, 0.005),
+                         boundary="cpml", dz_profile=np.array([0.5e-3]*10),
+                         dx=0.5e-3)
+        sim.add_material("dispersive", eps_r=4.0,
+                         debye_poles=[DebyePole(delta_eps=1.0, tau=1e-11)])
+        sim.add(Box(corner_lo=(0, 0, 0), corner_hi=(0.02, 0.02, 0.005)),
+                material="dispersive")
+        sim.add_source(position=(0.01, 0.01, 0.0025), component="ez")
+        sim.add_probe((0.01, 0.01, 0.0025), "ez")
+        result = sim.run(n_steps=100)
+        ts = np.asarray(result.time_series)
+        assert ts.shape == (100, 1)
+        # Source should inject energy — probe should see non-zero signal
+        assert np.max(np.abs(ts)) > 0
