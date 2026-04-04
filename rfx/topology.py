@@ -267,6 +267,11 @@ class TopologyResult:
     beta_history: list[float]
     final_result: object = None
 
+    @property
+    def loss_history(self) -> list[float]:
+        """Alias for ``history``, consistent with ``OptimizeResult.loss_history``."""
+        return self.history
+
 
 # ---------------------------------------------------------------------------
 # Default beta schedule

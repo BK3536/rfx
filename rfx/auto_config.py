@@ -130,6 +130,7 @@ class SimConfig:
     source_info: str = ""           # Human-readable explanation
     warnings: list[str] = field(default_factory=list)
     dz_profile: np.ndarray | None = None
+    boundary: str = "cpml"
 
     @property
     def grid_shape(self) -> tuple[int, int, int]:
@@ -180,7 +181,7 @@ class SimConfig:
         kwargs = {
             "freq_max": self.freq_range[1],
             "domain": self.domain,
-            "boundary": "cpml",
+            "boundary": self.boundary,
             "cpml_layers": self.cpml_layers,
             "dx": self.dx,
         }
@@ -471,6 +472,7 @@ def auto_configure(
         source_info=source_info,
         warnings=warnings,
         dz_profile=dz_profile,
+        boundary=boundary,
     )
 
 
