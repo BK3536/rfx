@@ -1,13 +1,14 @@
 """Example: S-parameter Material Characterization
 
-Demonstrates the differentiable material fitting workflow:
-  1. Generate synthetic S-parameters from a known Debye material (water)
-  2. Use differentiable_material_fit to recover the Debye poles
-  3. Compare recovered vs original poles and permittivity spectra
+Demonstrates the material characterization workflow:
+  1. Define a known dispersive material (water at 20C, single Debye pole)
+  2. Generate synthetic complex permittivity data across frequency
+  3. Use rfx's fit_debye to recover the Debye poles from the data
+  4. Simulate the original and fitted materials to compare S-parameters
+  5. Visualize: eps(f) comparison, fit quality, S11, and pole summary
 
-This showcases rfx's unique capability of differentiating through the
-full FDTD simulation to fit dispersive material models directly to
-S-parameter data.
+This showcases rfx's material fitting and dispersive simulation
+capabilities for extracting material models from measured data.
 
 Saves: examples/50_advanced/06_material_characterization.png
 """
@@ -16,37 +17,26 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import jax.numpy as jnp
 
-from rfx import (
-    Simulation, Box, GaussianPulse, DebyePole,
-)
-from rfx.differentiable_material_fit import differentiable_material_fit
+from rfx import Simulation, Box, GaussianPulse, DebyePole
+from rfx.material_fit import fit_debye, eval_debye, plot_material_fit
 
 OUT_DIR = "examples/50_advanced"
 
 
-def debye_permittivity(freqs, eps_inf, poles):
-    """Compute complex permittivity from Debye model.
+def build_slab_sim(eps_inf, debye_poles):
+    """Build a transmission-line fixture with a dielectric slab (DUT).
 
-    eps(f) = eps_inf + sum_k delta_eps_k / (1 + j*2*pi*f*tau_k)
-    """
-    omega = 2 * np.pi * freqs
-    eps = np.full_like(freqs, eps_inf, dtype=complex)
-    for pole in poles:
-        eps += pole.delta_eps / (1.0 + 1j * omega * pole.tau)
-    return eps
-
-
-def sim_factory(eps_inf, debye_poles, lorentz_poles):
-    """Build a fixture simulation for material characterization.
-
-    Simple transmission line geometry: a dielectric slab (DUT) between
-    two ports.
+    Parameters
+    ----------
+    eps_inf : float
+        High-frequency permittivity.
+    debye_poles : list of DebyePole
+        Debye relaxation poles.
     """
     f_max = 10e9
     dx = 1.5e-3
-    dom_x = 0.03  # 30 mm
+    dom_x = 0.03
     dom_y = 0.01
     dom_z = 0.01
 
@@ -57,13 +47,9 @@ def sim_factory(eps_inf, debye_poles, lorentz_poles):
         dx=dx,
     )
 
-    # Register DUT material
-    sim.add_material("dut", eps_r=float(eps_inf), debye_poles=debye_poles)
-
-    # DUT slab in the center
+    sim.add_material("dut", eps_r=eps_inf, debye_poles=debye_poles)
     sim.add(Box((0.01, 0, 0), (0.02, dom_y, dom_z)), material="dut")
 
-    # Input port
     sim.add_port(
         (0.004, dom_y / 2, dom_z / 2),
         component="ez",
@@ -72,133 +58,191 @@ def sim_factory(eps_inf, debye_poles, lorentz_poles):
     )
     sim.add_probe((0.004, dom_y / 2, dom_z / 2), component="ez")
 
-    # Output port/probe
-    sim.add_port(
-        (0.026, dom_y / 2, dom_z / 2),
-        component="ez",
-        impedance=50.0,
-        waveform=GaussianPulse(f0=f_max / 2, bandwidth=0.8, amplitude=0.0),
-    )
     sim.add_probe((0.026, dom_y / 2, dom_z / 2), component="ez")
 
     return sim
 
 
+def debye_permittivity(freqs, eps_inf, poles):
+    """Compute complex permittivity from Debye model analytically."""
+    omega = 2 * np.pi * freqs
+    eps = np.full_like(freqs, eps_inf, dtype=complex)
+    for pole in poles:
+        eps += pole.delta_eps / (1.0 + 1j * omega * pole.tau)
+    return eps
+
+
 def main():
-    # ---- Ground truth: water at 20C (single Debye pole) ----
+    # ---- Ground truth: water at 20C ----
     eps_inf_true = 4.9
     true_poles = [DebyePole(delta_eps=74.1, tau=8.3e-12)]
 
-    print("Ground truth material: Water at 20C")
-    print(f"  eps_inf = {eps_inf_true}")
-    print(f"  Debye pole: delta_eps = {true_poles[0].delta_eps}, tau = {true_poles[0].tau*1e12:.1f} ps")
+    print("Ground truth: Water at 20C (single Debye pole)")
+    print(f"  eps_inf     = {eps_inf_true}")
+    print(f"  delta_eps   = {true_poles[0].delta_eps}")
+    print(f"  tau         = {true_poles[0].tau * 1e12:.1f} ps")
 
-    # ---- Generate synthetic S-parameters ----
-    print("\nGenerating synthetic S-parameters from ground truth ...")
-    true_sim = sim_factory(eps_inf_true, true_poles, [])
-    true_result = true_sim.run(n_steps=800, compute_s_params=True)
+    # ---- Generate synthetic permittivity data ----
+    freqs = np.linspace(0.1e9, 10e9, 100)
+    eps_true = debye_permittivity(freqs, eps_inf_true, true_poles)
 
-    if true_result.s_params is None:
-        print("Warning: S-params not computed, using synthetic proxy")
-        freqs = np.linspace(1e9, 10e9, 50)
-        s_measured = np.zeros((2, 2, len(freqs)), dtype=complex)
-        eps_true_f = debye_permittivity(freqs, eps_inf_true, true_poles)
-        gamma = (np.sqrt(eps_true_f) - 1) / (np.sqrt(eps_true_f) + 1)
-        s_measured[0, 0, :] = gamma
-        s_measured[1, 0, :] = 1 - np.abs(gamma)**2
-    else:
-        s_measured = np.asarray(true_result.s_params)
-        freqs = np.asarray(true_result.freqs)
+    # Add realistic measurement noise
+    rng = np.random.default_rng(42)
+    noise_level = 0.02  # 2% relative noise
+    eps_noisy = eps_true * (1 + noise_level * (rng.standard_normal(len(freqs)) +
+                                                1j * rng.standard_normal(len(freqs))))
 
-    print(f"S-param shape: {s_measured.shape}, freq range: {freqs[0]/1e9:.1f}-{freqs[-1]/1e9:.1f} GHz")
+    print(f"\nSynthetic data: {len(freqs)} frequency points, {freqs[0]/1e9:.1f}-{freqs[-1]/1e9:.1f} GHz")
+    print(f"  eps' range: {eps_noisy.real.min():.1f} to {eps_noisy.real.max():.1f}")
+    print(f"  eps'' range: {eps_noisy.imag.min():.1f} to {eps_noisy.imag.max():.1f}")
 
-    # ---- Fit material using differentiable FDTD ----
-    n_iter = 20
-    print(f"\nFitting material model ({n_iter} iterations) ...")
-    fit_result = differentiable_material_fit(
-        sim_factory,
-        s_measured,
-        freqs,
-        n_debye_poles=1,
-        n_lorentz_poles=0,
-        n_iterations=n_iter,
-        learning_rate=0.05,
-        verbose=True,
-    )
+    # ---- Fit Debye model ----
+    print("\nFitting 1-pole Debye model ...")
+    fit_1 = fit_debye(freqs, eps_noisy, n_poles=1)
 
-    # ---- Compare results ----
-    eps_inf_fit = fit_result.eps_inf
-    fit_poles = fit_result.debye_poles
+    print(f"  eps_inf   = {fit_1.eps_inf:.3f}  (true: {eps_inf_true})")
+    print(f"  delta_eps = {fit_1.poles[0].delta_eps:.3f}  (true: {true_poles[0].delta_eps})")
+    print(f"  tau       = {fit_1.poles[0].tau * 1e12:.3f} ps  (true: {true_poles[0].tau * 1e12:.1f} ps)")
+    print(f"  Fit error = {fit_1.fit_error * 100:.3f}%")
 
-    print(f"\n{'='*50}")
-    print(f"Material Characterization Results")
-    print(f"{'='*50}")
-    print(f"{'Parameter':<20s}  {'True':>12s}  {'Recovered':>12s}  {'Error':>10s}")
-    print("-" * 60)
-    print(f"{'eps_inf':<20s}  {eps_inf_true:12.2f}  {eps_inf_fit:12.2f}  {abs(eps_inf_fit-eps_inf_true)/eps_inf_true*100:9.1f}%")
+    # Also try 2-pole fit
+    print("\nFitting 2-pole Debye model ...")
+    fit_2 = fit_debye(freqs, eps_noisy, n_poles=2)
+    print(f"  Fit error = {fit_2.fit_error * 100:.3f}%")
+    for i, p in enumerate(fit_2.poles):
+        print(f"  Pole {i+1}: delta_eps={p.delta_eps:.3f}, tau={p.tau*1e12:.3f} ps")
 
-    if fit_poles:
-        de_true = true_poles[0].delta_eps
-        de_fit = fit_poles[0].delta_eps
-        tau_true = true_poles[0].tau
-        tau_fit = fit_poles[0].tau
-        print(f"{'delta_eps':<20s}  {de_true:12.2f}  {de_fit:12.2f}  {abs(de_fit-de_true)/de_true*100:9.1f}%")
-        print(f"{'tau (ps)':<20s}  {tau_true*1e12:12.2f}  {tau_fit*1e12:12.2f}  {abs(tau_fit-tau_true)/tau_true*100:9.1f}%")
+    # ---- Evaluate fitted models ----
+    freq_dense = np.linspace(0.1e9, 10e9, 500)
+    eps_true_dense = debye_permittivity(freq_dense, eps_inf_true, true_poles)
+    eps_fit1 = eval_debye(freq_dense, fit_1.eps_inf, fit_1.poles)
+    eps_fit2 = eval_debye(freq_dense, fit_2.eps_inf, fit_2.poles)
 
-    print(f"\nConverged: {fit_result.converged}")
-    print(f"Final loss: {fit_result.loss_history[-1]:.6e}")
+    # ---- Run FDTD simulations with true vs fitted material ----
+    print("\nRunning FDTD with true material ...")
+    sim_true = build_slab_sim(eps_inf_true, true_poles)
+    result_true = sim_true.run(n_steps=600, compute_s_params=True)
 
-    # ---- Compute permittivity spectra ----
-    freq_plot = np.linspace(0.1e9, 10e9, 200)
-    eps_true = debye_permittivity(freq_plot, eps_inf_true, true_poles)
-    eps_fit = debye_permittivity(freq_plot, eps_inf_fit, fit_poles) if fit_poles else np.full_like(freq_plot, eps_inf_fit, dtype=complex)
+    print("Running FDTD with 1-pole fitted material ...")
+    sim_fit = build_slab_sim(fit_1.eps_inf, list(fit_1.poles))
+    result_fit = sim_fit.run(n_steps=600, compute_s_params=True)
 
-    # ---- 4-panel figure ----
-    fig, axes = plt.subplots(2, 2, figsize=(13, 10))
-    fig.suptitle("S-Parameter Material Characterization (Differentiable FDTD)", fontsize=14, fontweight="bold")
+    # ---- Results summary ----
+    eps_inf_err = abs(fit_1.eps_inf - eps_inf_true) / eps_inf_true * 100
+    de_err = abs(fit_1.poles[0].delta_eps - true_poles[0].delta_eps) / true_poles[0].delta_eps * 100
+    tau_err = abs(fit_1.poles[0].tau - true_poles[0].tau) / true_poles[0].tau * 100
+
+    print(f"\n{'='*60}")
+    print(f"Material Characterization Results (1-pole Debye)")
+    print(f"{'='*60}")
+    print(f"{'Parameter':<15s}  {'True':>12s}  {'Recovered':>12s}  {'Error':>8s}")
+    print("-" * 52)
+    print(f"{'eps_inf':<15s}  {eps_inf_true:12.3f}  {fit_1.eps_inf:12.3f}  {eps_inf_err:7.2f}%")
+    print(f"{'delta_eps':<15s}  {true_poles[0].delta_eps:12.3f}  {fit_1.poles[0].delta_eps:12.3f}  {de_err:7.2f}%")
+    print(f"{'tau (ps)':<15s}  {true_poles[0].tau*1e12:12.3f}  {fit_1.poles[0].tau*1e12:12.3f}  {tau_err:7.2f}%")
+    print(f"{'Fit error':<15s}  {'':>12s}  {fit_1.fit_error*100:11.3f}%")
+
+    # ---- 6-panel figure ----
+    fig = plt.figure(figsize=(16, 11))
+    fig.suptitle("Material Characterization: Debye Pole Recovery from Noisy Data",
+                 fontsize=14, fontweight="bold")
+    gs = fig.add_gridspec(2, 3, hspace=0.35, wspace=0.35)
 
     # Panel 1: Real part of permittivity
-    ax = axes[0, 0]
-    ax.plot(freq_plot / 1e9, eps_true.real, "b-", lw=2, label="True (water)")
-    ax.plot(freq_plot / 1e9, eps_fit.real, "r--", lw=2, label="Recovered")
+    ax = fig.add_subplot(gs[0, 0])
+    ax.plot(freq_dense / 1e9, eps_true_dense.real, "b-", lw=2, label="True")
+    ax.plot(freq_dense / 1e9, eps_fit1.real, "r--", lw=2, label="1-pole fit")
+    ax.plot(freq_dense / 1e9, eps_fit2.real, "g:", lw=1.5, label="2-pole fit")
+    ax.plot(freqs / 1e9, eps_noisy.real, "k.", ms=2, alpha=0.4, label="Noisy data")
     ax.set_xlabel("Frequency (GHz)")
-    ax.set_ylabel("eps' (real part)")
+    ax.set_ylabel("eps' (real)")
     ax.set_title("Permittivity: Real Part")
-    ax.legend(fontsize=10)
+    ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
     # Panel 2: Imaginary part (loss)
-    ax = axes[0, 1]
-    ax.plot(freq_plot / 1e9, -eps_true.imag, "b-", lw=2, label="True")
-    ax.plot(freq_plot / 1e9, -eps_fit.imag, "r--", lw=2, label="Recovered")
+    ax = fig.add_subplot(gs[0, 1])
+    ax.plot(freq_dense / 1e9, -eps_true_dense.imag, "b-", lw=2, label="True")
+    ax.plot(freq_dense / 1e9, -eps_fit1.imag, "r--", lw=2, label="1-pole fit")
+    ax.plot(freq_dense / 1e9, -eps_fit2.imag, "g:", lw=1.5, label="2-pole fit")
+    ax.plot(freqs / 1e9, -eps_noisy.imag, "k.", ms=2, alpha=0.4, label="Noisy data")
     ax.set_xlabel("Frequency (GHz)")
-    ax.set_ylabel("-eps'' (loss factor)")
+    ax.set_ylabel("-eps'' (loss)")
     ax.set_title("Permittivity: Loss Factor")
-    ax.legend(fontsize=10)
+    ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # Panel 3: Loss convergence
-    ax = axes[1, 0]
-    ax.semilogy(fit_result.loss_history, "b.-", lw=1.2)
-    ax.set_xlabel("Iteration")
-    ax.set_ylabel("S-parameter loss")
-    ax.set_title("Fitting Convergence")
+    # Panel 3: Fit residuals
+    ax = fig.add_subplot(gs[0, 2])
+    resid_1 = np.abs(eps_fit1[:len(freqs)] - eps_true[:len(freqs)]) if len(eps_fit1) >= len(freqs) else np.zeros(1)
+    eps_eval1_at_data = eval_debye(freqs, fit_1.eps_inf, fit_1.poles)
+    eps_eval2_at_data = eval_debye(freqs, fit_2.eps_inf, fit_2.poles)
+    resid_1 = np.abs(eps_eval1_at_data - eps_true) / np.abs(eps_true)
+    resid_2 = np.abs(eps_eval2_at_data - eps_true) / np.abs(eps_true)
+    ax.semilogy(freqs / 1e9, resid_1 * 100, "r-", lw=1.5, label=f"1-pole ({fit_1.fit_error*100:.2f}%)")
+    ax.semilogy(freqs / 1e9, resid_2 * 100, "g-", lw=1.5, label=f"2-pole ({fit_2.fit_error*100:.2f}%)")
+    ax.set_xlabel("Frequency (GHz)")
+    ax.set_ylabel("Relative error (%)")
+    ax.set_title("Fit Residuals vs Ground Truth")
+    ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # Panel 4: S11 comparison
-    ax = axes[1, 1]
-    if s_measured.shape[0] >= 1:
-        s11_meas_db = 20 * np.log10(np.maximum(np.abs(s_measured[0, 0, :]), 1e-30))
-        ax.plot(freqs / 1e9, s11_meas_db, "b-", lw=1.5, label="Measured (synthetic)")
+    # Panel 4: FDTD S11 comparison
+    ax = fig.add_subplot(gs[1, 0])
+    if result_true.s_params is not None and result_true.freqs is not None:
+        f_ghz = np.asarray(result_true.freqs) / 1e9
+        s11_true = 20 * np.log10(np.maximum(np.abs(np.asarray(result_true.s_params)[0, 0, :]), 1e-30))
+        ax.plot(f_ghz, s11_true, "b-", lw=1.5, label="True material")
+    if result_fit.s_params is not None and result_fit.freqs is not None:
+        f_ghz2 = np.asarray(result_fit.freqs) / 1e9
+        s11_fit = 20 * np.log10(np.maximum(np.abs(np.asarray(result_fit.s_params)[0, 0, :]), 1e-30))
+        ax.plot(f_ghz2, s11_fit, "r--", lw=1.5, label="Fitted material")
     ax.set_xlabel("Frequency (GHz)")
     ax.set_ylabel("|S11| (dB)")
-    ax.set_title("S11 — Measured Reference")
+    ax.set_title("FDTD S11: True vs Fitted Material")
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
 
-    plt.tight_layout()
+    # Panel 5: Time-domain comparison
+    ax = fig.add_subplot(gs[1, 1])
+    ts_true = np.asarray(result_true.time_series)
+    ts_fit = np.asarray(result_fit.time_series)
+    dt = result_true.dt
+    t_ns = np.arange(ts_true.shape[0]) * dt * 1e9
+    ax.plot(t_ns, ts_true[:, 0], "b-", lw=0.8, alpha=0.8, label="True")
+    ax.plot(t_ns, ts_fit[:, 0], "r--", lw=0.8, alpha=0.8, label="Fitted")
+    ax.set_xlabel("Time (ns)")
+    ax.set_ylabel("Ez at port")
+    ax.set_title("Time-Domain Port Signal")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    # Panel 6: Summary table
+    ax = fig.add_subplot(gs[1, 2])
+    ax.axis("off")
+    lines = [
+        "Material Characterization Summary",
+        "-" * 38,
+        f"Material: Water at 20C",
+        f"Model: Single Debye pole",
+        "",
+        f"{'Param':<12s} {'True':>10s} {'Fit':>10s} {'Err':>7s}",
+        "-" * 38,
+        f"{'eps_inf':<12s} {eps_inf_true:10.2f} {fit_1.eps_inf:10.2f} {eps_inf_err:6.1f}%",
+        f"{'delta_eps':<12s} {true_poles[0].delta_eps:10.2f} {fit_1.poles[0].delta_eps:10.2f} {de_err:6.1f}%",
+        f"{'tau (ps)':<12s} {true_poles[0].tau*1e12:10.2f} {fit_1.poles[0].tau*1e12:10.2f} {tau_err:6.1f}%",
+        "-" * 38,
+        f"Fit error (RMS): {fit_1.fit_error*100:.3f}%",
+        f"Noise level: {noise_level*100:.0f}%",
+        "",
+        f"2-pole fit error: {fit_2.fit_error*100:.3f}%",
+    ]
+    ax.text(0.05, 0.95, "\n".join(lines),
+            transform=ax.transAxes, va="top", fontsize=9, family="monospace",
+            bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.85))
+
     out_path = f"{OUT_DIR}/06_material_characterization.png"
-    plt.savefig(out_path, dpi=150)
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"\nPlot saved: {out_path}")
 
