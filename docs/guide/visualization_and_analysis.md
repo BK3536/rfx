@@ -49,6 +49,21 @@ from rfx import plot_time_series
 plot_time_series(result)  # Ez vs time at probe locations
 ```
 
+### Example Outputs
+
+These plots are from actual rfx simulation runs on RTX 4090.
+
+**Radiation pattern:**
+![Radiation pattern example](./images/07_radiation_pattern.png)
+
+**Field distribution (Ez midplane):**
+![Field slice example](./images/07_field_slices.png)
+
+**Smith chart:**
+![Smith chart example](./images/07_smith_chart.png)
+
+---
+
 ## Programmatic Analysis
 
 rfx results are NumPy/JAX arrays — use any Python analysis tools directly.

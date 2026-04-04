@@ -457,6 +457,15 @@ know whether your result is right.
 
 ---
 
+## Example Output
+
+The following plot is from the rfx convergence study example, demonstrating
+second-order convergence rate on a cavity resonance problem.
+
+![Convergence study — log-log error vs grid spacing](./images/07_convergence.png)
+
+---
+
 ## References
 
 - L. F. Richardson, "The approximate arithmetical solution by finite

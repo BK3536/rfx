@@ -536,6 +536,15 @@ python examples/04_patch_antenna.py
 
 ---
 
+## Validation Results
+
+The following plots are from the rfx accuracy validation suite, run on RTX 4090.
+The patch antenna resonance agrees with Balanis Ch 14 within 1.97%.
+
+![Patch antenna validation — resonance frequency vs analytical prediction](./images/01_patch_balanis.png)
+
+---
+
 ## References
 
 - C. A. Balanis, *Antenna Theory: Analysis and Design*, 4th ed., Wiley,
