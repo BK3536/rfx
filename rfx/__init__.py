@@ -79,3 +79,8 @@ from rfx.probes.probes import (
 )
 from rfx.sweep import parametric_sweep, SweepResult, plot_sweep
 from rfx.pcb import PCBLayer, Stackup
+from rfx.material_fit import (
+    load_material_csv, fit_debye, fit_lorentz,
+    eval_debye, eval_lorentz, plot_material_fit,
+    DebyeFitResult, LorentzFitResult,
+)
