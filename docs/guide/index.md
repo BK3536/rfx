@@ -1,26 +1,54 @@
 # rfx Documentation
 
-**rfx** is a JAX-based differentiable 3D FDTD electromagnetic simulator for RF and microwave engineering.
+`rfx` is a JAX-based differentiable FDTD simulator for RF and microwave
+engineering. The guide set below focuses on the current v1.0 surface:
 
-## Guides
+- **non-uniform z meshing** for thin substrates,
+- **lumped/wire/waveguide ports**,
+- **lumped RLC elements**,
+- **via / curved-patch geometry helpers**,
+- **field animation export**,
+- and **benchmark/validation workflows**.
+
+## Core Guides
 
 | Guide | Description |
-|-------|-------------|
-| [Installation](installation.md) | Install rfx, set up GPU, development mode |
-| [Quick Start](quickstart.md) | Your first simulation in 15 minutes |
-| [Simulation API](simulation_api.md) | Simulation builder, materials, sources, probes |
-| [Waveguide Ports](waveguide_ports.md) | S-matrix extraction, multi-port, calibration |
-| [Inverse Design](inverse_design.md) | Gradient-based optimization with jax.grad |
-| [Far-Field & RCS](farfield_rcs.md) | Radiation patterns, radar cross section |
-| [Advanced Features](advanced.md) | Dispersive materials, CFS-CPML, subpixel smoothing |
-| [Geometry & Limitations](geometry_and_limitations.md) | Primitives, CSG, what rfx can/can't do, tool comparison |
-| [Visualization & AI Analysis](visualization_and_analysis.md) | Plots, post-processing, LLM-assisted design, ML surrogates |
-| [Migration Guide](migration.md) | Coming from Meep or OpenEMS? Start here |
-| [Changelog](changelog.md) | Version history and release notes |
-| [Contributing](contributing.md) | Dev setup, testing, PR workflow |
+|---|---|
+| [Installation](installation.md) | Python/JAX install, GPU notes, dev setup |
+| [Quick Start](quickstart.md) | First simulation with the current high-level API |
+| [Simulation API](simulation_api.md) | `Simulation`, `Result`, materials, sources, probes, ports |
+| [Sources & Ports](sources_ports.md) | Soft sources, polarized sources, lumped/wire/waveguide ports |
+| [Non-Uniform Mesh](nonuniform_mesh.md) | `dz_profile`, `auto_configure()`, thin-substrate workflow |
+| [Waveguide Ports](waveguide_ports.md) | Modal waveguide excitation and calibrated S-matrix extraction |
+| [Inverse Design](inverse_design.md) | Gradient-based optimization with `jax.grad` |
+| [Far-Field & RCS](farfield_rcs.md) | NTFF radiation patterns and RCS workflows |
+| [Validation](validation.md) | What is strongly benchmarked vs. what is still evolving |
+| [Advanced Features](advanced.md) | Dispersive media, lumped RLC, via/curved geometry, animation |
+| [Geometry & Limitations](geometry_and_limitations.md) | Primitives, CSG, current boundaries/limitations |
+| [Visualization & Analysis](visualization_and_analysis.md) | Plots, exports, post-processing, interpretation |
+
+## Project / Contributor Guides
+
+| Guide | Description |
+|---|---|
+| [Migration Guide](migration.md) | Mapping Meep/OpenEMS workflows into rfx |
+| [Changelog](changelog.md) | Release notes and major capability changes |
+| [Contributing](contributing.md) | Dev workflow, testing, coding conventions |
+
+## API Reference
+
+Generate API documentation locally:
+
+```bash
+pip install pdoc
+pdoc rfx -o docs/api
+```
+
+Then open `docs/api/index.html` in your browser.
 
 ## Quick Links
 
-- **GitHub**: [BK3536/rfx](https://github.com/BK3536/rfx)
-- **License**: MIT
-- **API Reference**: All public classes and functions have comprehensive docstrings. Use `help(rfx.Simulation)` in Python.
+- GitHub: [BK3536/rfx](https://github.com/BK3536/rfx)
+- Public docs snapshot: [remilab.ai/rfx](https://remilab.ai/rfx/)
+- Top-level API exports: `rfx.__init__`
+- Package metadata: `pyproject.toml`
