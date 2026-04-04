@@ -1764,6 +1764,7 @@ class Simulation:
         subpixel_smoothing: bool = False,
         conformal_pec: bool = False,
         conformal_min_weight: float = 0.1,
+        devices: list | None = None,
     ) -> Result:
         """Run the simulation.
 
@@ -1802,11 +1803,24 @@ class Simulation:
         conformal_min_weight : float
             Minimum conformal weight for CFL stability clamping.
             Default 0.1. Recommended range: 0.05-0.3.
+        devices : list of jax.Device or None
+            When a list with len > 1 is provided, run the simulation
+            distributed across those devices using 1D slab decomposition
+            along the x-axis (via ``jax.pmap``).  Phase 1 supports PEC
+            boundary, soft sources, and point probes.
 
         Returns
         -------
         Result
         """
+        # ---- Distributed multi-device path ----
+        if devices is not None and len(devices) > 1:
+            if n_steps is None:
+                grid = self._build_grid()
+                n_steps = grid.num_timesteps(num_periods=num_periods)
+            from rfx.runners.distributed import run_distributed
+            return run_distributed(self, n_steps=n_steps, devices=devices)
+
         # ---- Non-uniform mesh path ----
         if self._dz_profile is not None:
             nu_grid = self._build_nonuniform_grid()
