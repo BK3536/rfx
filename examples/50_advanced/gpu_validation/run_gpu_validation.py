@@ -15,12 +15,12 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 cases = [
-    ("01_patch_opt_validation.py",  "Topology optimization pipeline (air->fr4, energy objective)"),
-    ("02_filter_validation.py",     "PEC cavity resonance via Harminv (Pozar Ch 6)"),
-    ("03_matching_validation.py",   "Series RLC resonance via FFT (Pozar Ch 5)"),
-    ("04_coupling_validation.py",   "Free-space energy decay with CPML (Balanis Ch 2)"),
-    ("05_lens_validation.py",       "Dielectric lens focusing"),
-    ("06_matfit_validation.py",     "Debye material characterization"),
+    ("01_patch_opt_validation.py",  "Topology optimization pipeline smoke test (jax.grad + Adam)"),
+    ("02_filter_validation.py",     "PEC cavity TE101 resonance via Harminv (Pozar Ch 6)"),
+    ("03_matching_validation.py",   "Series RLC ADE spectral effect in PEC cavity"),
+    ("04_coupling_validation.py",   "Free-space 1/r^2 energy decay with CPML (Balanis Ch 2)"),
+    ("05_lens_validation.py",       "Dielectric lens focusing with CPML (Balanis Ch 13)"),
+    ("06_matfit_validation.py",     "Debye material characterization (Kaatze 1989 water)"),
 ]
 
 print("=" * 70)

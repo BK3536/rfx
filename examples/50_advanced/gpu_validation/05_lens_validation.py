@@ -1,7 +1,7 @@
 """GPU Accuracy Validation: Dielectric Lens Beam Focusing
 
 Validates gradient-based optimization of a dielectric lens for beam
-focusing against lens aperture theory.
+focusing using CPML open boundaries (essential for radiation tests).
 
 Validation criteria:
   - Lens should improve energy at the output probe by > 2 dB
@@ -11,7 +11,6 @@ Validation criteria:
 Reference:
   Balanis, "Advanced Engineering Electromagnetics", Ch 13 (Lens Antennas)
   Maximum directivity of an aperture: D = 4*pi*A_eff/lambda^2
-  For a circular aperture of diameter d: D_max = (pi*d/lambda)^2
 
 Exit 0 on PASS, 1 on FAIL.
 """
@@ -44,11 +43,13 @@ def main():
 
     f0 = 5e9
     lam = C0 / f0  # 60 mm
-    dx = 1.0e-3  # 1 mm resolution (~lambda/60)
-    dom = 60e-3  # 60 mm cube
+    dx = 2.0e-3   # 2 mm resolution (~lambda/30, adequate for lens opt)
+    dom_x = 0.12  # 120 mm — elongated for source → lens → probe
+    dom_y = 0.06  # 60 mm
+    dom_z = 0.06  # 60 mm
 
     # Lens aperture size (for theoretical directivity)
-    lens_width = dom * 0.6  # 36 mm
+    lens_width = dom_y * 0.6  # 36 mm
     A_lens = lens_width ** 2  # square aperture area
     D_theory = 4 * np.pi * A_lens / lam ** 2
     D_theory_dB = 10 * np.log10(D_theory)
@@ -58,49 +59,51 @@ def main():
     print("=" * 60)
     print(f"Frequency       : {f0/1e9:.0f} GHz (lambda = {lam*1e3:.0f} mm)")
     print(f"Resolution      : dx = {dx*1e3:.1f} mm (lambda/{lam/dx:.0f})")
-    print(f"Domain          : {dom*1e3:.0f} mm cube")
+    print(f"Domain          : {dom_x*1e3:.0f} x {dom_y*1e3:.0f} x {dom_z*1e3:.0f} mm")
+    print(f"Boundary        : CPML (open, no wall reflections)")
     print(f"Lens aperture   : {lens_width*1e3:.0f} mm x {lens_width*1e3:.0f} mm")
     print(f"Theoretical D   : {D_theory_dB:.1f} dBi (aperture limit)")
     print()
 
-    # --- Build simulation ---
+    # --- Build simulation with CPML (essential for radiation/lens tests) ---
     sim = Simulation(
         freq_max=f0 * 2,
-        domain=(dom, dom, dom),
-        boundary="pec",
+        domain=(dom_x, dom_y, dom_z),
+        boundary="cpml",
+        cpml_layers=10,
         dx=dx,
     )
 
-    src_x = dom * 0.12
-    center_y = dom / 2
-    center_z = dom / 2
+    # Soft source — no port impedance loading for clean radiation
+    src_x = 0.030   # 30 mm from x=0 (well clear of CPML inner edge)
+    center_y = dom_y / 2
+    center_z = dom_z / 2
 
-    sim.add_port(
+    sim.add_source(
         (src_x, center_y, center_z),
         component="ez",
-        impedance=50.0,
         waveform=GaussianPulse(f0=f0, bandwidth=0.6),
     )
     sim.add_probe((src_x, center_y, center_z), component="ez")
 
-    # Output probe
-    probe_x = dom * 0.88
+    # Output probe — behind the lens, well inside domain
+    probe_x = 0.090  # 90 mm from x=0 (clear of CPML inner edge)
     sim.add_probe((probe_x, center_y, center_z), component="ez")
 
     # --- Reference: no lens ---
     print("Running reference (no lens) ...")
-    ref_result = sim.run(n_steps=2000)
+    ref_result = sim.run(n_steps=2000, compute_s_params=False)
     ref_ts = np.asarray(ref_result.time_series)
     ref_output_energy = float(np.sum(ref_ts[:, -1] ** 2))
     ref_energy_dB = 10 * np.log10(max(ref_output_energy, 1e-30))
     print(f"Reference output energy: {ref_output_energy:.4e} ({ref_energy_dB:.1f} dB)")
 
     # --- Design region: dielectric lens ---
-    lens_x0 = dom * 0.35
-    lens_x1 = dom * 0.55
+    lens_x0 = 0.045   # 45 mm
+    lens_x1 = 0.065   # 65 mm (20 mm thick lens)
     region = DesignRegion(
-        corner_lo=(lens_x0, dom * 0.2, dom * 0.2),
-        corner_hi=(lens_x1, dom * 0.8, dom * 0.8),
+        corner_lo=(lens_x0, dom_y * 0.15, dom_z * 0.15),
+        corner_hi=(lens_x1, dom_y * 0.85, dom_z * 0.85),
         eps_range=(1.0, 10.0),
     )
 
@@ -165,7 +168,7 @@ def main():
 
     # --- Figures ---
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle("GPU Validation: Dielectric Lens (Balanis Ch 13)", fontsize=14, fontweight="bold")
+    fig.suptitle("GPU Validation: Dielectric Lens (CPML, Balanis Ch 13)", fontsize=14, fontweight="bold")
 
     # Panel 1: Optimized eps (xy mid-slice)
     ax = axes[0, 0]
@@ -178,7 +181,7 @@ def main():
     fig.colorbar(im, ax=ax, label="eps_r")
     ax.set_xlabel("x (cells)")
     ax.set_ylabel("y (cells)")
-    ax.set_title("Optimized Lens Permittivity (z-midplane)")
+    ax.set_title("Optimized Lens eps_r (z-midplane)")
 
     # Panel 2: Optimized eps (xz mid-slice)
     ax = axes[0, 1]
@@ -191,7 +194,7 @@ def main():
     fig.colorbar(im, ax=ax, label="eps_r")
     ax.set_xlabel("x (cells)")
     ax.set_ylabel("z (cells)")
-    ax.set_title("Lens Permittivity (y-midplane)")
+    ax.set_title("Lens eps_r (y-midplane)")
 
     # Panel 3: Loss convergence
     ax = axes[1, 0]
@@ -212,7 +215,7 @@ def main():
         "Dielectric Lens Validation",
         "-" * 35,
         f"f0 = {f0/1e9:.0f} GHz, lambda = {lam*1e3:.0f} mm",
-        f"dx = {dx*1e3:.1f} mm, {n_iter} iterations",
+        f"dx = {dx*1e3:.1f} mm, CPML boundary, {n_iter} iter",
         "",
         f"Reference energy : {ref_output_energy:.4e}",
         f"Optimized energy : {abs(opt_output_energy):.4e}",

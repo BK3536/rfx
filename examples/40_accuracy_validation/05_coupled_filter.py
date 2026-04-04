@@ -112,15 +112,14 @@ for label, dx in resolutions:
     y2_hi = y2_lo + W_line
     sim.add(Box((x_start, y2_lo, h), (x_end, y2_hi, h)), material="pec")
 
-    # Port source on line 1
+    # Soft source on line 1 — avoids port impedance loading that
+    # confounds the coupling measurement with reflection artifacts.
     feed_x = x_start + 1e-3
     feed_y1 = (y1_lo + y1_hi) / 2.0
-    sim.add_port(
-        (feed_x, feed_y1, 0),
+    sim.add_source(
+        (feed_x, feed_y1, h / 2.0),
         component="ez",
-        impedance=50.0,
         waveform=GaussianPulse(f0=f0, bandwidth=0.8),
-        extent=h,
     )
 
     # Probes
@@ -133,7 +132,7 @@ for label, dx in resolutions:
     n_steps = int(np.ceil(8e-9 / grid.dt))
     print(f"  Grid: {grid.nx}x{grid.ny}x{grid.nz}, steps={n_steps}, dt={grid.dt*1e12:.2f} ps")
 
-    result = sim.run(n_steps=n_steps, compute_s_params=True)
+    result = sim.run(n_steps=n_steps, compute_s_params=False)
 
     # Analyze coupled signal
     ts = np.asarray(result.time_series)

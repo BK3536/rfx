@@ -1,12 +1,24 @@
-"""GPU Accuracy Validation: Series RLC Resonance Shift
+"""GPU Accuracy Validation: Series RLC ADE Spectral Effect
 
-Validates that lumped RLC elements correctly shift the spectral response
-of a PEC cavity, confirming the ADE implementation is physically correct.
+Validates that lumped RLC elements (via ADE) modify the spectral
+response of a PEC cavity, confirming the ADE implementation is
+physically active.
+
+Physics:
+  A series L+C element has self-resonance at f_LC = 1/(2*pi*sqrt(L*C)).
+  When placed inside a PEC cavity, the element loads the cavity modes.
+  Adding inductance should shift cavity resonance downward (increases
+  effective electrical length).  Larger L → larger downward shift.
+
+  Note: C_fixed = 1 pF is required to activate the series ADE path
+  (_series_needs_ade requires n_components >= 2).  This is a known
+  limitation documented in lumped.py.
 
 Validation criteria:
-  - Adding an inductor shifts the dominant spectral peak downward
-  - Larger L produces larger shift (monotonic)
-  - The spectral change is significant (> 50% energy redistribution)
+  - RLC elements produce measurable frequency shift (> 0.5%)
+  - Shift direction is downward (f_rlc < f_ref) for at least 3 of 4 cases
+  - All peak frequencies are finite and positive
+  - Larger L produces larger shift (general trend, not strict monotonic)
 
 This is a SIMULATOR PHYSICS test, not an optimizer test.
 
@@ -64,7 +76,7 @@ def run_cavity_with_rlc(L_val, C_val, dx=1.0e-3):
     # Probe at yet another location
     sim.add_probe((center - 3 * dx, center, center), component="ez")
 
-    result = sim.run(n_steps=5000)
+    result = sim.run(n_steps=5000, compute_s_params=False)
     return result
 
 
@@ -105,6 +117,11 @@ def main():
     # Pure L silently falls back to parallel ADE — see lumped.py:158
     L_values = [2e-9, 5e-9, 10e-9, 20e-9]
     C_fixed = 1e-12  # 1 pF — forces series ADE path
+
+    # Analytical LC self-resonance for reference (not a pass/fail criterion)
+    for L in L_values:
+        f_lc = 1.0 / (2 * np.pi * np.sqrt(L * C_fixed))
+        print(f"  L={L*1e9:.0f} nH, C={C_fixed*1e12:.0f} pF => f_LC = {f_lc/1e9:.1f} GHz")
     peaks = []
     spectral_changes = []
 
@@ -174,7 +191,16 @@ def main():
     else:
         print("  PASS: RLC elements shift cavity resonance")
 
-    # Criterion 2: Larger L produces larger shift (general trend)
+    # Criterion 2: Shift direction — inductance should lower resonance
+    downward_shifts = peaks < f_ref
+    n_downward = int(np.sum(downward_shifts))
+    print(f"  Downward shifts       : {n_downward}/{len(peaks)} (expect >= 3)")
+    if n_downward >= 3:
+        print("  PASS: Inductance lowers cavity resonance (as expected)")
+    else:
+        print("  WARN: Unexpected shift direction (cavity mode interaction)")
+
+    # Criterion 3: Larger L produces larger shift (general trend)
     trend = freq_shifts[-1] > freq_shifts[0]
     print(f"  Trend (small L→large L): {freq_shifts[0]:.2f}% → {freq_shifts[-1]:.2f}%")
     if trend:
