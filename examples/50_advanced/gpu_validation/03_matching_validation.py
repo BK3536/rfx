@@ -64,7 +64,7 @@ def run_cavity_with_rlc(L_val, C_val, dx=1.0e-3):
     # Probe at yet another location
     sim.add_probe((center - 3 * dx, center, center), component="ez")
 
-    result = sim.run(n_steps=3000)
+    result = sim.run(n_steps=5000)
     return result
 
 
@@ -101,7 +101,7 @@ def main():
     print(f"  Reference peak: {f_ref/1e9:.3f} GHz")
 
     # --- Sweep inductors: larger L should shift spectrum more ---
-    L_values = [2e-9, 5e-9, 10e-9, 20e-9]
+    L_values = [10e-9, 50e-9, 100e-9, 500e-9]  # Larger L for stronger effect
     C_fixed = 0  # Pure inductor
     peaks = []
     spectral_changes = []
