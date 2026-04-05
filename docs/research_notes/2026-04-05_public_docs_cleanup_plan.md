@@ -43,7 +43,7 @@ surface, then deploy the updated hierarchy safely.
 
 ### Phase 4 — legacy cleanup and CI guardrails
 - clean repo-local links so maintainers land on `docs/public/` and `docs/agent/`
-- keep `docs/guide/` explicitly marked as legacy / migration-era content
+- retire duplicate `docs/guide/` pages and keep only a redirect entrypoint
 - add source-side CI for public-doc manifest / script integrity
 - add gitops CI for export drift, sidebar route resolution, and public build smoke test
 
