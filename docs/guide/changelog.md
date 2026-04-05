@@ -8,6 +8,7 @@ All notable changes to rfx are documented here.
 
 ### Improvements
 
+- **ADI-FDTD integration** -- `Simulation(..., solver="adi")` now exposes the current 2D TMz ADI path through the public simulator API with explicit support boundaries (PEC, lossless, soft Ez sources).
 - **Differentiable forward-result contract** -- `Simulation.forward()` now returns a minimal optimization-facing result surface (`time_series`, NTFF context, grid) instead of exposing the broader stateful runtime contract.
 - **Principled PEC topology abstraction** -- topology optimization now treats PEC-like designs through a solver-level conductor occupancy field instead of conductivity saturation, preserving gradients without a sigma clamp workaround.
 - **Far-field optimization plumbing** -- NTFF-based objectives now consume explicit simulator result context (`ntff_box` + `grid`) consistently across low-level and high-level paths.
