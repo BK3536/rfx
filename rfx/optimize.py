@@ -143,6 +143,7 @@ def optimize(
 
     latent = init_latent
     loss_history = []
+    it_count = [0]  # mutable counter for verbose inside forward()
 
     def forward(lat):
         """Forward pass: latent -> eps -> simulation -> objective."""
@@ -165,6 +166,10 @@ def optimize(
         from rfx.sources.sources import LumpedPort, setup_lumped_port
 
         _n_steps = n_steps if n_steps is not None else grid.num_timesteps(num_periods=num_periods)
+        if verbose and it_count[0] == 0:
+            cells = grid.nx * grid.ny * grid.nz
+            print(f"  optimize: n_steps={_n_steps}, grid={grid.shape} "
+                  f"({cells/1e6:.1f}M cells)")
         sources = []
         probes = []
 
@@ -220,6 +225,7 @@ def optimize(
 
     for it in range(n_iters):
         loss, grad = grad_fn(latent)
+        it_count[0] = it + 1
         loss_val = float(loss)
         loss_history.append(loss_val)
 
