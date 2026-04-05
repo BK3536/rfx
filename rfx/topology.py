@@ -238,21 +238,30 @@ def density_to_eps(
     sigma : same shape as rho
         Conductivity field, values in [sigma_bg, sigma_fg].
     """
-    # Clamp sigma_fg to a gradient-safe maximum. PEC (sigma=1e10) causes
-    # the E-update coefficient Ca = (1 - σΔt/2ε)/(1 + σΔt/2ε) to saturate
-    # at -1 with zero gradient. At σ=1e4 S/m the skin depth at 5 GHz is
-    # ~0.07mm — effectively PEC at FDTD resolution while maintaining
-    # non-zero ∂Ca/∂σ for gradient flow.
-    _SIGMA_MAX_GRAD_SAFE = 1e4
-    sigma_fg_clamped = min(sigma_fg, _SIGMA_MAX_GRAD_SAFE)
-    sigma_bg_clamped = min(sigma_bg, _SIGMA_MAX_GRAD_SAFE)
+    # Clamp sigma_fg for gradient safety. PEC (sigma=1e10) causes
+    # Ca = (1 - σΔt/2ε)/(1 + σΔt/2ε) → -1 with zero gradient.
+    _SIGMA_MAX = 1e4  # skin depth ~0.07mm at 5 GHz ≈ effective PEC
+
+    sigma_fg_safe = min(sigma_fg, _SIGMA_MAX)
+    sigma_bg_safe = max(sigma_bg, 1e-6)  # avoid log(0)
 
     rho_f = rho
     if filter_radius_cells is not None and filter_radius_cells >= 0.5:
         rho_f = apply_density_filter(rho, filter_radius_cells)
     rho_p = apply_projection(rho_f, beta)
     eps = eps_bg + rho_p * (eps_fg - eps_bg)
-    sigma = sigma_bg_clamped + rho_p * (sigma_fg_clamped - sigma_bg_clamped)
+
+    # Log-scale sigma interpolation for gradient-friendly PEC topology.
+    # Linear interpolation (sigma = rho * 1e4) gives sigma=5000 at rho=0.5,
+    # where Ca ≈ -1 and ∂Ca/∂σ ≈ 0 (vanishing gradient).
+    # Log-scale: sigma = sigma_min * exp(rho * log(sigma_max/sigma_min))
+    # At rho=0.5: sigma ≈ 100 S/m → Ca and ∂Ca/∂σ are both meaningful.
+    if sigma_fg_safe > 1.0:
+        log_ratio = jnp.log(sigma_fg_safe / sigma_bg_safe)
+        sigma = sigma_bg_safe * jnp.exp(rho_p * log_ratio)
+    else:
+        # Low-sigma case: linear interpolation is fine
+        sigma = sigma_bg_safe + rho_p * (sigma_fg_safe - sigma_bg_safe)
     return eps, sigma
 
 

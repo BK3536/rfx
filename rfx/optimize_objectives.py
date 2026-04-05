@@ -406,3 +406,57 @@ def maximize_transmitted_energy(
         return -jnp.sum(ts ** 2)
 
     return objective
+
+
+# ---------------------------------------------------------------------------
+# Near-field probe-array beam steering (no NTFF required)
+# ---------------------------------------------------------------------------
+
+def steer_probe_array(
+    target_probe_idx: int,
+    suppress_probe_idx: int = 0,
+    *,
+    late_fraction: float = 0.5,
+) -> Callable:
+    """Steer radiation toward *target_probe_idx* and away from *suppress_probe_idx*.
+
+    Uses a near-field probe array as a differentiable surrogate for
+    far-field beam steering.  Place probes at different spatial positions
+    around the antenna (e.g., above-left and above-right), then this
+    objective maximizes the power ratio between target and suppressed
+    probe.
+
+    This avoids NTFF DFT entirely and works reliably in float32.
+
+    Setup example::
+
+        # Probes at different angles in the near field
+        sim.add_probe((x_center - 0.02, y_center, z_above), "ez")  # probe 0: left
+        sim.add_probe((x_center + 0.02, y_center, z_above), "ez")  # probe 1: right
+
+        # Steer toward probe 1 (right), suppress probe 0 (left)
+        obj = steer_probe_array(target_probe_idx=1, suppress_probe_idx=0)
+
+    Parameters
+    ----------
+    target_probe_idx : int
+        Column index in ``result.time_series`` to maximize.
+    suppress_probe_idx : int
+        Column index to suppress (default 0).
+    late_fraction : float
+        Fraction of time series to use (late portion, after source decays).
+
+    Returns
+    -------
+    callable(Result) -> scalar (JAX-differentiable)
+    """
+    def objective(result) -> jnp.ndarray:
+        ts = result.time_series
+        n = ts.shape[0]
+        start = int(n * (1.0 - late_fraction))
+        target_energy = jnp.sum(ts[start:, target_probe_idx] ** 2)
+        suppress_energy = jnp.sum(ts[start:, suppress_probe_idx] ** 2)
+        # Maximize ratio: minimize -(target / (suppress + eps))
+        return -(target_energy / (suppress_energy + 1e-12))
+
+    return objective
