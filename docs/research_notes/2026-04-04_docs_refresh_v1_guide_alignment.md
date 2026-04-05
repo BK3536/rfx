@@ -1,5 +1,10 @@
 # 2026-04-04 Docs Refresh — v1.0 Guide Alignment
 
+> Historical note: this entry predates the retirement of the duplicate
+> `docs/guide/` mirror. The paths listed below describe the layout at the time
+> of the 2026-04-04 refresh; the canonical public-doc source now lives under
+> `docs/public/guide/` and `docs/agent/`.
+
 ## Context
 
 `rfx` had accumulated substantial functionality since the original guide set was

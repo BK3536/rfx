@@ -155,6 +155,22 @@ Canonical public-doc source in this repo:
 - `docs/agent/` — public AI-agent pages
 - `docs/guides/public_docs_architecture.md` — ownership and sync rules
 
+### Public docs maintenance workflow
+
+1. Edit `docs/public/guide/` or `docs/agent/`
+2. Validate the source tree:
+   ```bash
+   python scripts/check_public_docs_manifest.py
+   ```
+3. Export to gitops:
+   ```bash
+   python scripts/export_public_docs_to_gitops.py
+   ```
+
+Source-side CI for this flow lives in:
+
+- `.github/workflows/public-docs-source.yml`
+
 ### Tutorials
 - [Patch Antenna Design](docs/public/guide/tutorial-patch-antenna.mdx) — Complete 2.4 GHz design flow
 - [Microstrip Filter](docs/public/guide/tutorial-microstrip-filter.mdx) — Coupled-line BPF from Pozar
