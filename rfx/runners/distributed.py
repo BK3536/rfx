@@ -1560,6 +1560,7 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
         time_series=time_series,
         s_params=None,
         freqs=None,
+        grid=grid,
         dt=grid.dt,
         freq_range=(sim._freq_max / 10, sim._freq_max, sim._boundary),
     )

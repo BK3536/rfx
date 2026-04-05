@@ -95,6 +95,21 @@ def test_optimize_runs_single_iteration():
     assert result.eps_design.shape == result.latent.shape
 
 
+def test_forward_returns_minimal_result_contract():
+    """Simulation.forward should return only differentiable observables."""
+    sim = Simulation(freq_max=5e9, domain=(0.015, 0.015, 0.015), boundary="pec")
+    sim.add_source((0.005, 0.0075, 0.0075), "ez")
+    sim.add_probe((0.01, 0.0075, 0.0075), "ez")
+    sim.add_ntff_box((0.003, 0.003, 0.003), (0.012, 0.012, 0.012), freqs=jnp.array([3e9]))
+
+    result = sim.forward(n_steps=10, checkpoint=True)
+
+    assert result.time_series.shape[0] == 10
+    assert result.ntff_box is not None
+    assert result.grid is not None
+    assert not hasattr(result, "state")
+
+
 # ---------------------------------------------------------------------------
 # gradient_check: AD vs finite-difference
 # ---------------------------------------------------------------------------

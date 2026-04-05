@@ -17,6 +17,7 @@ from rfx.simulation import make_source, make_probe, run
 from rfx.farfield import (
     make_ntff_box, compute_far_field, directivity,
 )
+from rfx.optimize_objectives import maximize_directivity
 
 
 def _run_dipole_ntff(boundary="cpml"):
@@ -71,6 +72,31 @@ def test_ntff_accumulation_runs():
     # DFT should have accumulated non-zero values
     x_lo_mag = float(jnp.max(jnp.abs(result.ntff_data.x_lo)))
     assert x_lo_mag > 0, "NTFF DFT should accumulate non-zero fields"
+    assert result.ntff_box == ntff
+    assert result.grid is grid
+
+
+def test_maximize_directivity_works_with_low_level_simresult():
+    """Far-field objective should work on the low-level SimResult contract."""
+    grid = Grid(freq_max=5e9, domain=(0.02, 0.02, 0.02), cpml_layers=0)
+    materials = init_materials(grid.shape)
+    pulse = GaussianPulse(f0=3e9, bandwidth=0.5)
+    src = make_source(grid, (0.01, 0.01, 0.01), "ez", pulse, 30)
+
+    ntff = make_ntff_box(
+        grid,
+        (0.003, 0.003, 0.003),
+        (0.017, 0.017, 0.017),
+        freqs=jnp.array([3e9]),
+    )
+
+    result = run(grid, materials, 30, sources=[src], ntff=ntff)
+    obj = maximize_directivity(theta_target=np.pi / 2, phi_target=0.0)
+    loss = obj(result)
+
+    assert loss.shape == ()
+    assert jnp.isfinite(loss)
+    assert float(loss) < 0.0
 
 
 def test_dipole_sin_theta_pattern():

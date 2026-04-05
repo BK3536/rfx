@@ -93,6 +93,14 @@ class TopologyDesignRegion:
 # Filtering and projection (all differentiable)
 # ---------------------------------------------------------------------------
 
+
+@dataclass(frozen=True)
+class TopologyMaterialFields:
+    """Material fields produced by the density pipeline."""
+    eps: jnp.ndarray
+    sigma: jnp.ndarray
+    pec_occupancy: jnp.ndarray | None = None
+
 def apply_density_filter(rho: jnp.ndarray, radius_cells: float) -> jnp.ndarray:
     """Cone-shaped density filter for minimum feature size control.
 
@@ -198,6 +206,50 @@ def apply_projection(rho: jnp.ndarray, beta: float, eta: float = 0.5) -> jnp.nda
     return num / den
 
 
+def density_to_material_fields(
+    rho: jnp.ndarray,
+    eps_bg: float,
+    eps_fg: float,
+    filter_radius_cells: float | None = None,
+    beta: float = 1.0,
+    sigma_bg: float = 0.0,
+    sigma_fg: float = 0.0,
+    *,
+    pec_bg: bool = False,
+    pec_fg: bool = False,
+) -> TopologyMaterialFields:
+    """Convert density to differentiable material fields.
+
+    For finite materials, this interpolates ``eps`` and ``sigma`` directly.
+    When one side of the interpolation is PEC, it instead keeps the
+    non-conducting material properties and emits a relaxed conductor
+    occupancy field for the solver-level PEC operator.
+    """
+    rho_f = rho
+    if filter_radius_cells is not None and filter_radius_cells >= 0.5:
+        rho_f = apply_density_filter(rho, filter_radius_cells)
+    rho_p = apply_projection(rho_f, beta)
+
+    if pec_bg and pec_fg:
+        eps = jnp.full_like(rho_p, eps_bg)
+        sigma = jnp.full_like(rho_p, sigma_bg)
+        return TopologyMaterialFields(eps=eps, sigma=sigma, pec_occupancy=jnp.ones_like(rho_p))
+
+    if pec_fg and not pec_bg:
+        eps = jnp.full_like(rho_p, eps_bg)
+        sigma = jnp.full_like(rho_p, sigma_bg)
+        return TopologyMaterialFields(eps=eps, sigma=sigma, pec_occupancy=rho_p)
+
+    if pec_bg and not pec_fg:
+        eps = jnp.full_like(rho_p, eps_fg)
+        sigma = jnp.full_like(rho_p, sigma_fg)
+        return TopologyMaterialFields(eps=eps, sigma=sigma, pec_occupancy=1.0 - rho_p)
+
+    eps = eps_bg + rho_p * (eps_fg - eps_bg)
+    sigma = sigma_bg + rho_p * (sigma_fg - sigma_bg)
+    return TopologyMaterialFields(eps=eps, sigma=sigma, pec_occupancy=None)
+
+
 def density_to_eps(
     rho: jnp.ndarray,
     eps_bg: float,
@@ -207,62 +259,17 @@ def density_to_eps(
     sigma_bg: float = 0.0,
     sigma_fg: float = 0.0,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Convert density field to permittivity and conductivity via filter + projection + interpolation.
-
-    The full pipeline is:
-        1. Density filter (cone, radius=filter_radius_cells)
-        2. Threshold projection (smooth Heaviside, sharpness=beta)
-        3. Linear interpolation:
-               eps   = eps_bg   + rho_proj * (eps_fg   - eps_bg)
-               sigma = sigma_bg + rho_proj * (sigma_fg - sigma_bg)
-
-    All operations are differentiable w.r.t. rho.
-
-    Parameters
-    ----------
-    rho : array, shape (nx, ny) or (nx, ny, nz)
-        Raw density field in [0, 1].
-    eps_bg, eps_fg : float
-        Background and foreground permittivity.
-    filter_radius_cells : float or None
-        Cone filter radius in grid cells.  None = no filtering.
-    beta : float
-        Projection sharpness.
-    sigma_bg, sigma_fg : float
-        Background and foreground conductivity (S/m).
-
-    Returns
-    -------
-    eps : same shape as rho
-        Permittivity field, values in [eps_bg, eps_fg].
-    sigma : same shape as rho
-        Conductivity field, values in [sigma_bg, sigma_fg].
-    """
-    # Clamp sigma_fg for gradient safety. PEC (sigma=1e10) causes
-    # Ca = (1 - σΔt/2ε)/(1 + σΔt/2ε) → -1 with zero gradient.
-    _SIGMA_MAX = 1e4  # skin depth ~0.07mm at 5 GHz ≈ effective PEC
-
-    sigma_fg_safe = min(sigma_fg, _SIGMA_MAX)
-    sigma_bg_safe = max(sigma_bg, 1e-6)  # avoid log(0)
-
-    rho_f = rho
-    if filter_radius_cells is not None and filter_radius_cells >= 0.5:
-        rho_f = apply_density_filter(rho, filter_radius_cells)
-    rho_p = apply_projection(rho_f, beta)
-    eps = eps_bg + rho_p * (eps_fg - eps_bg)
-
-    # Log-scale sigma interpolation for gradient-friendly PEC topology.
-    # Linear interpolation (sigma = rho * 1e4) gives sigma=5000 at rho=0.5,
-    # where Ca ≈ -1 and ∂Ca/∂σ ≈ 0 (vanishing gradient).
-    # Log-scale: sigma = sigma_min * exp(rho * log(sigma_max/sigma_min))
-    # At rho=0.5: sigma ≈ 100 S/m → Ca and ∂Ca/∂σ are both meaningful.
-    if sigma_fg_safe > 1.0:
-        log_ratio = jnp.log(sigma_fg_safe / sigma_bg_safe)
-        sigma = sigma_bg_safe * jnp.exp(rho_p * log_ratio)
-    else:
-        # Low-sigma case: linear interpolation is fine
-        sigma = sigma_bg_safe + rho_p * (sigma_fg_safe - sigma_bg_safe)
-    return eps, sigma
+    """Backward-compatible density -> (eps, sigma) helper."""
+    fields = density_to_material_fields(
+        rho,
+        eps_bg,
+        eps_fg,
+        filter_radius_cells=filter_radius_cells,
+        beta=beta,
+        sigma_bg=sigma_bg,
+        sigma_fg=sigma_fg,
+    )
+    return fields.eps, fields.sigma
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +301,7 @@ class TopologyResult:
     history: list[float]
     beta_history: list[float]
     final_result: object = None
+    pec_occupancy_design: jnp.ndarray | None = None
 
     @property
     def loss_history(self) -> list[float]:
@@ -403,6 +411,9 @@ def topology_optimize(
     eps_fg = mat_fg.eps_r
     sigma_bg = mat_bg.sigma
     sigma_fg = mat_fg.sigma
+    pec_threshold = sim._PEC_SIGMA_THRESHOLD
+    bg_is_pec = sigma_bg >= pec_threshold
+    fg_is_pec = sigma_fg >= pec_threshold
 
     # Build grid and compute design region indices
     grid = sim._build_grid()
@@ -434,6 +445,11 @@ def topology_optimize(
     if filt_r is not None:
         filter_radius_cells = filt_r / grid.dx
 
+    base_materials, debye_spec, lorentz_spec, base_pec_mask, _, _ = sim._assemble_materials(grid)
+    base_eps_r = base_materials.eps_r
+    base_sigma = base_materials.sigma
+    base_mu_r = base_materials.mu_r
+
     # Initialize density
     if init_density is None:
         init_density = 0.5 * jnp.ones(design_shape, dtype=jnp.float32)
@@ -451,90 +467,50 @@ def topology_optimize(
     history = []
     beta_history = []
 
-    def forward(logit_param, beta):
-        """Forward pass: logit -> density -> eps -> simulation -> objective."""
-        # Sigmoid to get density in [0, 1]
-        rho = jax.nn.sigmoid(logit_param)
+    n_steps = grid.num_timesteps(num_periods=20.0)
 
-        # Density to permittivity and conductivity (filter + projection + interpolation)
-        eps_design, sigma_design = density_to_eps(
-            rho, eps_bg, eps_fg,
+    def forward(logit_param, beta):
+        """Forward pass: logit -> material fields -> simulation -> objective."""
+        rho = jax.nn.sigmoid(logit_param)
+        fields = density_to_material_fields(
+            rho,
+            eps_bg,
+            eps_fg,
             filter_radius_cells=filter_radius_cells,
             beta=beta,
             sigma_bg=sigma_bg,
             sigma_fg=sigma_fg,
+            pec_bg=bg_is_pec,
+            pec_fg=fg_is_pec,
         )
 
-        # Build materials with design-region override
-        materials, debye_spec, lorentz_spec, _, _, _ = sim._assemble_materials(grid)
-        eps_r = materials.eps_r
-        sigma = materials.sigma
-
-        # Inject design region permittivity and conductivity
         si, sj, sk = lo_idx
         ei, ej, ek = hi_idx
-        eps_r = eps_r.at[si:ei+1, sj:ej+1, sk:ek+1].set(eps_design)
-        sigma = sigma.at[si:ei+1, sj:ej+1, sk:ek+1].set(sigma_design)
+        eps_r = base_eps_r.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.eps)
+        sigma = base_sigma.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.sigma)
 
         from rfx.core.yee import MaterialArrays
-        materials = MaterialArrays(
-            eps_r=eps_r, sigma=sigma, mu_r=materials.mu_r,
-        )
+        materials = MaterialArrays(eps_r=eps_r, sigma=sigma, mu_r=base_mu_r)
 
-        # Run simulation
-        from rfx.simulation import run as _run, make_probe, make_port_source
-        from rfx.sources.sources import LumpedPort, setup_lumped_port
+        pec_occupancy = None
+        if fields.pec_occupancy is not None:
+            pec_occupancy = jnp.zeros(grid.shape, dtype=jnp.float32)
+            pec_occupancy = pec_occupancy.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.pec_occupancy)
 
-        n_steps = grid.num_timesteps(num_periods=20.0)
-        sources = []
-        probes = []
-
-        for pe in sim._ports:
-            if pe.impedance == 0.0:
-                # Soft source (add_source) — no port impedance
-                from rfx.simulation import make_source
-                sources.append(make_source(grid, pe.position, pe.component, pe.waveform, n_steps))
-            else:
-                lp = LumpedPort(
-                    position=pe.position, component=pe.component,
-                    impedance=pe.impedance, excitation=pe.waveform,
-                )
-                materials = setup_lumped_port(grid, lp, materials)
-                sources.append(make_port_source(grid, lp, materials, n_steps))
-
-        for pe in sim._probes:
-            probes.append(make_probe(grid, pe.position, pe.component))
-
-        # Auto-register probes at port positions when none are set
-        if not probes and sim._ports:
-            for pe in sim._ports:
-                probes.append(make_probe(grid, pe.position, pe.component))
-
-        _, debye, lorentz = sim._init_dispersion(
-            materials, grid.dt, debye_spec, lorentz_spec,
-        )
-
-        # NTFF box for far-field objectives
-        ntff_box_local = None
-        if sim._ntff is not None:
-            from rfx.farfield import make_ntff_box
-            corner_lo, corner_hi, freqs = sim._ntff
-            ntff_box_local = make_ntff_box(grid, corner_lo, corner_hi, freqs)
-
-        result = _run(
-            grid, materials, n_steps,
-            boundary=sim._boundary,
-            debye=debye,
-            lorentz=lorentz,
-            sources=sources,
-            probes=probes,
-            ntff=ntff_box_local,
+        result = sim._forward_from_materials(
+            grid,
+            materials,
+            debye_spec,
+            lorentz_spec,
+            n_steps=n_steps,
             checkpoint=True,
+            pec_mask=base_pec_mask,
+            pec_occupancy=pec_occupancy,
         )
         import inspect
         sig = inspect.signature(objective)
         if 'ntff_box' in sig.parameters:
-            return objective(result, ntff_box=ntff_box_local)
+            return objective(result, ntff_box=result.ntff_box)
         return objective(result)
 
     for it in range(n_iterations):
@@ -561,13 +537,18 @@ def topology_optimize(
 
     # Final density and eps
     final_rho = jax.nn.sigmoid(logit)
-    final_eps, _ = density_to_eps(
-        final_rho, eps_bg, eps_fg,
+    final_fields = density_to_material_fields(
+        final_rho,
+        eps_bg,
+        eps_fg,
         filter_radius_cells=filter_radius_cells,
         beta=_get_beta(n_iterations - 1, beta_schedule),
         sigma_bg=sigma_bg,
         sigma_fg=sigma_fg,
+        pec_bg=bg_is_pec,
+        pec_fg=fg_is_pec,
     )
+    final_eps = final_fields.eps
 
     # Compute projected density for reporting
     rho_filtered = final_rho
@@ -583,4 +564,5 @@ def topology_optimize(
         eps_design=final_eps,
         history=history,
         beta_history=beta_history,
+        pec_occupancy_design=final_fields.pec_occupancy,
     )

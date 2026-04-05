@@ -246,6 +246,7 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
         time_series=result.time_series,
         s_params=None,
         freqs=None,
+        grid=fine_grid,
         dt=dt,
         freq_range=(sim._freq_max / 10, sim._freq_max, 'cpml'),
     )

@@ -72,3 +72,24 @@ def apply_pec_mask(state, pec_mask) -> object:
         ey=state.ey * (1.0 - mask_ey.astype(state.ey.dtype)),
         ez=state.ez * (1.0 - mask_ez.astype(state.ez.dtype)),
     )
+
+
+def apply_pec_occupancy(state, pec_occupancy) -> object:
+    """Apply a relaxed PEC occupancy field to tangential E components.
+
+    This is the differentiable analogue of :func:`apply_pec_mask`.
+    ``pec_occupancy`` is a float field in ``[0, 1]`` where 0 means no
+    conductor and 1 means full PEC occupancy. For binary occupancy it
+    reproduces the hard-mask behaviour.
+    """
+    occ = jnp.clip(pec_occupancy.astype(state.ex.dtype), 0.0, 1.0)
+
+    occ_ex = occ * jnp.maximum(jnp.roll(occ, 1, axis=0), jnp.roll(occ, -1, axis=0))
+    occ_ey = occ * jnp.maximum(jnp.roll(occ, 1, axis=1), jnp.roll(occ, -1, axis=1))
+    occ_ez = occ * jnp.maximum(jnp.roll(occ, 1, axis=2), jnp.roll(occ, -1, axis=2))
+
+    return state._replace(
+        ex=state.ex * (1.0 - occ_ex),
+        ey=state.ey * (1.0 - occ_ey),
+        ez=state.ez * (1.0 - occ_ez),
+    )

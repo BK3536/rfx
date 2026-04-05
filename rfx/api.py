@@ -112,6 +112,8 @@ class Result(NamedTuple):
         High-level calibrated waveguide S-parameters keyed by port name.
     snapshots : dict[str, ndarray] or None
         Field snapshots keyed by component name.
+    grid : Grid or None
+        Grid metadata for post-processing helpers and advanced objectives.
     """
     state: object
     time_series: jnp.ndarray
@@ -123,6 +125,7 @@ class Result(NamedTuple):
     waveguide_ports: dict | None = None
     waveguide_sparams: dict | None = None
     snapshots: dict | None = None
+    grid: object = None
     dt: float | None = None
     freq_range: tuple | None = None
 
@@ -159,7 +162,6 @@ class Result(NamedTuple):
             fr = self.freq_range
         if fr is None:
             raise ValueError("freq_range not specified")
-        # Extract boundary from stored freq_range (always check stored, not arg)
         stored_boundary = 'cpml'
         if self.freq_range is not None and len(self.freq_range) > 2:
             stored_boundary = self.freq_range[2]
@@ -170,24 +172,16 @@ class Result(NamedTuple):
         if bandpass is None:
             bandpass = stored_boundary == 'cpml'
 
-        # Auto-compute source decay time from freq range if not specified.
-        # GaussianPulse: tau = 1/(f_center * bw * pi), source decays by 6*tau.
-        # Use 2*t0 (= 2 * 3*tau) for safe margin.
         if source_decay_time is None:
             f_center = (fr[0] + fr[1]) / 2
-            bw = 0.8  # default bandwidth
+            bw = 0.8
             tau = 1.0 / (f_center * bw * np.pi)
             source_decay_time = 2.0 * 3.0 * tau
 
-        # Always try direct Harminv first (most accurate when signal is clean).
-        # Fall back to bandpass-filtered Harminv if direct fails or if
-        # bandpass is explicitly requested (e.g., CPML with DC artifacts).
         start = int(np.ceil(source_decay_time / self.dt))
         start = min(start, max(len(ts) - 20, 0))
         w = ts[start:] - np.mean(ts[start:])
 
-        # Subsample only for very long signals (SVD scales as N³ on pencil size).
-        # Keep up to 10K samples for accuracy; subsample beyond that.
         max_direct = 10000
         if len(w) > max_direct:
             step = len(w) // max_direct
@@ -200,11 +194,22 @@ class Result(NamedTuple):
         modes = harminv(w_sub, dt_h, fr[0], fr[1])
 
         if not modes and bandpass:
-            # Bandpass fallback: filter out DC/surface-wave artifacts
             modes = harminv_from_probe(ts, self.dt, fr,
                                         source_decay_time=source_decay_time)
 
         return modes
+
+
+class ForwardResult(NamedTuple):
+    """Minimal differentiable simulation result.
+
+    Carries only the observables needed by gradient-based objectives,
+    avoiding the broader stateful surface of :class:`Result`.
+    """
+    time_series: jnp.ndarray
+    ntff_data: object = None
+    ntff_box: object = None
+    grid: object = None
 
 
 # ---------------------------------------------------------------------------
@@ -1832,75 +1837,84 @@ class Simulation:
             s_param_freqs=s_param_freqs,
         )
 
-    # ---- forward (differentiable) ----
-
-    def forward(
+    def _forward_from_materials(
         self,
+        grid: Grid,
+        materials: MaterialArrays,
+        debye_spec: tuple | None,
+        lorentz_spec: tuple | None,
         *,
-        eps_override: jnp.ndarray | None = None,
-        n_steps: int | None = None,
-        num_periods: float = 20.0,
+        n_steps: int,
         checkpoint: bool = True,
-    ):
-        """Run forward simulation, returning the low-level SimResult.
-
-        This method is designed for use with ``jax.grad`` and
-        ``jax.value_and_grad``.  Unlike :meth:`run`, it returns the raw
-        ``SimResult`` (which is a JAX-compatible NamedTuple) and supports
-        an ``eps_override`` array to replace the permittivity field,
-        making it suitable for inverse-design loops and gradient
-        checking.
-
-        Parameters
-        ----------
-        eps_override : jnp.ndarray or None
-            If provided, replaces the ``eps_r`` material array entirely.
-            Must have shape ``grid.shape`` (including CPML padding).
-        n_steps : int or None
-            Number of timesteps.  If None, auto-computed from
-            *num_periods*.
-        num_periods : float
-            Number of periods at freq_max for auto step count.
-        checkpoint : bool
-            Enable gradient checkpointing (default True).
-
-        Returns
-        -------
-        SimResult
-            Raw simulation output (state, time_series, ...).
-        """
-        from rfx.simulation import run as _run, make_probe, make_port_source
-        from rfx.sources.sources import LumpedPort, setup_lumped_port
-
-        grid = self._build_grid()
-        materials, debye_spec, lorentz_spec, _, _, _ = self._assemble_materials(grid)
-
-        if eps_override is not None:
-            from rfx.core.yee import MaterialArrays
-            materials = MaterialArrays(
-                eps_r=eps_override,
-                sigma=materials.sigma,
-                mu_r=materials.mu_r,
-            )
-
-        if n_steps is None:
-            n_steps = grid.num_timesteps(num_periods=num_periods)
+        pec_mask: jnp.ndarray | None = None,
+        pec_occupancy: jnp.ndarray | None = None,
+    ) -> ForwardResult:
+        """Run a minimal differentiable forward path from explicit materials."""
+        from rfx.simulation import (
+            run as _run,
+            make_source,
+            make_probe,
+            make_port_source,
+            make_wire_port_sources,
+        )
+        from rfx.sources.sources import (
+            LumpedPort,
+            WirePort,
+            setup_lumped_port,
+            setup_wire_port,
+            _wire_port_cells,
+        )
 
         sources = []
         probes = []
+        pec_mask_local = pec_mask
+        pec_occupancy_local = pec_occupancy
 
         for pe in self._ports:
+            if pe.impedance == 0.0:
+                sources.append(
+                    make_source(grid, pe.position, pe.component, pe.waveform, n_steps)
+                )
+                continue
+
+            if pe.extent is not None:
+                axis_map = {"ex": 0, "ey": 1, "ez": 2}
+                axis = axis_map[pe.component]
+                end = list(pe.position)
+                end[axis] += pe.extent
+                wp = WirePort(
+                    start=pe.position,
+                    end=tuple(end),
+                    component=pe.component,
+                    impedance=pe.impedance,
+                    excitation=pe.waveform,
+                )
+                materials = setup_wire_port(grid, wp, materials)
+                sources.extend(make_wire_port_sources(grid, wp, materials, n_steps))
+                for cell in _wire_port_cells(grid, wp):
+                    if pec_mask_local is not None:
+                        pec_mask_local = pec_mask_local.at[cell[0], cell[1], cell[2]].set(False)
+                    if pec_occupancy_local is not None:
+                        pec_occupancy_local = pec_occupancy_local.at[cell[0], cell[1], cell[2]].set(0.0)
+                continue
+
             lp = LumpedPort(
-                position=pe.position, component=pe.component,
-                impedance=pe.impedance, excitation=pe.waveform,
+                position=pe.position,
+                component=pe.component,
+                impedance=pe.impedance,
+                excitation=pe.waveform,
             )
             materials = setup_lumped_port(grid, lp, materials)
             sources.append(make_port_source(grid, lp, materials, n_steps))
+            idx = grid.position_to_index(pe.position)
+            if pec_mask_local is not None:
+                pec_mask_local = pec_mask_local.at[idx[0], idx[1], idx[2]].set(False)
+            if pec_occupancy_local is not None:
+                pec_occupancy_local = pec_occupancy_local.at[idx[0], idx[1], idx[2]].set(0.0)
 
         for pe in self._probes:
             probes.append(make_probe(grid, pe.position, pe.component))
 
-        # Auto-register probes at port positions when none are set
         if not probes and self._ports:
             for pe in self._ports:
                 probes.append(make_probe(grid, pe.position, pe.component))
@@ -1909,7 +1923,6 @@ class Simulation:
             materials, grid.dt, debye_spec, lorentz_spec,
         )
 
-        # NTFF box for far-field objectives
         ntff_box = None
         if self._ntff is not None:
             from rfx.farfield import make_ntff_box
@@ -1917,7 +1930,9 @@ class Simulation:
             ntff_box = make_ntff_box(grid, corner_lo, corner_hi, freqs)
 
         result = _run(
-            grid, materials, n_steps,
+            grid,
+            materials,
+            n_steps,
             boundary=self._boundary,
             debye=debye,
             lorentz=lorentz,
@@ -1925,8 +1940,85 @@ class Simulation:
             probes=probes,
             ntff=ntff_box,
             checkpoint=checkpoint,
+            pec_mask=pec_mask_local,
+            pec_occupancy=pec_occupancy_local,
+            return_state=False,
         )
-        return result
+        return ForwardResult(
+            time_series=result.time_series,
+            ntff_data=result.ntff_data,
+            ntff_box=result.ntff_box,
+            grid=result.grid,
+        )
+
+    # ---- forward (differentiable) ----
+
+    def forward(
+        self,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        sigma_override: jnp.ndarray | None = None,
+        pec_mask_override: jnp.ndarray | None = None,
+        pec_occupancy_override: jnp.ndarray | None = None,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+        checkpoint: bool = True,
+    ) -> ForwardResult:
+        """Run a minimal differentiable forward simulation.
+
+        This path is designed for ``jax.grad`` / ``jax.value_and_grad`` and
+        intentionally returns only the observables needed by differentiable
+        objectives instead of the broader stateful :meth:`run` result.
+
+        Parameters
+        ----------
+        eps_override : jnp.ndarray or None
+            Replacement permittivity array with shape ``grid.shape``.
+        sigma_override : jnp.ndarray or None
+            Replacement conductivity array with shape ``grid.shape``.
+        pec_mask_override : jnp.ndarray or None
+            Additional hard PEC mask to merge with geometry-defined PEC.
+        pec_occupancy_override : jnp.ndarray or None
+            Relaxed conductor occupancy field in ``[0, 1]`` for
+            differentiable PEC-style optimisation.
+        n_steps : int or None
+            Number of timesteps. If None, auto-computed from *num_periods*.
+        num_periods : float
+            Number of periods at freq_max for auto step count.
+        checkpoint : bool
+            Enable gradient checkpointing (default True).
+
+        Returns
+        -------
+        ForwardResult
+            Minimal differentiable observables (time series and optional NTFF).
+        """
+        grid = self._build_grid()
+        materials, debye_spec, lorentz_spec, pec_mask, _, _ = self._assemble_materials(grid)
+
+        if eps_override is not None or sigma_override is not None:
+            materials = MaterialArrays(
+                eps_r=eps_override if eps_override is not None else materials.eps_r,
+                sigma=sigma_override if sigma_override is not None else materials.sigma,
+                mu_r=materials.mu_r,
+            )
+
+        if pec_mask_override is not None:
+            pec_mask = pec_mask_override if pec_mask is None else (pec_mask | pec_mask_override)
+
+        if n_steps is None:
+            n_steps = grid.num_timesteps(num_periods=num_periods)
+
+        return self._forward_from_materials(
+            grid,
+            materials,
+            debye_spec,
+            lorentz_spec,
+            n_steps=n_steps,
+            checkpoint=checkpoint,
+            pec_mask=pec_mask,
+            pec_occupancy=pec_occupancy_override,
+        )
 
     # ---- run ----
 
