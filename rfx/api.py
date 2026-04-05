@@ -731,6 +731,13 @@ class Simulation:
         C : float
             Capacitance in farads (default 0).
         topology : "series" or "parallel"
+
+        Notes
+        -----
+        For series topology with a single component (e.g., pure L with
+        R=0 and C=0), the element is handled via material folding, not
+        the full series ADE current tracker.  To ensure the series ADE
+        path is used, specify at least two non-zero components.
         """
         if component not in ("ex", "ey", "ez"):
             raise ValueError(f"component must be ex/ey/ez, got {component!r}")
@@ -740,6 +747,19 @@ class Simulation:
             raise ValueError(f"R, L, C must be non-negative, got R={R}, L={L}, C={C}")
         if R == 0 and L == 0 and C == 0:
             raise ValueError("At least one of R, L, C must be non-zero")
+
+        # Warn if series topology with single component — falls back to parallel behavior
+        if topology == "series":
+            n_comp = (R > 0) + (L > 0) + (C > 0)
+            if n_comp == 1:
+                import warnings
+                active = "R" if R > 0 else ("L" if L > 0 else "C")
+                warnings.warn(
+                    f"Series topology with single component ({active}) uses material "
+                    f"folding, not the series ADE. Add a second component or use "
+                    f"topology='parallel' to suppress this warning.",
+                    stacklevel=2,
+                )
 
         self._lumped_rlc.append(LumpedRLCSpec(
             R=R, L=L, C=C,
