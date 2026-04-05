@@ -107,25 +107,25 @@ def init_ntff_data(box: NTFFBox) -> NTFFData:
     """
     import jax
     if not jax.config.x64_enabled:
-        jax.config.update("jax_enable_x64", True)
         import warnings
         warnings.warn(
-            "NTFF requires float64 precision. Enabled JAX x64 mode "
-            "automatically. Set JAX_ENABLE_X64=1 to suppress this warning.",
+            "NTFF works best with float64 precision. Set JAX_ENABLE_X64=1 "
+            "for accurate far-field results. Falling back to complex64.",
             stacklevel=2,
         )
 
+    _cdtype = jnp.complex128 if jax.config.x64_enabled else jnp.complex64
     nf = len(box.freqs)
     ni = box.i_hi - box.i_lo
     nj = box.j_hi - box.j_lo
     nk = box.k_hi - box.k_lo
     return NTFFData(
-        x_lo=jnp.zeros((nf, nj, nk, 4), dtype=jnp.complex128),
-        x_hi=jnp.zeros((nf, nj, nk, 4), dtype=jnp.complex128),
-        y_lo=jnp.zeros((nf, ni, nk, 4), dtype=jnp.complex128),
-        y_hi=jnp.zeros((nf, ni, nk, 4), dtype=jnp.complex128),
-        z_lo=jnp.zeros((nf, ni, nj, 4), dtype=jnp.complex128),
-        z_hi=jnp.zeros((nf, ni, nj, 4), dtype=jnp.complex128),
+        x_lo=jnp.zeros((nf, nj, nk, 4), dtype=_cdtype),
+        x_hi=jnp.zeros((nf, nj, nk, 4), dtype=_cdtype),
+        y_lo=jnp.zeros((nf, ni, nk, 4), dtype=_cdtype),
+        y_hi=jnp.zeros((nf, ni, nk, 4), dtype=_cdtype),
+        z_lo=jnp.zeros((nf, ni, nj, 4), dtype=_cdtype),
+        z_hi=jnp.zeros((nf, ni, nj, 4), dtype=_cdtype),
     )
 
 
@@ -144,9 +144,13 @@ def accumulate_ntff(
 
     Called from the scan body.  ``step_idx`` comes from the scan xs.
     """
-    t = jnp.float64(step_idx) * jnp.float64(dt)
-    freqs_64 = jnp.asarray(box.freqs, dtype=jnp.float64)
-    phase = jnp.exp(-1j * 2 * jnp.pi * freqs_64 * t) * dt  # (nf,) complex128
+    import jax
+    _use_f64 = jax.config.x64_enabled
+    _fdtype = jnp.float64 if _use_f64 else jnp.float32
+    _cdtype = jnp.complex128 if _use_f64 else jnp.complex64
+    t = _fdtype(step_idx) * _fdtype(dt)
+    freqs_hi = jnp.asarray(box.freqs, dtype=_fdtype)
+    phase = jnp.exp((_cdtype(-1j) * 2 * jnp.pi * freqs_hi * t)) * dt
     ph = phase[:, None, None, None]  # broadcast to (nf, n1, n2, 4)
 
     i0, i1 = box.i_lo, box.i_hi
