@@ -310,6 +310,7 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
         time_series=r["time_series"],
         s_params=s_params,
         freqs=freqs_out,
+        grid=grid,
         dt=grid.dt,
         freq_range=(sim._freq_max / 10, sim._freq_max, sim._boundary),
     )

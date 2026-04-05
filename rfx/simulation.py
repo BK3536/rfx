@@ -20,7 +20,7 @@ from rfx.core.yee import (
     update_e, update_e_aniso, update_h, EPS_0, _shift_bwd,
     precompute_coeffs, update_he_fast,
 )
-from rfx.boundaries.pec import apply_pec
+from rfx.boundaries.pec import apply_pec, apply_pec_occupancy
 
 
 # ---------------------------------------------------------------------------
@@ -82,14 +82,20 @@ class SimResult(NamedTuple):
         Final V/I/V_inc DFT accumulators for wire port S-params.
     snapshots : dict[str, ndarray] or None
         Field snapshots keyed by component name.
+    ntff_box : NTFFBox or None
+        NTFF box specification used for accumulation.
+    grid : Grid or None
+        Grid metadata needed by post-processing / objective helpers.
     """
-    state: FDTDState
+    state: FDTDState | None
     time_series: jnp.ndarray
     ntff_data: object = None
     dft_planes: tuple | None = None
     waveguide_ports: tuple | None = None
     wire_port_sparams: tuple | None = None
     snapshots: dict | None = None
+    ntff_box: object = None
+    grid: Grid | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -383,11 +389,13 @@ def run(
     checkpoint: bool = False,
     aniso_eps: tuple | None = None,
     pec_mask: object | None = None,
+    pec_occupancy: object | None = None,
     conformal_weights: tuple | None = None,
     wire_port_sparams: list | None = None,
     lumped_rlc: list | None = None,
     kerr_chi3: jnp.ndarray | None = None,
     field_dtype=None,
+    return_state: bool = True,
 ) -> SimResult:
     """Run a compiled FDTD simulation via ``jax.lax.scan``.
 
@@ -425,6 +433,9 @@ def run(
         If True, wrap the scan body with ``jax.checkpoint`` to
         trade compute for memory during reverse-mode AD.  Reduces
         backward-pass memory from O(n_steps) to O(1) per step.
+    return_state : bool
+        If False, do not expose the final FDTD state in the result.
+        This shrinks the differentiable output surface for optimisation.
 
     Returns
     -------
@@ -473,6 +484,7 @@ def run(
     use_waveguide_ports = len(waveguide_ports) > 0
     use_snapshot = snapshot is not None
     use_pec_mask = pec_mask is not None
+    use_pec_occupancy = pec_occupancy is not None
     use_conformal = conformal_weights is not None
     wire_port_sparams = wire_port_sparams or []
     use_wire_sparams = len(wire_port_sparams) > 0
@@ -500,6 +512,7 @@ def run(
         and not use_debye
         and not use_lorentz
         and not use_pec_mask
+        and not use_pec_occupancy
         and not use_conformal
         and not use_lumped_rlc
         and not use_kerr
@@ -677,6 +690,9 @@ def run(
                 from rfx.boundaries.pec import apply_pec_mask
                 st = apply_pec_mask(st, pec_mask)
 
+            if use_pec_occupancy:
+                st = apply_pec_occupancy(st, pec_occupancy)
+
         # Lumped RLC ADE update (after E update + boundaries, before sources)
         if use_lumped_rlc:
             new_rlc_states = []
@@ -849,13 +865,15 @@ def run(
         )
 
     return SimResult(
-        state=final_carry["fdtd"],
+        state=final_carry["fdtd"] if return_state else None,
         time_series=time_series,
         ntff_data=final_carry.get("ntff"),
         dft_planes=final_dft_planes,
         waveguide_ports=final_waveguide_ports,
         wire_port_sparams=final_wire_sparams,
         snapshots=snapshots,
+        ntff_box=ntff,
+        grid=grid,
     )
 
 
@@ -889,11 +907,13 @@ def run_until_decay(
     checkpoint: bool = False,
     aniso_eps: tuple | None = None,
     pec_mask: object | None = None,
+    pec_occupancy: object | None = None,
     conformal_weights: tuple | None = None,
     wire_port_sparams: list | None = None,
     lumped_rlc: list | None = None,
     kerr_chi3: jnp.ndarray | None = None,
     field_dtype=None,
+    return_state: bool = True,
 ) -> SimResult:
     """Run simulation until field energy decays to *decay_by* of peak.
 
@@ -963,6 +983,7 @@ def run_until_decay(
     use_dft_planes = len(dft_planes) > 0
     use_waveguide_ports = len(waveguide_ports) > 0
     use_pec_mask = pec_mask is not None
+    use_pec_occupancy = pec_occupancy is not None
     use_conformal = conformal_weights is not None
     wire_port_sparams = wire_port_sparams or []
     use_wire_sparams = len(wire_port_sparams) > 0
@@ -1105,6 +1126,9 @@ def run_until_decay(
         elif use_pec_mask:
             from rfx.boundaries.pec import apply_pec_mask
             st = apply_pec_mask(st, pec_mask)
+
+        if use_pec_occupancy:
+            st = apply_pec_occupancy(st, pec_occupancy)
 
         # Lumped RLC ADE update (after E update + boundaries, before sources)
         if use_lumped_rlc:
@@ -1283,11 +1307,13 @@ def run_until_decay(
         )
 
     return SimResult(
-        state=carry["fdtd"],
+        state=carry["fdtd"] if return_state else None,
         time_series=time_series,
         ntff_data=carry.get("ntff"),
         dft_planes=final_dft_planes,
         waveguide_ports=final_waveguide_ports,
         wire_port_sparams=final_wire_sparams,
         snapshots=None,
+        ntff_box=ntff,
+        grid=grid,
     )

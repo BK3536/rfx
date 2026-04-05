@@ -15,12 +15,16 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from rfx.boundaries.pec import apply_pec_mask, apply_pec_occupancy
+from rfx.core.yee import init_state
+
 from rfx.topology import (
     TopologyDesignRegion,
     TopologyResult,
     apply_density_filter,
     apply_projection,
     density_to_eps,
+    density_to_material_fields,
     topology_optimize,
     _get_beta,
     _DEFAULT_BETA_SCHEDULE,
@@ -256,6 +260,44 @@ class TestDensityToEps:
         assert float(jnp.max(jnp.abs(eps - expected))) < 0.01
 
 
+def test_density_to_material_fields_pec_foreground_uses_occupancy():
+    """PEC foreground should produce occupancy, not huge conductivity."""
+    rho = jnp.array([[0.0, 0.5, 1.0]], dtype=jnp.float32)
+    fields = density_to_material_fields(
+        rho,
+        eps_bg=2.2,
+        eps_fg=1.0,
+        beta=64.0,
+        sigma_bg=0.0,
+        sigma_fg=1e10,
+        pec_fg=True,
+    )
+
+    assert fields.pec_occupancy is not None
+    np.testing.assert_allclose(np.array(fields.eps), 2.2, atol=1e-3)
+    np.testing.assert_allclose(np.array(fields.sigma), 0.0, atol=1e-6)
+    assert float(fields.pec_occupancy[0, 0]) < 1e-3
+    assert 0.0 < float(fields.pec_occupancy[0, 1]) < 1.0
+    assert float(fields.pec_occupancy[0, 2]) > 1.0 - 1e-3
+
+
+def test_apply_pec_occupancy_matches_binary_mask_for_sheet():
+    """Binary occupancy should reduce to the hard-mask PEC operator."""
+    state = init_state((5, 5, 5))._replace(
+        ex=jnp.ones((5, 5, 5), dtype=jnp.float32),
+        ey=jnp.ones((5, 5, 5), dtype=jnp.float32),
+        ez=jnp.ones((5, 5, 5), dtype=jnp.float32),
+    )
+    mask = jnp.zeros((5, 5, 5), dtype=jnp.bool_).at[2, :, :].set(True)
+
+    hard = apply_pec_mask(state, mask)
+    soft = apply_pec_occupancy(state, mask.astype(jnp.float32))
+
+    np.testing.assert_allclose(np.array(hard.ex), np.array(soft.ex))
+    np.testing.assert_allclose(np.array(hard.ey), np.array(soft.ey))
+    np.testing.assert_allclose(np.array(hard.ez), np.array(soft.ez))
+
+
 # ---------------------------------------------------------------------------
 # Gradient flow
 # ---------------------------------------------------------------------------
@@ -391,6 +433,106 @@ class TestTopologyOptimize:
         assert last_loss <= first_loss + abs(first_loss) * 0.1, (
             f"Loss did not decrease: {first_loss:.6e} -> {last_loss:.6e}"
         )
+
+def test_pec_foreground_gradient_is_finite_and_nonzero():
+    """PEC occupancy topology should produce a usable simulator gradient."""
+    from rfx.api import Simulation
+    from rfx.core.yee import MaterialArrays
+
+    sim = Simulation(freq_max=5e9, domain=(0.015, 0.015, 0.015), boundary="pec")
+    sim.add_source((0.005, 0.0075, 0.0075), "ez")
+    sim.add_probe((0.01, 0.0075, 0.0075), "ez")
+
+    region = TopologyDesignRegion(
+        corner_lo=(0.006, 0.006, 0.006),
+        corner_hi=(0.009, 0.009, 0.009),
+        material_bg="air",
+        material_fg="pec",
+        beta_projection=1.0,
+    )
+
+    grid = sim._build_grid()
+    lo_idx = grid.position_to_index(region.corner_lo)
+    hi_idx = grid.position_to_index(region.corner_hi)
+    design_shape = tuple(hi_idx[d] - lo_idx[d] + 1 for d in range(3))
+
+    base_materials, debye_spec, lorentz_spec, base_pec_mask, _, _ = sim._assemble_materials(grid)
+
+    def loss_fn(logit):
+        rho = jax.nn.sigmoid(logit)
+        fields = density_to_material_fields(
+            rho,
+            eps_bg=1.0006,
+            eps_fg=1.0,
+            sigma_bg=0.0,
+            sigma_fg=1e10,
+            pec_fg=True,
+        )
+        si, sj, sk = lo_idx
+        ei, ej, ek = hi_idx
+        eps_r = base_materials.eps_r.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.eps)
+        sigma = base_materials.sigma.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.sigma)
+        materials = MaterialArrays(eps_r=eps_r, sigma=sigma, mu_r=base_materials.mu_r)
+        pec_occupancy = jnp.zeros(grid.shape, dtype=jnp.float32)
+        pec_occupancy = pec_occupancy.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.pec_occupancy)
+        result = sim._forward_from_materials(
+            grid,
+            materials,
+            debye_spec,
+            lorentz_spec,
+            n_steps=20,
+            checkpoint=True,
+            pec_mask=base_pec_mask,
+            pec_occupancy=pec_occupancy,
+        )
+        return -jnp.sum(result.time_series ** 2)
+
+    logit0 = jnp.zeros(design_shape, dtype=jnp.float32)
+    grad = jax.grad(loss_fn)(logit0)
+
+    assert jnp.all(jnp.isfinite(grad))
+    assert float(jnp.max(jnp.abs(grad))) > 0.0
+
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("optax"),
+        reason="optax not installed",
+    )
+    def test_topology_optimize_with_pec_foreground(self):
+        """PEC foreground should optimise through conductor occupancy, not sigma hacks."""
+        from rfx.api import Simulation
+
+        sim = Simulation(
+            freq_max=5e9,
+            domain=(0.015, 0.015, 0.015),
+            boundary="pec",
+        )
+        sim.add_source((0.005, 0.0075, 0.0075), "ez")
+        sim.add_probe((0.01, 0.0075, 0.0075), "ez")
+
+        region = TopologyDesignRegion(
+            corner_lo=(0.006, 0.006, 0.006),
+            corner_hi=(0.009, 0.009, 0.009),
+            material_bg="air",
+            material_fg="pec",
+            beta_projection=1.0,
+        )
+
+        result = topology_optimize(
+            sim,
+            region,
+            lambda run_result: -jnp.sum(run_result.time_series ** 2),
+            n_iterations=2,
+            learning_rate=0.05,
+            beta_schedule=[(0, 1.0)],
+            verbose=False,
+        )
+
+        assert isinstance(result, TopologyResult)
+        assert len(result.history) == 2
+        assert np.all(np.isfinite(result.history))
+        assert result.pec_occupancy_design is not None
+        assert jnp.all(jnp.isfinite(result.pec_occupancy_design))
 
     def test_topology_result_structure(self):
         """TopologyResult should hold the right fields."""

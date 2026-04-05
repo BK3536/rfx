@@ -1,6 +1,14 @@
 """Excitation sources for FDTD simulation."""
 
 from rfx.sources.sources import GaussianPulse, add_point_source, add_lumped_port
+from rfx.sources.coaxial_port import (
+    CoaxialPort,
+    setup_coaxial_port,
+    make_coaxial_port_source,
+    SMA_PIN_RADIUS,
+    SMA_OUTER_RADIUS,
+    PTFE_EPS_R,
+)
 from rfx.sources.waveguide_port import (
     WaveguidePort,
     WaveguidePortConfig,

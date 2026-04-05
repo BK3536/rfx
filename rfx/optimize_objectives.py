@@ -281,11 +281,9 @@ def maximize_directivity(
     over all frequencies in the far-field result, and returns
     its negation (so minimizing drives power upward).
 
-    The ``result`` must carry ``ntff_data`` and ``ntff_box``
-    (i.e., the simulation must include an NTFF box).
-    A ``Grid`` object is also required — it is retrieved from
-    ``result.state.grid`` or must be available from the simulation
-    context.
+    The ``result`` must carry ``ntff_data``, ``ntff_box``, and ``grid``
+    (i.e., the simulation must include an NTFF box and preserve the
+    post-processing context needed to evaluate it).
 
     Parameters
     ----------
@@ -321,8 +319,14 @@ def maximize_directivity(
                 "Use sim.add_ntff_box(...) before running."
             )
 
-        # compute_far_field needs a Grid; retrieve from result state
-        grid = result.state.grid
+        grid = getattr(result, "grid", None)
+        if grid is None:
+            grid = getattr(getattr(result, "state", None), "grid", None)
+        if grid is None:
+            raise ValueError(
+                "maximize_directivity requires result.grid so the far-field "
+                "can be evaluated from NTFF data."
+            )
 
         ff = compute_far_field(ntff_data, ntff_box, grid, theta_arr, phi_arr)
 

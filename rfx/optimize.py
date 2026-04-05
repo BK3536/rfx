@@ -135,6 +135,11 @@ def optimize(
         init_latent = jnp.zeros(design_shape, dtype=jnp.float32)
 
     eps_min, eps_max = region.eps_range
+    base_materials, debye_spec, lorentz_spec, base_pec_mask, _, _ = sim._assemble_materials(grid)
+    base_eps_r = base_materials.eps_r
+    base_sigma = base_materials.sigma
+    base_mu_r = base_materials.mu_r
+    _n_steps = n_steps if n_steps is not None else grid.num_timesteps(num_periods=num_periods)
 
     # Adam state
     m = jnp.zeros_like(init_latent)
@@ -149,76 +154,31 @@ def optimize(
         """Forward pass: latent -> eps -> simulation -> objective."""
         eps_design = _latent_to_eps(lat, eps_min, eps_max)
 
-        # Build materials with design-region override.
-        materials, debye_spec, lorentz_spec, _, _, _ = sim._assemble_materials(grid)
-        eps_r = materials.eps_r
-
-        # Inject design region
         si, sj, sk = lo_idx
         ei, ej, ek = hi_idx
-        eps_r = eps_r.at[si:ei+1, sj:ej+1, sk:ek+1].set(eps_design)
+        eps_r = base_eps_r.at[si:ei+1, sj:ej+1, sk:ek+1].set(eps_design)
 
         from rfx.core.yee import MaterialArrays
-        materials = MaterialArrays(eps_r=eps_r, sigma=materials.sigma, mu_r=materials.mu_r)
+        materials = MaterialArrays(eps_r=eps_r, sigma=base_sigma, mu_r=base_mu_r)
 
-        # Run simulation
-        from rfx.simulation import run as _run, make_probe, make_port_source
-        from rfx.sources.sources import LumpedPort, setup_lumped_port
-
-        _n_steps = n_steps if n_steps is not None else grid.num_timesteps(num_periods=num_periods)
         if verbose and it_count[0] == 0:
             cells = grid.nx * grid.ny * grid.nz
             print(f"  optimize: n_steps={_n_steps}, grid={grid.shape} "
                   f"({cells/1e6:.1f}M cells)")
-        sources = []
-        probes = []
 
-        for pe in sim._ports:
-            if pe.impedance == 0.0:
-                # Soft source (add_source) — no port impedance
-                from rfx.simulation import make_source
-                sources.append(make_source(grid, pe.position, pe.component, pe.waveform, _n_steps))
-            else:
-                lp = LumpedPort(
-                    position=pe.position, component=pe.component,
-                    impedance=pe.impedance, excitation=pe.waveform,
-                )
-                materials = setup_lumped_port(grid, lp, materials)
-                sources.append(make_port_source(grid, lp, materials, _n_steps))
-
-        for pe in sim._probes:
-            probes.append(make_probe(grid, pe.position, pe.component))
-
-        # Auto-register a probe at each port position when no probes are set.
-        if not probes and sim._ports:
-            for pe in sim._ports:
-                probes.append(make_probe(grid, pe.position, pe.component))
-
-        _, debye, lorentz = sim._init_dispersion(
-            materials, grid.dt, debye_spec, lorentz_spec)
-
-        # NTFF box for far-field objectives
-        ntff_box_local = None
-        if sim._ntff is not None:
-            from rfx.farfield import make_ntff_box
-            corner_lo, corner_hi, freqs = sim._ntff
-            ntff_box_local = make_ntff_box(grid, corner_lo, corner_hi, freqs)
-
-        result = _run(
-            grid, materials, _n_steps,
-            boundary=sim._boundary,
-            debye=debye,
-            lorentz=lorentz,
-            sources=sources,
-            probes=probes,
-            ntff=ntff_box_local,
+        result = sim._forward_from_materials(
+            grid,
+            materials,
+            debye_spec,
+            lorentz_spec,
+            n_steps=_n_steps,
             checkpoint=True,
+            pec_mask=base_pec_mask,
         )
-        # Pass ntff_box via inspect if objective accepts it, else call without
         import inspect
         sig = inspect.signature(objective)
         if 'ntff_box' in sig.parameters:
-            return objective(result, ntff_box=ntff_box_local)
+            return objective(result, ntff_box=result.ntff_box)
         return objective(result)
 
     grad_fn = jax.value_and_grad(forward)
