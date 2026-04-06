@@ -30,8 +30,8 @@ print(f"eps_inf = {eps_inf}, De = {De}")
 print(f"Resonance: {f0_lorentz/1e9:.1f} GHz, damping: {delta/1e9:.1f} GHz")
 print()
 
-dx = 1.0e-3  # 1 mm
-domain_x = 0.15  # 150 mm
+dx = 0.5e-3  # 0.5 mm (finer for 10 GHz resonance: lambda/60)
+domain_x = 0.10  # 100 mm
 domain_yz = 3 * dx
 
 sim = Simulation(
@@ -42,17 +42,19 @@ sim = Simulation(
     dx=dx,
 )
 
-# Lorentz slab in the middle
+# Lorentz slab — thin (5mm) to see clear transmission dip
 omega_0 = 2 * np.pi * f0_lorentz
+delta_rad = 2 * np.pi * delta  # convert Hz damping to rad/s
 kappa = De * omega_0 ** 2  # kappa = delta_eps * omega_0^2
 sim.add_material("lorentz_medium", eps_r=eps_inf,
                  lorentz_poles=[LorentzPole(
                      omega_0=omega_0,
-                     delta=delta,
+                     delta=delta_rad,
                      kappa=kappa,
                  )])
-slab_lo = domain_x * 0.35
-slab_hi = domain_x * 0.65
+slab_thick = 5e-3  # 5 mm slab
+slab_lo = domain_x / 2 - slab_thick / 2
+slab_hi = domain_x / 2 + slab_thick / 2
 sim.add(Box((slab_lo, 0, 0), (slab_hi, domain_yz, domain_yz)),
         material="lorentz_medium")
 
@@ -66,7 +68,7 @@ sim.add_probe((domain_x * 0.85, domain_yz / 2, domain_yz / 2), "ez")
 sim.add_probe((domain_x * 0.25, domain_yz / 2, domain_yz / 2), "ez")
 
 grid = sim._build_grid()
-n_steps = int(np.ceil(10e-9 / grid.dt))
+n_steps = int(np.ceil(15e-9 / grid.dt))  # longer for narrow resonance
 print(f"Grid: {grid.nx}x{grid.ny}x{grid.nz}, steps={n_steps}")
 
 result = sim.run(n_steps=n_steps)
