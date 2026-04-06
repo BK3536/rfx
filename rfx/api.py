@@ -1862,6 +1862,95 @@ class Simulation:
             s_param_freqs=s_param_freqs,
         )
 
+    def _validate_mesh_quality(self) -> None:
+        """Pre-simulation mesh quality check (P0).
+
+        Scans all geometry elements against the grid cell size and warns
+        about under-resolved features. Prevents silent garbage results
+        from mesh-related setup errors.
+        """
+        import warnings as _w
+
+        dx = self._dx
+        if dx is None:
+            dx = C0 / self._freq_max / 20.0
+
+        # Determine minimum z cell size
+        if self._dz_profile is not None:
+            min_dz = min(self._dz_profile)
+        else:
+            min_dz = dx
+
+        for entry in self._geometry:
+            shape = entry.shape
+            mat_name = entry.material_name
+
+            # Get bounding box dimensions
+            if hasattr(shape, "bounding_box"):
+                try:
+                    c1, c2 = shape.bounding_box()
+                    dims = [abs(c2[i] - c1[i]) for i in range(3)]
+                except (NotImplementedError, TypeError):
+                    continue
+            else:
+                continue
+
+            cell_sizes = [dx, dx, min_dz]
+
+            for axis, (dim, cell) in enumerate(zip(dims, cell_sizes)):
+                if dim <= 0:
+                    # Zero-thickness geometry
+                    axis_name = "xyz"[axis]
+                    _w.warn(
+                        f"Zero-thickness geometry '{mat_name}' along "
+                        f"{axis_name}-axis. On non-uniform mesh this may "
+                        f"produce empty rasterization. Consider giving it "
+                        f"at least one cell of thickness ({cell*1e3:.2f}mm).",
+                        stacklevel=3,
+                    )
+                elif dim < cell:
+                    axis_name = "xyz"[axis]
+                    cells = dim / cell
+                    _w.warn(
+                        f"'{mat_name}' {axis_name}-extent {dim*1e3:.2f}mm = "
+                        f"{cells:.1f} cells — below 1 cell resolution. "
+                        f"Results unreliable. Use non-uniform mesh or "
+                        f"reduce dx.",
+                        stacklevel=3,
+                    )
+                elif dim < 3 * cell:
+                    axis_name = "xyz"[axis]
+                    cells = dim / cell
+                    _w.warn(
+                        f"'{mat_name}' {axis_name}-extent {dim*1e3:.2f}mm = "
+                        f"{cells:.1f} cells — under-resolved (< 3 cells). "
+                        f"Consider finer mesh for accurate results.",
+                        stacklevel=3,
+                    )
+
+        # Check gaps between PEC structures
+        pec_entries = [e for e in self._geometry if e.material_name == "pec"]
+        if len(pec_entries) >= 2:
+            for i in range(len(pec_entries)):
+                for j in range(i + 1, min(i + 5, len(pec_entries))):
+                    try:
+                        c1a, c2a = pec_entries[i].shape.bounding_box()
+                        c1b, c2b = pec_entries[j].shape.bounding_box()
+                        # Min gap along each axis
+                        for ax in range(3):
+                            gap = max(0, max(c1b[ax] - c2a[ax], c1a[ax] - c2b[ax]))
+                            cell = [dx, dx, min_dz][ax]
+                            if 0 < gap < 3 * cell:
+                                _w.warn(
+                                    f"Gap between PEC structures: "
+                                    f"{gap*1e3:.2f}mm = {gap/cell:.1f} cells "
+                                    f"along {'xyz'[ax]} — coupling may be "
+                                    f"under-resolved.",
+                                    stacklevel=3,
+                                )
+                    except (NotImplementedError, TypeError, AttributeError):
+                        continue
+
     def _validate_adi_configuration(self, materials: MaterialArrays, debye_spec, lorentz_spec) -> None:
         """Validate that the current simulation is compatible with the ADI path."""
         if self._mode != "2d_tmz":
@@ -2253,6 +2342,9 @@ class Simulation:
         -------
         Result
         """
+        # ---- P0: Pre-simulation mesh quality validation ----
+        self._validate_mesh_quality()
+
         if self._solver == "adi" and devices is not None and len(devices) > 1:
             raise ValueError("solver='adi' does not support distributed execution")
 
