@@ -107,15 +107,17 @@ result_ref = sim_ref.run(n_steps=n_steps)
 ts_ref = np.array(result_ref.time_series)
 ts_inc = ts_ref[:, 0] if ts_ref.ndim == 2 else ts_ref.ravel()
 
-# Reflected = total - incident at reflection probe
-ts_refl_only = ts_refl - ts_inc
-spec_refl_only = np.abs(np.fft.rfft(ts_refl_only, n=nfft)) ** 2
-spec_inc = np.abs(np.fft.rfft(ts_inc, n=nfft)) ** 2
+# Transmittance approach: T = P_trans_with / P_trans_ref, then R = 1 - T
+# This is the Meep convention — cancels out source geometry (point vs plane)
+ts_ref_trans = ts_ref[:, 1] if ts_ref.ndim == 2 else ts_ref.ravel()
+spec_trans_ref = np.abs(np.fft.rfft(ts_ref_trans, n=nfft)) ** 2
 
 band = (freqs_hz > f_center * 0.5) & (freqs_hz < f_center * 1.5)
-R_sim = np.mean(spec_refl_only[band]) / (np.mean(spec_inc[band]) + 1e-30)
+T_sim = np.mean(spec_trans[band]) / (np.mean(spec_trans_ref[band]) + 1e-30)
+R_sim = 1.0 - T_sim
 
-print(f"\nEstimated R: {R_sim:.4f}")
+print(f"\nTransmittance T: {T_sim:.4f}")
+print(f"Estimated R = 1-T: {R_sim:.4f}")
 print(f"Analytical R: {R_fresnel:.4f}")
 print(f"Difference: {abs(R_sim - R_fresnel):.4f}")
 if abs(R_sim - R_fresnel) < 0.05:
