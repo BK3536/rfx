@@ -84,12 +84,13 @@ def test_ntff_power():
     from rfx.sources.sources import ModulatedGaussian
     from rfx.grid import C0
 
-    # ModulatedGaussian has carrier at f0 → strong spectral content at 5 GHz
-    # (GaussianPulse is broadband with weak energy at any single frequency)
+    # Use narrowband ModulatedGaussian (bandwidth=0.05 → many carrier cycles)
+    # so DFT at f0 accumulates significant energy, not broadband noise.
+    # Also use large amplitude to push NTFF values above float32 noise.
     sim = Simulation(freq_max=8e9, domain=(0.06, 0.06, 0.06),
                      boundary="cpml", cpml_layers=8, dx=0.002)
     sim.add_source((0.03, 0.03, 0.03), "ez",
-                   waveform=ModulatedGaussian(f0=5e9, bandwidth=0.5))
+                   waveform=ModulatedGaussian(f0=5e9, bandwidth=0.05, amplitude=1e4))
     sim.add_probe((0.03, 0.03, 0.03), "ez")
 
     ntff_margin = 0.015
@@ -100,7 +101,8 @@ def test_ntff_power():
     )
 
     grid = sim._build_grid()
-    n_steps = int(np.ceil(5e-9 / grid.dt))
+    # Longer run for narrowband source to establish field at NTFF faces
+    n_steps = int(np.ceil(20e-9 / grid.dt))
     print(f"Grid: {grid.nx}x{grid.ny}x{grid.nz}, steps={n_steps}")
 
     result = sim.run(n_steps=n_steps)
