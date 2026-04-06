@@ -380,22 +380,25 @@ def run_nonuniform(
     use_debye = debye is not None
     use_lorentz = lorentz is not None
 
-    # CPML: create a uniform-dx proxy grid for CPML coefficient computation.
-    # CPML operates on the outer shell (cpml_layers cells on each face).
-    # Using dx as the reference cell size is conservative and correct for
-    # the x/y faces. Z-faces use the boundary dz (first/last cells).
-    from rfx.boundaries.cpml import init_cpml, apply_cpml_h, apply_cpml_e
+    # CPML: only initialize when cpml_layers > 0 (skip for PEC boundary)
+    use_cpml = grid.cpml_layers > 0
 
-    # CPML proxy: lightweight object mimicking Grid with exact shape
-    class _CpmlProxy:
-        def __init__(self, g):
-            self.nx = g.nx; self.ny = g.ny; self.nz = g.nz
-            self.dx = g.dx; self.dt = dt
-            self.cpml_layers = g.cpml_layers
-            self.shape = (g.nx, g.ny, g.nz)
-            self.is_2d = False
-    cpml_proxy = _CpmlProxy(grid)
-    cpml_params, cpml_state_init = init_cpml(cpml_proxy)
+    cpml_params = None
+    cpml_state_init = None
+    cpml_proxy = None
+
+    if use_cpml:
+        from rfx.boundaries.cpml import init_cpml, apply_cpml_h, apply_cpml_e
+
+        class _CpmlProxy:
+            def __init__(self, g):
+                self.nx = g.nx; self.ny = g.ny; self.nz = g.nz
+                self.dx = g.dx; self.dt = dt
+                self.cpml_layers = g.cpml_layers
+                self.shape = (g.nx, g.ny, g.nz)
+                self.is_2d = False
+        cpml_proxy = _CpmlProxy(grid)
+        cpml_params, cpml_state_init = init_cpml(cpml_proxy)
 
     use_pec_mask = pec_mask is not None
 
@@ -415,7 +418,9 @@ def run_nonuniform(
     inv_dy = grid.inv_dy
     inv_dz = grid.inv_dz
 
-    carry_init = {"fdtd": state, "cpml": cpml_state_init}
+    carry_init = {"fdtd": state}
+    if use_cpml:
+        carry_init["cpml"] = cpml_state_init
 
     # Debye/Lorentz ADE state
     if use_debye:
@@ -445,10 +450,13 @@ def run_nonuniform(
         step_idx, src_vals = xs
         st = carry["fdtd"]
 
-        # H update (non-uniform) + CPML
+        # H update (non-uniform)
         st = update_h_nu(st, materials, dt, inv_dx_h, inv_dy_h, inv_dz_h)
-        st, cpml_new = apply_cpml_h(st, cpml_params, carry["cpml"],
-                                     cpml_proxy, "xyz")
+        if use_cpml:
+            st, cpml_new = apply_cpml_h(st, cpml_params, carry["cpml"],
+                                         cpml_proxy, "xyz")
+        else:
+            cpml_new = None
 
         # E update: use ADE-aware path when dispersive materials are present
         debye_new = None
@@ -462,8 +470,9 @@ def run_nonuniform(
         else:
             st = update_e_nu(st, materials, dt, inv_dx, inv_dy, inv_dz)
 
-        st, cpml_new = apply_cpml_e(st, cpml_params, cpml_new,
-                                     cpml_proxy, "xyz")
+        if use_cpml:
+            st, cpml_new = apply_cpml_e(st, cpml_params, cpml_new,
+                                         cpml_proxy, "xyz")
 
         # PEC
         st = apply_pec(st)
@@ -510,7 +519,9 @@ def run_nonuniform(
         samples = [getattr(st, pc)[pi, pj, pk] for pi, pj, pk, pc in prb_meta]
         probe_out = jnp.stack(samples) if samples else jnp.zeros(0)
 
-        new_carry = {"fdtd": st, "cpml": cpml_new}
+        new_carry = {"fdtd": st}
+        if use_cpml:
+            new_carry["cpml"] = cpml_new
         if use_debye and debye_new is not None:
             new_carry["debye"] = debye_new
         if use_lorentz and lorentz_new is not None:
