@@ -84,25 +84,26 @@ def test_ntff_power():
     from rfx.sources.sources import ModulatedGaussian
     from rfx.grid import C0
 
-    # Use narrowband ModulatedGaussian (bandwidth=0.05 → many carrier cycles)
-    # so DFT at f0 accumulates significant energy, not broadband noise.
-    # Also use large amplitude to push NTFF values above float32 noise.
-    sim = Simulation(freq_max=8e9, domain=(0.06, 0.06, 0.06),
-                     boundary="cpml", cpml_layers=8, dx=0.002)
-    sim.add_source((0.03, 0.03, 0.03), "ez",
-                   waveform=ModulatedGaussian(f0=5e9, bandwidth=0.05, amplitude=1e4))
-    sim.add_probe((0.03, 0.03, 0.03), "ez")
+    # Dipole antenna: source OFF-CENTER so radiation pattern is asymmetric.
+    # Symmetric source at domain center causes far-field cancellation.
+    # Use narrowband ModulatedGaussian with large amplitude.
+    dom = 0.08
+    sim = Simulation(freq_max=8e9, domain=(dom, dom, dom),
+                     boundary="cpml", cpml_layers=10, dx=0.002)
+    # Source offset from center → breaks symmetry → net radiation
+    sim.add_source((dom * 0.35, dom * 0.5, dom * 0.5), "ez",
+                   waveform=ModulatedGaussian(f0=5e9, bandwidth=0.1, amplitude=1e3))
+    sim.add_probe((dom * 0.35, dom * 0.5, dom * 0.5), "ez")
 
-    ntff_margin = 0.015
+    ntff_margin = 0.02
     sim.add_ntff_box(
         (ntff_margin, ntff_margin, ntff_margin),
-        (0.06 - ntff_margin, 0.06 - ntff_margin, 0.06 - ntff_margin),
+        (dom - ntff_margin, dom - ntff_margin, dom - ntff_margin),
         np.array([5e9]),
     )
 
     grid = sim._build_grid()
-    # Longer run for narrowband source to establish field at NTFF faces
-    n_steps = int(np.ceil(20e-9 / grid.dt))
+    n_steps = int(np.ceil(15e-9 / grid.dt))
     print(f"Grid: {grid.nx}x{grid.ny}x{grid.nz}, steps={n_steps}")
 
     result = sim.run(n_steps=n_steps)
