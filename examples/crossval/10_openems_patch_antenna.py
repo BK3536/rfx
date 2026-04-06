@@ -101,15 +101,17 @@ patch_y0 = oy - patch_L / 2
 sim.add(Box((patch_x0, patch_y0, h), (patch_x0 + patch_W, patch_y0 + patch_L, h + dz_sub)),
         material="pec")
 
-# Lumped port at feed point
+# Lumped port at feed point — z at center of first substrate cell
+# (h/2 can land on a cell boundary on non-uniform mesh)
 port_x = ox + feed_x_offset
 port_y = oy
+port_z = dz_sub / 2  # center of first substrate cell
 sim.add_port(
-    (port_x, port_y, h / 2), "ez",
+    (port_x, port_y, port_z), "ez",
     impedance=feed_R,
     waveform=GaussianPulse(f0=f0, bandwidth=fc / f0),
 )
-sim.add_probe((port_x, port_y, h / 2), "ez")
+sim.add_probe((port_x, port_y, port_z), "ez")
 
 # NTFF box for radiation pattern
 cpml_thick = 8 * dx
