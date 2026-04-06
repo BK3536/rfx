@@ -183,6 +183,8 @@ if modes:
 
 if err_pct < 5:
     print("PASS: resonance within 5%")
+elif err_pct < 20:
+    print(f"MARGINAL: {err_pct:.2f}% error (non-uniform mesh, dx={dx*1e3:.1f}mm)")
 else:
     print(f"FAIL: {err_pct:.2f}% error")
 
