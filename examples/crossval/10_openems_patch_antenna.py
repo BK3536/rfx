@@ -62,7 +62,11 @@ dx = 1.5e-3  # 1.5mm xy cells
 n_sub = 4
 dz_sub = h / n_sub
 n_air = int(np.ceil((box_z - h) / dx))
-dz_profile = [dz_sub] * n_sub + [dx] * n_air
+raw_profile = [dz_sub] * n_sub + [dx] * n_air
+
+# Apply smooth grading (P2) to avoid 3.9x jump at substrate-air interface
+from rfx.auto_config import smooth_grading
+dz_profile = smooth_grading(raw_profile, max_ratio=1.3)
 
 print(f"dx = {dx*1e3:.2f} mm, dz_sub = {dz_sub*1e3:.3f} mm")
 print(f"z-cells: {n_sub} substrate + {n_air} air = {len(dz_profile)} total")
@@ -119,11 +123,27 @@ sim.add_ntff_box(
 
 n_steps = 8000
 print(f"Steps: {n_steps}")
+
+# Debug: check non-uniform grid z-coordinates
+nu_grid = sim._build_nonuniform_grid()
+dz_np = np.array(nu_grid.dz)
+z_edges = np.cumsum(dz_np)
+z_edges = np.insert(z_edges, 0, 0)
+z_centers = (z_edges[:-1] + z_edges[1:]) / 2
+cpml_off = nu_grid.cpml_layers
+z_phys = z_centers[cpml_off:] - z_centers[cpml_off]
+print(f"Nu grid: nz={nu_grid.nz}, dt={nu_grid.dt*1e12:.2f}ps")
+print(f"z_phys first 10: {z_phys[:10]*1e3}")
+print(f"Substrate h={h*1e3:.3f}mm, port z={h/2*1e3:.3f}mm")
 print()
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     result = sim.run(n_steps=n_steps)
+
+# Debug: check probe signal
+ts = np.array(result.time_series).ravel()
+print(f"Probe signal: max={np.max(np.abs(ts)):.4e}, rms={np.sqrt(np.mean(ts**2)):.4e}")
 
 # 1. Resonance detection
 modes = result.find_resonances(freq_range=(f_expected * 0.5, f_expected * 1.5))
