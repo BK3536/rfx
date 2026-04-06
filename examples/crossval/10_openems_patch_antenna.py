@@ -148,11 +148,18 @@ with warnings.catch_warnings():
 ts = np.array(result.time_series).ravel()
 print(f"Probe signal: max={np.max(np.abs(ts)):.4e}, rms={np.sqrt(np.mean(ts**2)):.4e}")
 
-# 1. Resonance detection — manual FFT peak finding
-ts = np.array(result.time_series).ravel()
-nfft = len(ts) * 4
-spec = np.abs(np.fft.rfft(ts, n=nfft))
-freqs = np.fft.rfftfreq(nfft, d=result.dt)
+# 1. Resonance detection — late-time windowed FFT
+# Skip source region (first 2ns), use ring-down only with Hanning window
+# This removes the DC/low-freq component from raw source injection
+ts_full = np.array(result.time_series).ravel()
+dt = result.dt
+skip = int(2e-9 / dt)
+ts_late = ts_full[skip:]
+ts_windowed = ts_late * np.hanning(len(ts_late))
+
+nfft = len(ts_windowed) * 4
+spec = np.abs(np.fft.rfft(ts_windowed, n=nfft))
+freqs = np.fft.rfftfreq(nfft, d=dt)
 freqs_ghz = freqs / 1e9
 
 # Find peak in 1-3 GHz band
@@ -161,7 +168,7 @@ spec_band = spec[band]
 freqs_band = freqs[band]
 peak_idx = np.argmax(spec_band)
 f_sim = float(freqs_band[peak_idx])
-peak_db = 20 * np.log10(spec_band[peak_idx] / np.max(spec) + 1e-30)
+peak_db = 20 * np.log10(spec_band[peak_idx] / np.max(spec[band]) + 1e-30)
 
 err_pct = abs(f_sim - f_analytical) / f_analytical * 100
 print(f"FFT peak: {f_sim/1e9:.4f} GHz (at {peak_db:.1f} dB)")
@@ -203,14 +210,9 @@ except Exception as e:
 fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 fig.suptitle(f"Patch Antenna: {patch_W*1e3:.0f}x{patch_L*1e3:.0f}mm, eps_r={eps_r}", fontsize=13)
 
-# S11 spectrum
+# Resonance spectrum (late-time windowed)
 ax = axes[0]
-ts = np.array(result.time_series).ravel()
-nfft = len(ts) * 4
-spec = np.abs(np.fft.rfft(ts, n=nfft))
-freqs = np.fft.rfftfreq(nfft, d=result.dt) / 1e9
-band = (freqs > 1.0) & (freqs < 3.5)
-ax.plot(freqs[band], 20 * np.log10(spec[band] / np.max(spec[band]) + 1e-30), "b-")
+ax.plot(freqs_ghz[band], 20 * np.log10(spec_band / np.max(spec_band) + 1e-30), "b-")
 ax.axvline(f_analytical / 1e9, color="r", ls="--", alpha=0.5, label="Analytical")
 if f_sim > 0:
     ax.axvline(f_sim / 1e9, color="g", ls=":", label=f"rfx {err_pct:.1f}%")
