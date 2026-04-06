@@ -84,18 +84,22 @@ def test_ntff_power():
     from rfx.sources.sources import ModulatedGaussian
     from rfx.grid import C0
 
-    # Dipole antenna: source OFF-CENTER so radiation pattern is asymmetric.
-    # Symmetric source at domain center causes far-field cancellation.
-    # Use narrowband ModulatedGaussian with large amplitude.
-    dom = 0.08
-    sim = Simulation(freq_max=8e9, domain=(dom, dom, dom),
-                     boundary="cpml", cpml_layers=10, dx=0.002)
-    # Source offset from center → breaks symmetry → net radiation
-    sim.add_source((dom * 0.35, dom * 0.5, dom * 0.5), "ez",
-                   waveform=ModulatedGaussian(f0=5e9, bandwidth=0.1, amplitude=1e3))
-    sim.add_probe((dom * 0.35, dom * 0.5, dom * 0.5), "ez")
+    # NTFF box must be INSIDE the interior, NOT overlapping CPML.
+    # CPML = 10 layers × 2mm = 20mm. NTFF margin must be > 20mm from edge.
+    # Use larger domain so there's room for CPML + gap + NTFF + source.
+    dom = 0.12  # 120mm domain
+    cpml_n = 10
+    dx_val = 0.002
+    cpml_thick = cpml_n * dx_val  # 20mm
 
-    ntff_margin = 0.02
+    sim = Simulation(freq_max=8e9, domain=(dom, dom, dom),
+                     boundary="cpml", cpml_layers=cpml_n, dx=dx_val)
+    sim.add_source((dom * 0.4, dom * 0.5, dom * 0.5), "ez",
+                   waveform=ModulatedGaussian(f0=5e9, bandwidth=0.1, amplitude=1e3))
+    sim.add_probe((dom * 0.4, dom * 0.5, dom * 0.5), "ez")
+
+    # NTFF box: 5mm inside the CPML inner boundary
+    ntff_margin = cpml_thick + 5e-3  # 25mm from domain edge
     sim.add_ntff_box(
         (ntff_margin, ntff_margin, ntff_margin),
         (dom - ntff_margin, dom - ntff_margin, dom - ntff_margin),
