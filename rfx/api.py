@@ -401,12 +401,13 @@ class Simulation:
             raise ValueError(f"solver must be 'yee' or 'adi', got {solver!r}")
         if adi_cfl_factor <= 0:
             raise ValueError(f"adi_cfl_factor must be positive, got {adi_cfl_factor}")
-        # When dz_profile is provided, z-domain comes from the profile (z=0 OK)
+        # When dz_profile is provided, z-domain comes from the profile
         if dz_profile is not None:
             if any(d <= 0 for d in domain[:2]):
                 raise ValueError(f"domain x/y must be positive, got {domain}")
-            if domain[2] <= 0:
-                domain = (domain[0], domain[1], float(np.sum(dz_profile)))
+            dz_total = float(np.sum(dz_profile))
+            if len(domain) < 3 or domain[2] <= 0:
+                domain = (domain[0], domain[1], dz_total)
         elif any(d <= 0 for d in domain):
             raise ValueError(f"domain dimensions must be positive, got {domain}")
 
