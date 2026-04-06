@@ -74,8 +74,8 @@ print()
 # against the Balanis formula this is acceptable and much faster.
 # =============================================================================
 resolutions = [
-    ("coarse", 2.0e-3),
     ("medium", 1.0e-3),
+    ("fine",   0.5e-3),
 ]
 
 results_list = []
@@ -86,13 +86,21 @@ for label, dx in resolutions:
     margin = 10e-3
     dom_x = L + 2 * margin
     dom_y = W + 2 * margin
-    dom_z = h + 8e-3  # substrate + air above
+    h_air = 8e-3  # air above substrate
+
+    # Non-uniform z mesh: fine in substrate (4 cells), coarse in air
+    dz_sub = h / 4  # 4 cells across 1.6mm substrate = 0.4mm each
+    n_sub = 4
+    dz_air = dx
+    n_air = max(2, int(np.ceil(h_air / dz_air)))
+    dz_profile = [dz_sub] * n_sub + [dz_air] * n_air
 
     sim = Simulation(
         freq_max=f0 * 2.0,
-        domain=(dom_x, dom_y, dom_z),
+        domain=(dom_x, dom_y),
         dx=dx,
         boundary="pec",
+        dz_profile=dz_profile,
     )
 
     sigma_sub = 2.0 * np.pi * f0 * 8.854e-12 * eps_r * tan_d
@@ -118,12 +126,12 @@ for label, dx in resolutions:
     )
     sim.add_probe((src_x, src_y, src_z), component="ez")
 
-    # Run ~80 periods at f0 for Harminv
-    grid = sim._build_grid()
-    n_steps = int(np.ceil(80.0 / (f0 * grid.dt)))
-    # Cap at reasonable limit for speed
-    n_steps = min(n_steps, 30000)
-    print(f"  Grid: {grid.nx}x{grid.ny}x{grid.nz}, steps={n_steps}, dt={grid.dt*1e12:.3f} ps")
+    # Run ~50 periods at f0 for Harminv (non-uniform dt is smaller → more steps)
+    grid = sim._build_nonuniform_grid()
+    n_steps = int(np.ceil(50.0 / (f0 * grid.dt)))
+    n_steps = min(n_steps, 40000)
+    print(f"  Grid: {grid.nx}x{grid.ny}x{grid.nz}, dz_sub={dz_sub*1e3:.2f}mm, "
+          f"steps={n_steps}, dt={grid.dt*1e12:.3f} ps")
 
     result = sim.run(n_steps=n_steps)
 

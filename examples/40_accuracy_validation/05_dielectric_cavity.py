@@ -45,10 +45,16 @@ eps_r_slab = 4.4  # FR4-like dielectric
 f_empty = (C0 / 2) * np.sqrt((1 / a) ** 2 + (1 / b) ** 2)
 # Full-fill reference
 f_full = f_empty / np.sqrt(eps_r_slab)
-# Partial fill (slab in center third of x-axis): perturbation estimate
-# Volume fraction of dielectric
-vf = 1.0 / 3.0
-eps_eff_est = 1.0 + vf * (eps_r_slab - 1.0)
+# Partial fill (slab in center third of x-axis): Bethe-Schwinger perturbation.
+# The TM110 mode has |Ez|^2 ~ sin^2(pi*x/a) * sin^2(pi*y/b).
+# The filling factor accounts for the mode amplitude distribution in the
+# slab region, not just the geometric volume fraction.
+from scipy.integrate import quad
+_sin2 = lambda x: np.sin(np.pi * x / a) ** 2
+_E_total, _ = quad(_sin2, 0, a)
+_E_slab, _ = quad(_sin2, a / 3, 2 * a / 3)
+filling_factor = _E_slab / _E_total  # ~0.609 (mode peak is in the slab)
+eps_eff_est = 1.0 + filling_factor * (eps_r_slab - 1.0)
 f_partial_est = f_empty / np.sqrt(eps_eff_est)
 
 print("=" * 60)
