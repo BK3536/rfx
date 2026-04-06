@@ -55,17 +55,22 @@ print(f"Grid: {grid.nx}x{grid.ny}x{grid.nz}, steps={n_steps}")
 
 result = sim.run(n_steps=n_steps)
 
-# Far-field: E-plane (phi=0) and H-plane (phi=pi/2)
+# Far-field: compute E-plane and H-plane separately to avoid shape issues
 theta = np.linspace(0.05, np.pi - 0.05, 37)
-phi = np.array([0.0, np.pi / 2])
 
-ff = compute_far_field(result.ntff_data, result.ntff_box, grid, theta, phi)
-power = np.abs(ff.E_theta) ** 2 + np.abs(ff.E_phi) ** 2
+# E-plane (phi=0)
+phi_E = np.zeros(len(theta))
+ff_E = compute_far_field(result.ntff_data, result.ntff_box, grid, theta, phi_E)
+P_E = np.abs(ff_E.E_theta) ** 2 + np.abs(ff_E.E_phi) ** 2
+P_E = P_E.ravel()
 
-# E-plane: phi=0
-P_E = power[:, 0]  # theta sweep at phi=0
-# H-plane: phi=pi/2
-P_H = power[:, 1]  # theta sweep at phi=pi/2
+# H-plane (phi=pi/2)
+phi_H = np.full(len(theta), np.pi / 2)
+ff_H = compute_far_field(result.ntff_data, result.ntff_box, grid, theta, phi_H)
+P_H = np.abs(ff_H.E_theta) ** 2 + np.abs(ff_H.E_phi) ** 2
+P_H = P_H.ravel()
+
+power_max = max(float(np.max(P_E)), float(np.max(P_H)))
 
 # Normalize
 P_E_norm = P_E / (np.max(P_E) + 1e-30)
@@ -80,9 +85,9 @@ corr_H = np.corrcoef(P_H_norm, P_analytical)[0, 1]
 
 print(f"\nE-plane correlation with sin²(theta): {corr_E:.4f}")
 print(f"H-plane correlation with sin²(theta): {corr_H:.4f}")
-print(f"Max far-field power: {np.max(power):.4e}")
+print(f"Max far-field power: {power_max:.4e}")
 
-if corr_E > 0.95 and np.max(power) > 1e-20:
+if corr_E > 0.95 and power_max > 1e-20:
     print("PASS: dipole pattern matches analytical")
 else:
     print(f"FAIL: correlation E={corr_E:.3f}")
