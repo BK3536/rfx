@@ -76,6 +76,8 @@ def optimize(
     init_latent: jnp.ndarray | None = None,
     n_steps: int | None = None,
     num_periods: float = 20.0,
+    preflight_mode: str = "guided",
+    memory_budget_mb: float | None = None,
     verbose: bool = True,
 ) -> OptimizeResult:
     """Run gradient-based optimization on a design region.
@@ -103,6 +105,12 @@ def optimize(
     num_periods : float
         Periods at freq_max for auto n_steps (default 20). Reduce to
         10 for lower memory usage with minimal accuracy loss.
+    preflight_mode : {"guided", "strict"}
+        Whether to emit warnings and continue (guided) or reject warnings
+        as hard failures (strict) before launching the optimizer.
+    memory_budget_mb : float or None
+        Optional compile-time gradient-memory budget. Only enforced for the
+        bounded supported-safe objective set.
     verbose : bool
         Print progress every 10 iterations.
 
@@ -110,6 +118,15 @@ def optimize(
     -------
     OptimizeResult
     """
+    report = sim.preflight_optimize(
+        region,
+        objective,
+        n_steps=n_steps,
+        num_periods=num_periods,
+        memory_budget_mb=memory_budget_mb,
+    )
+    report.enforce(preflight_mode)
+
     grid = sim._build_grid()
 
     # Compute design-region grid indices, clamped to interior (exclude CPML).

@@ -347,6 +347,9 @@ def topology_optimize(
     learning_rate: float = 0.01,
     beta_schedule: list[tuple[int, float]] | None = None,
     init_density: jnp.ndarray | None = None,
+    n_steps: int | None = None,
+    preflight_mode: str = "guided",
+    memory_budget_mb: float | None = None,
     verbose: bool = True,
 ) -> TopologyResult:
     """Run density-based topology optimization.
@@ -376,6 +379,15 @@ def topology_optimize(
     init_density : array or None
         Initial density field.  If None, initialized to 0.5 everywhere
         (uniform mixture of bg and fg materials).
+    n_steps : int or None
+        Number of timesteps for the differentiable forward pass. If None,
+        auto-computed from the default 20-period heuristic.
+    preflight_mode : {"guided", "strict"}
+        Whether to emit warnings and continue (guided) or reject warnings
+        as hard failures (strict) before launching the optimizer.
+    memory_budget_mb : float or None
+        Optional compile-time gradient-memory budget. Only enforced for the
+        bounded supported-safe objective set.
     verbose : bool
         Print progress every 10 iterations.
 
@@ -395,6 +407,15 @@ def topology_optimize(
 
     if beta_schedule is None:
         beta_schedule = _DEFAULT_BETA_SCHEDULE
+
+    report = sim.preflight_topology_optimize(
+        design_region,
+        objective,
+        n_steps=n_steps,
+        beta_schedule=beta_schedule,
+        memory_budget_mb=memory_budget_mb,
+    )
+    report.enforce(preflight_mode)
 
     # Resolve material permittivities and conductivities.
     # _resolve_material checks user-registered materials (sim._materials)
@@ -467,7 +488,7 @@ def topology_optimize(
     history = []
     beta_history = []
 
-    n_steps = grid.num_timesteps(num_periods=20.0)
+    n_steps = n_steps if n_steps is not None else grid.num_timesteps(num_periods=20.0)
 
     def forward(logit_param, beta):
         """Forward pass: logit -> material fields -> simulation -> objective."""
@@ -517,7 +538,7 @@ def topology_optimize(
         beta = _get_beta(it, beta_schedule)
         beta_history.append(beta)
 
-        loss, grad = jax.value_and_grad(lambda l: forward(l, beta))(logit)
+        loss, grad = jax.value_and_grad(lambda logit_param: forward(logit_param, beta))(logit)
         loss_val = float(loss)
         history.append(loss_val)
 

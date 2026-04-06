@@ -540,6 +540,35 @@ class Simulation:
         self._geometry.append(_GeometryEntry(shape=shape, material_name=material))
         return self
 
+    def _validate_position_within_domain(
+        self,
+        position: tuple[float, float, float],
+        *,
+        label: str,
+    ) -> None:
+        for axis, coord, extent in zip(("x", "y", "z"), position, self._domain):
+            if coord < 0.0 or coord > extent:
+                raise ValueError(
+                    f"{label} position {position!r} lies outside the physical domain "
+                    f"{self._domain!r} on the {axis}-axis."
+                )
+
+    def _validate_box_within_domain(
+        self,
+        corner_lo: tuple[float, float, float],
+        corner_hi: tuple[float, float, float],
+        *,
+        label: str,
+    ) -> None:
+        lo = tuple(min(corner_lo[i], corner_hi[i]) for i in range(3))
+        hi = tuple(max(corner_lo[i], corner_hi[i]) for i in range(3))
+        for axis, lo_val, hi_val, extent in zip(("x", "y", "z"), lo, hi, self._domain):
+            if lo_val < 0.0 or hi_val > extent:
+                raise ValueError(
+                    f"{label} box {corner_lo!r} -> {corner_hi!r} lies outside the physical domain "
+                    f"{self._domain!r} on the {axis}-axis."
+                )
+
     # ---- sources (non-port) ----
 
     def add_source(
@@ -566,6 +595,7 @@ class Simulation:
         """
         if component not in ("ex", "ey", "ez"):
             raise ValueError(f"component must be ex/ey/ez, got {component!r}")
+        self._validate_position_within_domain(position, label="Source")
         if waveform is None:
             waveform = GaussianPulse(f0=self._freq_max / 2, bandwidth=0.8)
 
@@ -762,6 +792,12 @@ class Simulation:
             raise ValueError(f"component must be ex/ey/ez, got {component!r}")
         if impedance <= 0:
             raise ValueError(f"impedance must be positive, got {impedance}")
+        self._validate_position_within_domain(position, label="Port")
+        if extent is not None:
+            axis_map = {"ex": 0, "ey": 1, "ez": 2}
+            end = list(position)
+            end[axis_map[component]] += extent
+            self._validate_position_within_domain(tuple(end), label="Port extent")
 
         if waveform is None:
             waveform = GaussianPulse(f0=self._freq_max / 2, bandwidth=0.8)
@@ -1242,6 +1278,7 @@ class Simulation:
         """Add a point field probe."""
         if component not in ("ex", "ey", "ez", "hx", "hy", "hz"):
             raise ValueError(f"component must be a field name, got {component!r}")
+        self._validate_position_within_domain(position, label="Probe")
         self._probes.append(_ProbeEntry(position=position, component=component))
         return self
 
@@ -1340,8 +1377,53 @@ class Simulation:
         """
         if freqs is None:
             freqs = jnp.linspace(self._freq_max / 10, self._freq_max, n_freqs)
+        self._validate_box_within_domain(corner_lo, corner_hi, label="NTFF")
         self._ntff = (corner_lo, corner_hi, freqs)
         return self
+
+    def preflight_optimize(
+        self,
+        region,
+        objective,
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+        memory_budget_mb: float | None = None,
+    ):
+        """Build a structured preflight report for ``optimize()``."""
+        from rfx.preflight import build_optimize_preflight_report
+
+        return build_optimize_preflight_report(
+            self,
+            region,
+            objective,
+            n_steps=n_steps,
+            num_periods=num_periods,
+            memory_budget_mb=memory_budget_mb,
+        )
+
+    def preflight_topology_optimize(
+        self,
+        design_region,
+        objective,
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+        beta_schedule=None,
+        memory_budget_mb: float | None = None,
+    ):
+        """Build a structured preflight report for ``topology_optimize()``."""
+        from rfx.preflight import build_topology_preflight_report
+
+        return build_topology_preflight_report(
+            self,
+            design_region,
+            objective,
+            n_steps=n_steps,
+            num_periods=num_periods,
+            beta_schedule=beta_schedule,
+            memory_budget_mb=memory_budget_mb,
+        )
 
     # ---- build helpers ----
 
@@ -1871,13 +1953,11 @@ class Simulation:
         """
         import warnings as _w
 
-        dx = self._dx
-        if dx is None:
-            dx = C0 / self._freq_max / 20.0
+        dx = self._build_grid().dx
 
         # Determine minimum z cell size
         if self._dz_profile is not None:
-            min_dz = min(self._dz_profile)
+            min_dz = float(jnp.min(self._dz_profile))
         else:
             min_dz = dx
 

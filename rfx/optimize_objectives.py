@@ -61,6 +61,13 @@ def _find_freq_indices(result_freqs: jnp.ndarray, target_freqs: jnp.ndarray) -> 
     return jnp.argmin(diffs, axis=1)
 
 
+def _tag_objective(objective: Callable, **metadata) -> Callable:
+    """Attach lightweight preflight metadata to an objective callable."""
+    for key, value in metadata.items():
+        setattr(objective, key, value)
+    return objective
+
+
 # ---------------------------------------------------------------------------
 # Public objective factories
 # ---------------------------------------------------------------------------
@@ -112,7 +119,11 @@ def minimize_s11(
         # Clamp: if already below target, loss = 0
         return jnp.maximum(mean_mag_sq - threshold_linear, 0.0)
 
-    return objective
+    return _tag_objective(
+        objective,
+        _rfx_name="minimize_s11",
+        _rfx_requires_sparams=True,
+    )
 
 
 def maximize_s21(
@@ -154,7 +165,11 @@ def maximize_s21(
         selected = mag_sq[indices]
         return -jnp.mean(selected)
 
-    return objective
+    return _tag_objective(
+        objective,
+        _rfx_name="maximize_s21",
+        _rfx_requires_sparams=True,
+    )
 
 
 def target_impedance(
@@ -206,7 +221,12 @@ def target_impedance(
 
         return jnp.abs(z_in - z_target) ** 2
 
-    return objective
+    return _tag_objective(
+        objective,
+        _rfx_name="target_impedance",
+        _rfx_requires_sparams=True,
+        _rfx_prefers_loaded_port=True,
+    )
 
 
 def maximize_bandwidth(
@@ -267,7 +287,12 @@ def maximize_bandwidth(
         n_in_band = jnp.maximum(jnp.sum(mask), 1.0)
         return jnp.sum(excess * mask) / n_in_band
 
-    return objective
+    return _tag_objective(
+        objective,
+        _rfx_name="maximize_bandwidth",
+        _rfx_requires_sparams=True,
+        _rfx_prefers_loaded_port=True,
+    )
 
 
 def maximize_directivity(
@@ -338,7 +363,15 @@ def maximize_directivity(
         # Negate: minimizing this = maximizing directivity
         return -mean_power
 
-    return objective
+    return _tag_objective(
+        objective,
+        _rfx_name="maximize_directivity",
+        _rfx_requires_ntff=True,
+        _rfx_experimental_note=(
+            "NTFF/directivity-driven optimization remains experimental; use "
+            "the supported-safe proxy-objective lane first."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +406,8 @@ def minimize_reflected_energy(
     -------
     callable(Result) -> scalar (JAX-differentiable)
     """
+    required_probes = max(port_probe_idx + 1, 1)
+
     def objective(result) -> jnp.ndarray:
         ts = result.time_series[:, port_probe_idx]
         n = ts.shape[0]
@@ -381,7 +416,14 @@ def minimize_reflected_energy(
         late_energy = jnp.sum(ts[split:] ** 2)
         return late_energy / early_energy
 
-    return objective
+    return _tag_objective(
+        objective,
+        _rfx_name="minimize_reflected_energy",
+        _rfx_min_probes=required_probes,
+        _rfx_probe_hint=" Add a probe co-located with the excitation port.",
+        _rfx_supports_memory_gate=True,
+        _rfx_prefers_loaded_port=True,
+    )
 
 
 def maximize_transmitted_energy(
@@ -405,11 +447,24 @@ def maximize_transmitted_energy(
     -------
     callable(Result) -> scalar (JAX-differentiable)
     """
+    required_probes = output_probe_idx + 1 if output_probe_idx >= 0 else abs(output_probe_idx)
+    required_probes = max(required_probes, 1)
+
     def objective(result) -> jnp.ndarray:
         ts = result.time_series[:, output_probe_idx]
         return -jnp.sum(ts ** 2)
 
-    return objective
+    return _tag_objective(
+        objective,
+        _rfx_name="maximize_transmitted_energy",
+        _rfx_min_probes=required_probes,
+        _rfx_probe_hint=(
+            " Add an explicit output probe at the measurement location you "
+            "want to maximize."
+        ),
+        _rfx_supports_memory_gate=True,
+        _rfx_prefers_loaded_port=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -463,4 +518,9 @@ def steer_probe_array(
         # Maximize ratio: minimize -(target / (suppress + eps))
         return -(target_energy / (suppress_energy + 1e-12))
 
-    return objective
+    return _tag_objective(
+        objective,
+        _rfx_name="steer_probe_array",
+        _rfx_min_probes=max(target_probe_idx, suppress_probe_idx) + 1,
+        _rfx_probe_hint=" Add explicit near-field probes for the steering targets.",
+    )
