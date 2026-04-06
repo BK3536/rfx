@@ -57,14 +57,15 @@ print(f"Analytical f_r: {f_analytical/1e9:.3f} GHz")
 print()
 
 # Non-uniform z mesh: fine in substrate (P1/P3), coarse in air
-dx = 1.5e-3  # 1.5mm xy cells
-# dz_profile: 4 cells in substrate (0.381mm each), graded to dx in air
-n_sub = 4
+dx = 1.0e-3  # 1mm xy cells (same as session 1 fine resolution)
+# dz_profile: 6 cells in substrate (0.254mm each) for better z-resolution
+n_sub = 6
 dz_sub = h / n_sub
-n_air = int(np.ceil((box_z - h) / dx))
-raw_profile = [dz_sub] * n_sub + [dx] * n_air
+dz_air = dx  # coarse cells in air
+n_air = int(np.ceil((box_z - h) / dz_air))
+raw_profile = [dz_sub] * n_sub + [dz_air] * n_air
 
-# Apply smooth grading (P2) to avoid 3.9x jump at substrate-air interface
+# Apply smooth grading (P2) to avoid abrupt jump at substrate-air interface
 from rfx.auto_config import smooth_grading
 dz_profile = smooth_grading(raw_profile, max_ratio=1.3)
 
@@ -124,7 +125,7 @@ sim.add_ntff_box(
     np.array([f_expected]),
 )
 
-n_steps = 8000
+n_steps = 12000
 print(f"Steps: {n_steps}")
 
 # Debug: check non-uniform grid z-coordinates
@@ -183,8 +184,6 @@ if modes:
 
 if err_pct < 5:
     print("PASS: resonance within 5%")
-elif err_pct < 20:
-    print(f"MARGINAL: {err_pct:.2f}% error (non-uniform mesh, dx={dx*1e3:.1f}mm)")
 else:
     print(f"FAIL: {err_pct:.2f}% error")
 
