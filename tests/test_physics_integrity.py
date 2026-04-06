@@ -246,21 +246,24 @@ def test_reciprocity_two_port():
     """
     from rfx import Simulation, Box, GaussianPulse
 
-    a, b, d = 0.06, 0.04, 0.03
-    f0 = (C0 / 2) * np.sqrt((1/a)**2 + (1/b)**2)
+    # Larger domain so ports are well inside the interior (not in CPML).
+    # CPML = 8 layers × 2mm = 16mm per side. Ports must be > 20mm from edge.
+    a, b, d = 0.12, 0.04, 0.03  # 120mm long waveguide
+    f0 = (C0 / 2) * np.sqrt((1/0.04)**2 + (1/0.03)**2)  # TE10 of b×d cross-section
 
     sim = Simulation(freq_max=f0 * 2, domain=(a, b, d), boundary="cpml",
-                     cpml_layers=10, dx=0.001)
+                     cpml_layers=8, dx=0.002)
     sim.add_material("dielectric", eps_r=2.2)
     sim.add(Box((a/3, 0, 0), (2*a/3, b, d)), material="dielectric")
 
     freqs = np.linspace(f0 * 0.7, f0 * 1.3, 20)
-    sim.add_waveguide_port(0.008, direction="+x", mode=(1, 0), mode_type="TE",
+    # Ports well inside domain (>20mm from CPML boundary)
+    sim.add_waveguide_port(0.025, direction="+x", mode=(1, 0), mode_type="TE",
                            freqs=freqs, f0=f0, name="port1")
-    sim.add_waveguide_port(a - 0.008, direction="-x", mode=(1, 0), mode_type="TE",
+    sim.add_waveguide_port(a - 0.025, direction="-x", mode=(1, 0), mode_type="TE",
                            freqs=freqs, f0=f0, name="port2")
 
-    result = sim.compute_waveguide_s_matrix(num_periods=40)
+    result = sim.compute_waveguide_s_matrix(num_periods=30)
     S = np.array(result.s_params)  # (2, 2, n_freq)
 
     s12 = np.abs(S[0, 1, :])
@@ -276,14 +279,11 @@ def test_reciprocity_two_port():
     print(f"  Max diff:   {max_diff:.6f}")
     print(f"  Rel diff:   {mean_diff / (mean_mag + 1e-30):.2e}")
 
-    # Waveguide S-matrix reciprocity: S12≈S21 within numerical tolerance.
-    # Time-domain S-matrix extraction with CPML has inherent asymmetry from:
-    # - CPML reflection artifacts at port planes
-    # - Finite simulation time (incomplete ring-down)
-    # - Two-run normalization errors
-    # 15% tolerance is realistic for this mesh/time configuration.
+    # Reciprocity is a fundamental property of passive linear networks.
+    # S12 must equal S21 — no tolerance compromise.
+    # If this fails, the waveguide port implementation has a bug.
     rel_diff = mean_diff / (mean_mag + 1e-30)
-    assert rel_diff < 0.15, f"Reciprocity violation: relative |S12-S21| = {rel_diff:.2%}"
+    assert rel_diff < 0.05, f"Reciprocity violation: relative |S12-S21| = {rel_diff:.2%}"
 
 
 # =====================================================================
