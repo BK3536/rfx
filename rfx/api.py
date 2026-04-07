@@ -2244,6 +2244,52 @@ class Simulation:
             for pe in self._ports:
                 probes.append(make_probe(grid, pe.position, pe.component))
 
+        # Periodic boundary conditions
+        periodic = None
+        if self._periodic_axes:
+            periodic = tuple(axis in self._periodic_axes for axis in "xyz")
+
+        # Waveguide ports
+        waveguide_ports_list = []
+        if self._waveguide_ports:
+            for pe in self._waveguide_ports:
+                freqs_arr = (
+                    pe.freqs if pe.freqs is not None
+                    else jnp.linspace(self._freq_max / 10, self._freq_max, pe.n_freqs)
+                )
+                waveguide_ports_list.append(
+                    self._build_waveguide_port_config(pe, grid, freqs_arr, n_steps)
+                )
+
+        # Floquet port sources — inject plane wave via standard source mechanism
+        axis_map_str = {"x": 0, "y": 1, "z": 2}
+        for fpe in self._floquet_ports:
+            axis_idx = axis_map_str[fpe.axis]
+            pos_vec = [0.0, 0.0, 0.0]
+            pos_vec[axis_idx] = fpe.position
+            fp_f0 = fpe.f0 if fpe.f0 is not None else self._freq_max / 2
+            from rfx.sources.sources import GaussianPulse as _GP
+            wf = _GP(f0=fp_f0, bandwidth=fpe.bandwidth, amplitude=fpe.amplitude)
+            center = [self._domain[i] / 2.0 for i in range(3)]
+            center[axis_idx] = fpe.position
+            if fpe.polarization == "te":
+                if fpe.axis == "z":
+                    comp = "ex"
+                elif fpe.axis == "x":
+                    comp = "ey"
+                else:
+                    comp = "ex"
+            else:
+                if fpe.axis == "z":
+                    comp = "ey"
+                elif fpe.axis == "x":
+                    comp = "ez"
+                else:
+                    comp = "ez"
+            sources.append(make_source(grid, tuple(center), comp, wf, n_steps))
+            if periodic is None:
+                periodic = tuple(axis in self._periodic_axes for axis in "xyz") if self._periodic_axes else None
+
         _, debye, lorentz = self._init_dispersion(
             materials, grid.dt, debye_spec, lorentz_spec,
         )
@@ -2259,10 +2305,12 @@ class Simulation:
             materials,
             n_steps,
             boundary=self._boundary,
+            periodic=periodic,
             debye=debye,
             lorentz=lorentz,
             sources=sources,
             probes=probes,
+            waveguide_ports=waveguide_ports_list if waveguide_ports_list else None,
             ntff=ntff_box,
             checkpoint=checkpoint,
             pec_mask=pec_mask_local,
