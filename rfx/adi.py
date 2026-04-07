@@ -718,13 +718,11 @@ def adi_step_3d(ex, ey, ez, hx, hy, hz,
                 pec_mask=None):
     r"""Advance all 6 field components by one full 3D ADI timestep.
 
-    **EXPERIMENTAL**: Implements the Zheng et al. (2000) / Namiki (1999)
-    scheme with two sub-steps per timestep, each with 3 independent
-    tridiagonal solves. Stable for dt < ~0.5× CFL; unconditional stability
-    requires further validation of the H-update formulation.
-
-    Sub-step 1: Ey implicit in z, Ez implicit in x, Ex implicit in y
-    Sub-step 2: Ex implicit in z, Ey implicit in x, Ez implicit in y
+    **EXPERIMENTAL**: Uses LOD (Locally One-Dimensional) splitting with
+    3 sequential sub-steps (x, y, z implicit). Each sub-step: E tridiagonal
+    along one axis, then H back-substitution using only the implicit-axis
+    derivative. Stable and dissipative across wide CFL range (tested 0.5-50x).
+    Over-dissipative at large CFL (splitting error); best for 2-10x CFL.
 
     Parameters
     ----------
@@ -737,18 +735,14 @@ def adi_step_3d(ex, ey, ez, hx, hy, hz,
     ex, ey, ez, hx, hy, hz : updated fields
     """
     eps = eps_r * EPS_0
-    half_dt = dt / 2.0
+    sub_dt = dt / 3.0  # each of 3 LOD sub-steps advances dt/3
 
-    # Implicit sigma integration (unconditionally stable)
-    sigma_term = sigma * dt / 4.0
+    # Implicit sigma integration
+    sigma_term = sigma * sub_dt / 2.0
     eps_plus = eps + sigma_term
     damping = (eps - sigma_term) / eps_plus
 
-    Cx = half_dt ** 2 / (MU_0 * eps_plus * dx * dx)
-    Cy = half_dt ** 2 / (MU_0 * eps_plus * dy * dy)
-    Cz = half_dt ** 2 / (MU_0 * eps_plus * dz * dz)
-
-    coeff_e = half_dt / eps_plus  # for curl_H → E update
+    ds = [dx, dy, dz]
 
     def _fwd(arr, ax):
         pw = [(0, 0)] * 3
@@ -764,62 +758,59 @@ def adi_step_3d(ex, ey, ez, hx, hy, hz,
         s[ax] = slice(None, -1)
         return jnp.pad(arr, pw)[tuple(s)]
 
-    # ===================================================================
-    # Sub-step 1: n → n+1/2
-    # Implicit pairs: Hx↔Ey(z), Hy↔Ez(x), Hz↔Ex(y)
-    # ===================================================================
+    def _curl_e(ex_, ey_, ez_):
+        """curl(E) for Faraday: returns (curl_x, curl_y, curl_z)."""
+        return (
+            (_fwd(ez_, 1) - ez_) / dy - (_fwd(ey_, 2) - ey_) / dz,
+            (_fwd(ex_, 2) - ex_) / dz - (_fwd(ez_, 0) - ez_) / dx,
+            (_fwd(ey_, 0) - ey_) / dx - (_fwd(ex_, 1) - ex_) / dy,
+        )
 
-    # RHS uses full curl(H^n)
-    curl_hx = (hz - _bwd(hz, 1)) / dy - (hy - _bwd(hy, 2)) / dz
-    curl_hy = (hx - _bwd(hx, 2)) / dz - (hz - _bwd(hz, 0)) / dx
-    curl_hz = (hy - _bwd(hy, 0)) / dx - (hx - _bwd(hx, 1)) / dy
-
-    rhs_ex = damping * ex + coeff_e * curl_hx
-    rhs_ey = damping * ey + coeff_e * curl_hy
-    rhs_ez = damping * ez + coeff_e * curl_hz
-
-    ey_h = _solve_tridiag_along(ey, Cz, rhs_ey, axis=2)  # Ey implicit in z
-    ez_h = _solve_tridiag_along(ez, Cx, rhs_ez, axis=0)   # Ez implicit in x
-    ex_h = _solve_tridiag_along(ex, Cy, rhs_ex, axis=1)   # Ex implicit in y
-
-    ex_h, ey_h, ez_h = _apply_pec_3d(ex_h, ey_h, ez_h, pec_mask)
-
-    # H^{n+1/2}: each uses NEW E from implicit pair, OLD E otherwise
-    hx_h = hx - (half_dt / MU_0) * (
-        (_fwd(ez, 1) - ez) / dy - (_fwd(ey_h, 2) - ey_h) / dz)
-    hy_h = hy - (half_dt / MU_0) * (
-        (_fwd(ex, 2) - ex) / dz - (_fwd(ez_h, 0) - ez_h) / dx)
-    hz_h = hz - (half_dt / MU_0) * (
-        (_fwd(ey, 0) - ey) / dx - (_fwd(ex_h, 1) - ex_h) / dy)
+    def _curl_h(hx_, hy_, hz_):
+        """curl(H) for Ampere: returns (curl_x, curl_y, curl_z)."""
+        return (
+            (hz_ - _bwd(hz_, 1)) / dy - (hy_ - _bwd(hy_, 2)) / dz,
+            (hx_ - _bwd(hx_, 2)) / dz - (hz_ - _bwd(hz_, 0)) / dx,
+            (hy_ - _bwd(hy_, 0)) / dx - (hx_ - _bwd(hx_, 1)) / dy,
+        )
 
     # ===================================================================
-    # Sub-step 2: n+1/2 → n+1
-    # Implicit pairs: Hx↔Ez(y), Hy↔Ex(z), Hz↔Ey(x)
+    # LOD: 3 sequential sub-steps, each implicit along one axis.
+    # Each sub-step: E tridiag along axis → H explicit update.
     # ===================================================================
 
-    curl_hx2 = (hz_h - _bwd(hz_h, 1)) / dy - (hy_h - _bwd(hy_h, 2)) / dz
-    curl_hy2 = (hx_h - _bwd(hx_h, 2)) / dz - (hz_h - _bwd(hz_h, 0)) / dx
-    curl_hz2 = (hy_h - _bwd(hy_h, 0)) / dx - (hx_h - _bwd(hx_h, 1)) / dy
+    for axis in range(3):
+        d = ds[axis]
+        C_axis = sub_dt ** 2 / (MU_0 * eps_plus * d * d)
+        coeff_e = sub_dt / eps_plus
 
-    rhs_ex2 = damping * ex_h + coeff_e * curl_hx2
-    rhs_ey2 = damping * ey_h + coeff_e * curl_hy2
-    rhs_ez2 = damping * ez_h + coeff_e * curl_hz2
+        # E update: tridiag along axis with curl(H) source
+        ch_x, ch_y, ch_z = _curl_h(hx, hy, hz)
+        rhs_ex = damping * ex + coeff_e * ch_x
+        rhs_ey = damping * ey + coeff_e * ch_y
+        rhs_ez = damping * ez + coeff_e * ch_z
 
-    ex_n = _solve_tridiag_along(ex_h, Cz, rhs_ex2, axis=2)
-    ey_n = _solve_tridiag_along(ey_h, Cx, rhs_ey2, axis=0)
-    ez_n = _solve_tridiag_along(ez_h, Cy, rhs_ez2, axis=1)
+        ex = _solve_tridiag_along(ex, C_axis, rhs_ex, axis=axis)
+        ey = _solve_tridiag_along(ey, C_axis, rhs_ey, axis=axis)
+        ez = _solve_tridiag_along(ez, C_axis, rhs_ez, axis=axis)
 
-    ex_n, ey_n, ez_n = _apply_pec_3d(ex_n, ey_n, ez_n, pec_mask)
+        ex, ey, ez = _apply_pec_3d(ex, ey, ez, pec_mask)
 
-    # H^{n+1}: NEW E from implicit pair, OLD E^* otherwise
-    hx_n = hx_h - (half_dt / MU_0) * (
-        (_fwd(ez_n, 1) - ez_n) / dy - (_fwd(ey_h, 2) - ey_h) / dz)
-    hy_n = hy_h - (half_dt / MU_0) * (
-        (_fwd(ex_n, 2) - ex_n) / dz - (_fwd(ez_h, 0) - ez_h) / dx)
-    hz_n = hz_h - (half_dt / MU_0) * (
-        (_fwd(ey_n, 0) - ey_n) / dx - (_fwd(ex_h, 1) - ex_h) / dy)
+        # H back-substitution: only the implicit-axis derivative of E.
+        # Each Faraday curl term dE_j/d_axis contributes to one H component.
+        # After all 3 sub-steps, each H accumulates the full curl(E).
+        c = sub_dt / MU_0
+        if axis == 0:  # x: Hy gets +dEz/dx, Hz gets -dEy/dx
+            hy = hy + c * (_fwd(ez, 0) - ez) / dx
+            hz = hz - c * (_fwd(ey, 0) - ey) / dx
+        elif axis == 1:  # y: Hx gets -dEz/dy, Hz gets +dEx/dy
+            hx = hx - c * (_fwd(ez, 1) - ez) / dy
+            hz = hz + c * (_fwd(ex, 1) - ex) / dy
+        else:  # z: Hx gets +dEy/dz, Hy gets -dEx/dz
+            hx = hx + c * (_fwd(ey, 2) - ey) / dz
+            hy = hy - c * (_fwd(ex, 2) - ex) / dz
 
-    return ex_n, ey_n, ez_n, hx_n, hy_n, hz_n
+    return ex, ey, ez, hx, hy, hz
 
 
 def make_adi_absorbing_sigma_3d(nx, ny, nz, n_layers, dx, dy, dz, order=3):
