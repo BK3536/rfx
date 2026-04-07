@@ -243,3 +243,130 @@ def read_touchstone(filepath: str | Path) -> tuple[np.ndarray, np.ndarray, float
                 idx += 1
 
     return s_params, freqs, z0
+
+
+# =========================================================================
+# Result export (HDF5)
+# =========================================================================
+
+def save_optimization_result(path, result, metadata=None):
+    """Save OptimizeResult or TopologyResult to HDF5.
+
+    Parameters
+    ----------
+    path : str or Path
+    result : OptimizeResult or TopologyResult
+    metadata : dict or None
+        Extra metadata (grid shape, freq_max, etc.) stored as HDF5 attrs.
+    """
+    import h5py
+
+    path = Path(path)
+    with h5py.File(path, "w") as f:
+        f.create_dataset("eps_design", data=np.asarray(result.eps_design))
+
+        if hasattr(result, "loss_history"):
+            f.create_dataset("loss_history", data=np.array(result.loss_history))
+        if hasattr(result, "history"):
+            f.create_dataset("loss_history", data=np.array(result.history))
+
+        if hasattr(result, "latent") and result.latent is not None:
+            f.create_dataset("latent", data=np.asarray(result.latent))
+        if hasattr(result, "density") and result.density is not None:
+            f.create_dataset("density", data=np.asarray(result.density))
+        if hasattr(result, "density_projected") and result.density_projected is not None:
+            f.create_dataset("density_projected", data=np.asarray(result.density_projected))
+        if hasattr(result, "beta_history"):
+            f.create_dataset("beta_history", data=np.array(result.beta_history))
+        if hasattr(result, "pec_occupancy_design") and result.pec_occupancy_design is not None:
+            f.create_dataset("pec_occupancy", data=np.asarray(result.pec_occupancy_design))
+
+        if metadata:
+            for k, v in metadata.items():
+                f.attrs[k] = v
+
+
+def load_optimization_result(path):
+    """Load optimization result from HDF5.
+
+    Returns
+    -------
+    dict with keys: eps_design, loss_history, latent, density, etc.
+    """
+    import h5py
+
+    path = Path(path)
+    data = {}
+    with h5py.File(path, "r") as f:
+        for key in f.keys():
+            data[key] = np.array(f[key])
+        data["metadata"] = dict(f.attrs)
+    return data
+
+
+def save_far_field(path, ff_result, metadata=None):
+    """Save FarFieldResult to HDF5.
+
+    Parameters
+    ----------
+    path : str or Path
+    ff_result : FarFieldResult
+    metadata : dict or None
+    """
+    import h5py
+
+    path = Path(path)
+    with h5py.File(path, "w") as f:
+        f.create_dataset("E_theta", data=np.asarray(ff_result.E_theta))
+        f.create_dataset("E_phi", data=np.asarray(ff_result.E_phi))
+        f.create_dataset("theta", data=np.asarray(ff_result.theta))
+        f.create_dataset("phi", data=np.asarray(ff_result.phi))
+        f.create_dataset("freqs", data=np.asarray(ff_result.freqs))
+
+        # Derived: directivity
+        E_th = np.asarray(ff_result.E_theta)
+        E_ph = np.asarray(ff_result.E_phi)
+        power = np.abs(E_th) ** 2 + np.abs(E_ph) ** 2
+        f.create_dataset("power_pattern", data=power)
+
+        if metadata:
+            for k, v in metadata.items():
+                f.attrs[k] = v
+
+
+def export_radiation_pattern(path, ff_result, freq_idx=0):
+    """Export radiation pattern as CSV for measurement comparison.
+
+    Columns: theta_deg, phi_deg, E_theta_mag, E_theta_phase_deg,
+             E_phi_mag, E_phi_phase_deg, gain_dBi
+
+    Parameters
+    ----------
+    path : str or Path
+    ff_result : FarFieldResult
+    freq_idx : int
+        Frequency index to export.
+    """
+    path = Path(path)
+    E_th = np.asarray(ff_result.E_theta[freq_idx])  # (n_theta, n_phi)
+    E_ph = np.asarray(ff_result.E_phi[freq_idx])
+    theta = np.asarray(ff_result.theta)
+    phi = np.asarray(ff_result.phi)
+
+    TH, PH = np.meshgrid(theta, phi, indexing="ij")
+    power = np.abs(E_th) ** 2 + np.abs(E_ph) ** 2
+    max_power = np.max(power)
+    gain_dbi = 10 * np.log10(power / max(max_power, 1e-30) + 1e-30)
+
+    rows = []
+    for i in range(len(theta)):
+        for j in range(len(phi)):
+            rows.append([
+                np.degrees(theta[i]), np.degrees(phi[j]),
+                np.abs(E_th[i, j]), np.degrees(np.angle(E_th[i, j])),
+                np.abs(E_ph[i, j]), np.degrees(np.angle(E_ph[i, j])),
+                gain_dbi[i, j],
+            ])
+
+    header = "theta_deg,phi_deg,E_theta_mag,E_theta_phase_deg,E_phi_mag,E_phi_phase_deg,gain_dBi"
+    np.savetxt(path, rows, delimiter=",", header=header, comments="", fmt="%.6e")

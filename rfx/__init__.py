@@ -42,7 +42,11 @@ from rfx.topology import (
     TopologyDesignRegion, TopologyResult,
     topology_optimize, apply_density_filter, apply_projection, density_to_eps,
 )
-from rfx.io import read_touchstone, write_touchstone
+from rfx.io import (
+    read_touchstone, write_touchstone,
+    save_optimization_result, load_optimization_result,
+    save_far_field, export_radiation_pattern,
+)
 from rfx.deembed import deembed_port_extension, deembed_thru
 from rfx.visualize import (
     plot_field_slice, plot_s_params, plot_radiation_pattern, plot_time_series,
