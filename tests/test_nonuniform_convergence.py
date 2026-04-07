@@ -12,6 +12,7 @@ import pytest
 def test_nonuniform_z_convergence():
     """Resonance should converge as substrate dz is refined."""
     from rfx import Simulation, Box, GaussianPulse
+    from rfx.auto_config import smooth_grading
     from rfx.grid import C0
 
     a, b = 50e-3, 40e-3
@@ -29,7 +30,10 @@ def test_nonuniform_z_convergence():
         n_sub = max(2, int(np.ceil(h_sub / dz_sub)))
         dz_air = dx  # coarse in air
         n_air = max(2, int(np.ceil(h_air / dz_air)))
-        dz_profile = [dz_sub] * n_sub + [dz_air] * n_air
+        dz_raw = [dz_sub] * n_sub + [dz_air] * n_air
+        # Apply smooth grading to avoid abrupt cell-size transitions
+        # (e.g. 0.2mm→2mm = 10x ratio causes numerical reflections)
+        dz_profile = list(smooth_grading(dz_raw, max_ratio=1.3))
 
         sim = Simulation(
             freq_max=f_empty * 2,
@@ -66,10 +70,12 @@ def test_nonuniform_z_convergence():
 def test_nonuniform_cfl_uses_min_dz():
     """CFL timestep should be based on min(dz), not dx."""
     from rfx import Simulation
+    from rfx.auto_config import smooth_grading
     from rfx.grid import C0
 
     dx = 5e-3
-    dz_profile = [0.2e-3] * 8 + [5e-3] * 4  # min dz = 0.2mm
+    dz_raw = [0.2e-3] * 8 + [5e-3] * 4  # min dz = 0.2mm
+    dz_profile = list(smooth_grading(dz_raw, max_ratio=1.3))
 
     sim = Simulation(
         freq_max=5e9,

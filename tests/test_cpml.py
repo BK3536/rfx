@@ -143,6 +143,7 @@ def test_cpml_reflection():
     assert reflection_db < -40, f"CPML reflection {reflection_db:.1f} dB exceeds -40 dB"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("f0,n_layers", [
     (1e9, 8),   # worst case from sweep: -49.7 dB
     (5e9, 8),   # mid-band: -65.4 dB
