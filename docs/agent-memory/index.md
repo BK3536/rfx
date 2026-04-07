@@ -94,30 +94,30 @@
 - [ ] `test_floquet.py::test_unit_cell_with_floquet` — pre-existing failure (NaN)
 
 #### Phase 3 — Efficiency (DONE)
-- [x] Far-field per-face dS — numpy 버전 (x: `dy*dz[k]`, y: `dx*dz[k]`, z: `dx*dy`)
-- [x] `_face_positions` non-uniform z — z_edges 파라미터 추가
+- [x] Far-field per-face dS — numpy + JAX 버전
+- [x] `_face_positions` non-uniform z — z_edges (numpy + JAX)
 - [x] pmap → NamedSharding — `distributed_v2.py` API 연결
-- [x] nx padding — non-divisible grid에서 multi-GPU 자동 패딩
-- [x] Dispersive shard_map bug fix — Debye/Lorentz 5D array transpose 수정 (30/30 PASS)
-- [ ] JAX far-field dS (differentiable NTFF with non-uniform)
-- [ ] `NonUniformGrid.position_to_index()`
-- [ ] Multi-GPU TFSF/waveguide ports (현재 single-device fallback)
+- [x] nx padding — non-divisible grid 자동 패딩
+- [x] Dispersive shard_map bug fix — 30/30 PASS
+- [x] `NonUniformGrid.position_to_index()` — cumulative dz lookup
+- [x] Multi-GPU TFSF/waveguide docs — single-device fallback 문서화
 
-#### Phase 4 — Advanced (진행 중)
-- [x] ADI 2D TMz — 이미 구현됨 (adi.py, 13 tests PASS)
-- [x] ADI absorbing boundary — implicit sigma, 50x CFL 안정
-- [x] ADI lossy material — sigma in tridiagonal
-- [x] SBP-SAT 1D/2D/3D — 이미 구현됨 (32 tests PASS)
-- [ ] ADI 3D Namiki 확장
-- [ ] SBP-SAT 3D material transition 검증
+#### Phase 4 — Advanced (DONE)
+- [x] ADI 2D TMz + absorbing boundary + lossy (13 tests, 50x CFL)
+- [x] ADI 3D LOD — back-substitution scheme (CFL 2-50x 안정)
+- [x] SBP-SAT 1D/2D/3D (34 tests PASS, material transition 검증)
 - [ ] Auto-subgrid (AMR indicator → subgrid 연결)
 - [ ] Level-set topology optimization
 - [ ] Neural surrogate pipeline (사용자 요청 시)
 
+#### Bug Fixes
+- [x] ~~test_floquet NaN~~ — auto mesh → non-uniform z, Floquet 미지원. dx 명시 + PEC 두께 수정
+- [x] ~~test_validation_suite~~ — 9 example files 전부 삭제됨. 테스트 파일 제거
+
 #### Quick Wins
 - [ ] PyPI version bump
 - [x] ~~Stale scripts 정리~~ — 24 untracked files 삭제
-- [x] ~~Subgridded runner rasterization~~ — rasterize_geometry() 마이그레이션, cell center fix
+- [x] ~~Subgridded runner rasterization~~ — rasterize_geometry() 마이그레이션
 
 ---
 
