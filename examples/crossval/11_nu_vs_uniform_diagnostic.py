@@ -84,7 +84,6 @@ def build_and_run(label, use_nonuniform=False, n_steps=None):
         # Use dz_sub for ground/patch thickness
         gnd_thick = dz_sub
         patch_thick = dz_sub
-        port_z = dz_sub + dz_sub / 2  # center of second cell
     else:
         # Uniform: dx=dy=dz=1mm
         sim = Simulation(
@@ -96,7 +95,9 @@ def build_and_run(label, use_nonuniform=False, n_steps=None):
         )
         gnd_thick = dx
         patch_thick = dx
-        port_z = dx + dx / 2  # center of second cell (above ground)
+
+    # Physical absolute z — same on both grid types
+    port_z = h / 2  # substrate midpoint
 
     sim.add_material("substrate", eps_r=eps_r)
 

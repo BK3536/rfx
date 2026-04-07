@@ -107,10 +107,10 @@ sim.add(Box((patch_x0, patch_y0, h), (patch_x0 + patch_W, patch_y0 + patch_L, h 
         material="pec")
 
 # Lumped port at feed point — z between ground and patch
-# Port must be in a non-PEC cell: use center of second substrate cell
+# Use physical absolute coordinate (substrate midpoint), not cell-relative
 port_x = ox + feed_x_offset
 port_y = oy
-port_z = dz_sub + dz_sub / 2  # center of second substrate cell
+port_z = h / 2  # substrate midpoint — grid-independent
 sim.add_port(
     (port_x, port_y, port_z), "ez",
     impedance=feed_R,
