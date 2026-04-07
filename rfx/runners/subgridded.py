@@ -6,7 +6,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from rfx.core.yee import MaterialArrays, EPS_0, MU_0
+from rfx.core.yee import EPS_0, MU_0
 from rfx.grid import Grid
 
 
@@ -87,61 +87,22 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
     # Override shape to match exactly (Grid may add +1 rounding)
     fine_grid._shape_override = shape_f
 
-    # Rasterize geometry into fine grid materials
-    eps_r_f = jnp.ones(shape_f, dtype=jnp.float32)
-    sigma_f = jnp.zeros(shape_f, dtype=jnp.float32)
-    mu_r_f = jnp.ones(shape_f, dtype=jnp.float32)
-    pec_mask_f = jnp.zeros(shape_f, dtype=jnp.bool_)
-
-    # Offset: fine grid origin in physical coords
+    # Rasterize geometry into fine grid materials using shared function.
+    # Uses cell-center coordinates (not cell edges) for correct placement.
     x_off = (fi_lo - cpml) * dx_c
     y_off = (fj_lo - cpml) * dx_c
     z_off = (fk_lo - cpml) * dx_c
 
-    PEC_SIGMA_THRESHOLD = sim._PEC_SIGMA_THRESHOLD
+    from rfx.geometry.rasterize import coords_from_fine_grid, rasterize_geometry
 
-    # Build fine-grid physical coordinate arrays for mask_on_coords()
-    x_fine = jnp.asarray(x_off + jnp.arange(nx_f) * dx_f, dtype=jnp.float32)
-    y_fine = jnp.asarray(y_off + jnp.arange(ny_f) * dx_f, dtype=jnp.float32)
-    z_fine = jnp.asarray(z_off + jnp.arange(nz_f) * dx_f, dtype=jnp.float32)
-
-    from rfx.geometry.csg import Box as _Box
-
-    for entry in sim._geometry:
-        mat = sim._resolve_material(entry.material_name)
-        shape = entry.shape
-
-        # Fast path for Box: use slice indexing
-        if isinstance(shape, _Box):
-            c1 = shape.corner_lo
-            c2 = shape.corner_hi
-            i0 = max(0, int(round((c1[0] - x_off) / dx_f)))
-            i1 = min(nx_f, int(round((c2[0] - x_off) / dx_f)))
-            j0 = max(0, int(round((c1[1] - y_off) / dx_f)))
-            j1 = min(ny_f, int(round((c2[1] - y_off) / dx_f)))
-            k0 = max(0, int(round((c1[2] - z_off) / dx_f)))
-            k1 = min(nz_f, int(round((c2[2] - z_off) / dx_f)))
-            if i0 < i1 and j0 < j1 and k0 < k1:
-                mask = jnp.zeros(shape_f, dtype=jnp.bool_)
-                mask = mask.at[i0:i1, j0:j1, k0:k1].set(True)
-                if mat.sigma >= PEC_SIGMA_THRESHOLD:
-                    pec_mask_f = pec_mask_f | mask
-                else:
-                    eps_r_f = jnp.where(mask, mat.eps_r, eps_r_f)
-                    sigma_f = jnp.where(mask, mat.sigma, sigma_f)
-                    mu_r_f = jnp.where(mask, mat.mu_r, mu_r_f)
-        else:
-            # General path: use mask_on_coords() for any shape
-            mask = shape.mask_on_coords(x_fine, y_fine, z_fine)
-            if mat.sigma >= PEC_SIGMA_THRESHOLD:
-                pec_mask_f = pec_mask_f | mask
-            else:
-                eps_r_f = jnp.where(mask, mat.eps_r, eps_r_f)
-                sigma_f = jnp.where(mask, mat.sigma, sigma_f)
-                mu_r_f = jnp.where(mask, mat.mu_r, mu_r_f)
-
-    mats_f = MaterialArrays(eps_r=eps_r_f, sigma=sigma_f, mu_r=mu_r_f)
-    has_pec_f = bool(jnp.any(pec_mask_f))
+    coords_f = coords_from_fine_grid(nx_f, ny_f, nz_f, dx_f, x_off, y_off, z_off)
+    mats_f, _, _, pec_mask_f, _, _ = rasterize_geometry(
+        sim._geometry,
+        sim._resolve_material,
+        coords_f,
+        pec_sigma_threshold=sim._PEC_SIGMA_THRESHOLD,
+    )
+    has_pec_f = bool(jnp.any(pec_mask_f)) if pec_mask_f is not None else False
 
     # Helper: convert physical position to fine-grid index
     def _pos_to_fine_idx(pos):

@@ -91,6 +91,7 @@
 - [x] ~~Coupled filter threshold~~ — stale (`examples/15_coupled_filter.py` 삭제됨)
 - [ ] `test_nonuniform_convergence` fix (smooth grading 추가 필요)
 - [x] `test_reciprocity_two_port` — CPU float32 한계 (3.18%), threshold 1%→5% 조정. GPU: 0%
+- [ ] `test_floquet.py::test_unit_cell_with_floquet` — pre-existing failure (NaN assertion)
 
 #### Phase 3 — Far-field + Efficiency
 - [x] ~~Far-field per-face `dS`~~ — numpy 버전 완료 (x: `dy*dz[k]`, y: `dx*dz[k]`, z: `dx*dy`)
