@@ -83,7 +83,7 @@
   - `auto_config.py` high pml_frac 0.40 → 0.15
   - Regression test 추가: `test_cpml.py::test_cpml_reflectivity_regression` (3 parametrized cases)
   - Results: `docs/research_notes/20260405_cpml_reflectivity_sweep/results.json`
-- [ ] `_series_needs_ade()` fallback 문서화
+- [x] ~~`_series_needs_ade()` fallback~~ — 코드 내 docstring으로 충분 (lumped.py:150-159)
 
 #### Phase 2 — Validation
 - [ ] Tiered CI (fast smoke + scheduled scientific)
@@ -93,11 +93,13 @@
 - [x] `test_reciprocity_two_port` — CPU float32 한계 (3.18%), threshold 1%→5% 조정. GPU: 0%
 
 #### Phase 3 — Far-field + Efficiency
-- [ ] Far-field per-face `dS` (x-face: `dy*dz[k]`, y-face: `dx*dz[k]`, z-face: `dx*dy`)
-- [ ] `_face_positions` non-uniform z 지원
+- [x] ~~Far-field per-face `dS`~~ — numpy 버전 완료 (x: `dy*dz[k]`, y: `dx*dz[k]`, z: `dx*dy`)
+- [x] ~~`_face_positions` non-uniform z~~ — z_edges 파라미터 추가
+- [x] ~~pmap → NamedSharding~~ — `distributed_v2.py` API 연결, nx fallback 추가
+- [ ] JAX far-field dS (differentiable NTFF with non-uniform)
 - [ ] `NonUniformGrid.position_to_index()` 메서드 추가
-- [ ] pmap → NamedSharding migration
-- [ ] Multi-GPU
+- [ ] Multi-GPU CPML/TFSF/ports in shard_map
+- [ ] Distributed Debye/Lorentz 테스트 수정 (auto mesh nx divisibility)
 
 #### Phase 4 — Advanced
 - [ ] SBP-SAT 3D
@@ -105,7 +107,7 @@
 
 #### Quick Wins
 - [ ] PyPI 1.3.1 version bump
-- [ ] 30+ stale dev example/script 정리
+- [x] ~~30+ stale dev scripts 정리~~ — 24 untracked files 삭제 (11 .py + 13 VESSL YAML)
 - [ ] Subgridded runner rasterization 마이그레이션 (cell center bug fix 포함)
 
 ---
