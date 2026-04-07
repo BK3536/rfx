@@ -44,6 +44,11 @@ class NonUniformGrid(NamedTuple):
     inv_dy_h: jnp.ndarray  # (ny,)
     inv_dz_h: jnp.ndarray  # (nz,) — 2/(dz[k]+dz[k+1]), padded
 
+    @property
+    def shape(self):
+        """Grid shape (nx, ny, nz) — duck-typing compatible with Grid."""
+        return (self.nx, self.ny, self.nz)
+
 
 def make_nonuniform_grid(
     domain_xy: tuple[float, float],
