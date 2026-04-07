@@ -165,9 +165,16 @@ def adi_step_2d(ez: jnp.ndarray, hx: jnp.ndarray, hy: jnp.ndarray,
     eps = eps_r * EPS_0
     half_dt = dt / 2.0
 
+    # Lossy medium: implicit conductivity integration
+    # (ε + σ*dt/4) * Ez^{n+1/2} = (ε - σ*dt/4) * Ez^n + ...
+    sigma_term = sigma * dt / 4.0
+    eps_plus = eps + sigma_term   # implicit damping factor
+    eps_minus = eps - sigma_term  # explicit damping factor
+    damping = eps_minus / eps_plus  # < 1 when sigma > 0
+
     # Courant-like coupling coefficient for the implicit direction
-    Cx = half_dt * half_dt / (MU_0 * eps * dx * dx)  # (Nx, Ny)
-    Cy = half_dt * half_dt / (MU_0 * eps * dy * dy)  # (Nx, Ny)
+    Cx = half_dt * half_dt / (MU_0 * eps_plus * dx * dx)  # (Nx, Ny)
+    Cy = half_dt * half_dt / (MU_0 * eps_plus * dy * dy)  # (Nx, Ny)
 
     # ===================================================================
     # Half-step 1: implicit in x, explicit in y
@@ -216,7 +223,7 @@ def adi_step_2d(ez: jnp.ndarray, hx: jnp.ndarray, hy: jnp.ndarray,
 
     curl_h_n = dhy_dx_n - dhx_dy_n  # (Nx, Ny)
 
-    rhs1 = ez + (half_dt / eps) * curl_h_n  # (Nx, Ny)
+    rhs1 = damping * ez + (half_dt / eps_plus) * curl_h_n  # (Nx, Ny)
 
     # Solve tridiagonal along x for each column j.
     # Interior points: i = 1 .. Nx-2. Boundary (i=0, i=Nx-1) are PEC: Ez=0.
@@ -271,7 +278,7 @@ def adi_step_2d(ez: jnp.ndarray, hx: jnp.ndarray, hy: jnp.ndarray,
     )
     curl_h_half = dhy_dx_half - dhx_dy_half
 
-    rhs2 = ez_half + (half_dt / eps) * curl_h_half  # (Nx, Ny)
+    rhs2 = damping * ez_half + (half_dt / eps_plus) * curl_h_half  # (Nx, Ny)
 
     # Solve tridiagonal along y for each row i.
     # Interior: j = 1 .. Ny-2. Boundary j=0, j=Ny-1: PEC Ez=0.
@@ -299,6 +306,190 @@ def adi_step_2d(ez: jnp.ndarray, hx: jnp.ndarray, hy: jnp.ndarray,
 
 
 # ---------------------------------------------------------------------------
+# CPML for ADI-FDTD (operator-splitting: ADI step + ADE correction)
+# ---------------------------------------------------------------------------
+
+def make_adi_absorbing_sigma(nx, ny, n_layers, dx, order=3):
+    """Create a graded conductivity array for implicit ADI absorbing boundary.
+
+    Unlike operator-splitting CPML, this uses conductivity folded into
+    the ADI tridiagonal system — unconditionally stable at any dt.
+
+    Parameters
+    ----------
+    nx, ny : grid dimensions
+    n_layers : number of absorbing layers per face
+    dx : cell size (used for optimal σ_max)
+    order : polynomial grading order (default 3)
+
+    Returns
+    -------
+    sigma : (nx, ny) conductivity array — zero in interior, graded in boundary
+    """
+    import numpy as np
+    eta = float(np.sqrt(MU_0 / EPS_0))
+    sigma_max = 0.8 * (order + 1) / (eta * dx)
+
+    sigma = np.zeros((nx, ny), dtype=np.float64)
+
+    for face_n in range(n_layers):
+        # rho: 1.0 at outer boundary, 0.0 at inner edge
+        rho = 1.0 - face_n / max(n_layers - 1, 1)
+        s = sigma_max * rho**order
+
+        # x-lo (column face_n)
+        sigma[face_n, :] = np.maximum(sigma[face_n, :], s)
+        # x-hi
+        sigma[nx - 1 - face_n, :] = np.maximum(sigma[nx - 1 - face_n, :], s)
+        # y-lo (row face_n)
+        sigma[:, face_n] = np.maximum(sigma[:, face_n], s)
+        # y-hi
+        sigma[:, ny - 1 - face_n] = np.maximum(sigma[:, ny - 1 - face_n], s)
+
+    return jnp.array(sigma, dtype=jnp.float32)
+
+
+class ADICPMLState2D(NamedTuple):
+    """Auxiliary psi arrays for 2D TMz CPML in ADI-FDTD."""
+    # x-direction: in xlo/xhi CPML strips
+    psi_ezy_xlo: jnp.ndarray  # (n_cpml, Ny) — Ez from dHy/dx
+    psi_ezy_xhi: jnp.ndarray
+    psi_hyx_xlo: jnp.ndarray  # (n_cpml, Ny) — Hy from dEz/dx
+    psi_hyx_xhi: jnp.ndarray
+    # y-direction: in ylo/yhi CPML strips
+    psi_ezx_ylo: jnp.ndarray  # (Nx, n_cpml) — Ez from dHx/dy
+    psi_ezx_yhi: jnp.ndarray
+    psi_hxy_ylo: jnp.ndarray  # (Nx, n_cpml) — Hx from dEz/dy
+    psi_hxy_yhi: jnp.ndarray
+
+
+class ADICPMLParams2D(NamedTuple):
+    """CPML profile coefficients for 2D ADI."""
+    n_cpml: int
+    # x-direction profiles (n_cpml,)
+    bx: jnp.ndarray
+    cx: jnp.ndarray
+    # y-direction profiles (n_cpml,)
+    by: jnp.ndarray
+    cy: jnp.ndarray
+
+
+def init_adi_cpml_2d(n_cpml: int, dt: float, dx: float, dy: float,
+                     nx: int, ny: int, kappa_max: float = 1.0):
+    """Initialize CPML profiles and state for 2D TMz ADI-FDTD.
+
+    Returns (params, state) where params has b/c coefficients and state
+    has zero-initialized psi arrays.
+    """
+    import numpy as np
+
+    eta = float(np.sqrt(MU_0 / EPS_0))
+    order = 3
+
+    def _make_bc(n_layers, ds):
+        sigma_max = 0.8 * (order + 1) / (eta * ds) * kappa_max
+        rho = 1.0 - np.arange(n_layers, dtype=np.float64) / max(n_layers - 1, 1)
+        sigma = sigma_max * rho**order
+        kappa = 1.0 + (kappa_max - 1.0) * rho**order
+        alpha = 0.05 * (1.0 - rho)
+        b = np.exp(-(sigma / kappa + alpha) * dt / EPS_0)
+        denom = sigma * kappa + kappa**2 * alpha
+        c = np.where(denom > 1e-30, sigma * (b - 1.0) / denom, 0.0)
+        return jnp.array(b, dtype=jnp.float32), jnp.array(c, dtype=jnp.float32)
+
+    bx, cx = _make_bc(n_cpml, dx)
+    by, cy = _make_bc(n_cpml, dy)
+
+    params = ADICPMLParams2D(n_cpml=n_cpml, bx=bx, cx=cx, by=by, cy=cy)
+
+    state = ADICPMLState2D(
+        psi_ezy_xlo=jnp.zeros((n_cpml, ny), dtype=jnp.float32),
+        psi_ezy_xhi=jnp.zeros((n_cpml, ny), dtype=jnp.float32),
+        psi_hyx_xlo=jnp.zeros((n_cpml, ny), dtype=jnp.float32),
+        psi_hyx_xhi=jnp.zeros((n_cpml, ny), dtype=jnp.float32),
+        psi_ezx_ylo=jnp.zeros((nx, n_cpml), dtype=jnp.float32),
+        psi_ezx_yhi=jnp.zeros((nx, n_cpml), dtype=jnp.float32),
+        psi_hxy_ylo=jnp.zeros((nx, n_cpml), dtype=jnp.float32),
+        psi_hxy_yhi=jnp.zeros((nx, n_cpml), dtype=jnp.float32),
+    )
+    return params, state
+
+
+def apply_adi_cpml_2d(ez, hx, hy, cpml_params, cpml_state, eps_r, dt, dx, dy):
+    """Apply CPML ADE corrections after an ADI step.
+
+    Updates psi auxiliary variables and adds corrections to fields
+    in the CPML boundary strips.
+    """
+    n = cpml_params.n_cpml
+    bx, cx = cpml_params.bx, cpml_params.cx
+    by, cy = cpml_params.by, cpml_params.cy
+
+    eps = eps_r * EPS_0
+
+    # === Hy correction from dEz/dx (x-CPML) ===
+    # xlo: forward diff dEz/dx at half-integer x in strip [0, n)
+    dez_dx_xlo = (ez[1:n + 1, :] - ez[:n, :]) / dx
+    psi_hyx_xlo = bx[:, None] * cpml_state.psi_hyx_xlo + cx[:, None] * dez_dx_xlo
+    hy = hy.at[:n, :].add((dt / MU_0) * psi_hyx_xlo)
+
+    # xhi: forward diff in strip [-n-1, -1)
+    dez_dx_xhi = (ez[-n:, :] - ez[-n - 1:-1, :]) / dx
+    bx_hi = jnp.flip(bx)
+    cx_hi = jnp.flip(cx)
+    psi_hyx_xhi = bx_hi[:, None] * cpml_state.psi_hyx_xhi + cx_hi[:, None] * dez_dx_xhi
+    hy = hy.at[-n:, :].add((dt / MU_0) * psi_hyx_xhi)
+
+    # === Hx correction from dEz/dy (y-CPML) ===
+    dez_dy_ylo = (ez[:, 1:n + 1] - ez[:, :n]) / dy
+    psi_hxy_ylo = by[None, :] * cpml_state.psi_hxy_ylo + cy[None, :] * dez_dy_ylo
+    hx = hx.at[:, :n].add(-(dt / MU_0) * psi_hxy_ylo)  # negative: Faraday sign
+
+    dez_dy_yhi = (ez[:, -n:] - ez[:, -n - 1:-1]) / dy
+    by_hi = jnp.flip(by)
+    cy_hi = jnp.flip(cy)
+    psi_hxy_yhi = by_hi[None, :] * cpml_state.psi_hxy_yhi + cy_hi[None, :] * dez_dy_yhi
+    hx = hx.at[:, -n:].add(-(dt / MU_0) * psi_hxy_yhi)
+
+    # === Ez correction from dHy/dx (x-CPML) ===
+    # xlo: backward diff dHy/dx at integer x in strip [1, n+1)
+    dhy_dx_xlo = (hy[1:n + 1, :] - hy[:n, :]) / dx
+    psi_ezy_xlo = bx[:, None] * cpml_state.psi_ezy_xlo + cx[:, None] * dhy_dx_xlo
+    inv_eps_xlo = 1.0 / eps[1:n + 1, :]
+    ez = ez.at[1:n + 1, :].add(dt * inv_eps_xlo * psi_ezy_xlo)
+
+    dhy_dx_xhi = (hy[-n:, :] - hy[-n - 1:-1, :]) / dx
+    psi_ezy_xhi = bx_hi[:, None] * cpml_state.psi_ezy_xhi + cx_hi[:, None] * dhy_dx_xhi
+    inv_eps_xhi = 1.0 / eps[-n:, :]
+    ez = ez.at[-n:, :].add(dt * inv_eps_xhi * psi_ezy_xhi)
+
+    # === Ez correction from dHx/dy (y-CPML) ===
+    dhx_dy_ylo = (hx[:, 1:n + 1] - hx[:, :n]) / dy
+    psi_ezx_ylo = by[None, :] * cpml_state.psi_ezx_ylo + cy[None, :] * dhx_dy_ylo
+    inv_eps_ylo = 1.0 / eps[:, 1:n + 1]
+    ez = ez.at[:, 1:n + 1].add(-dt * inv_eps_ylo * psi_ezx_ylo)  # negative: Ampere sign
+
+    dhx_dy_yhi = (hx[:, -n:] - hx[:, -n - 1:-1]) / dy
+    psi_ezx_yhi = by_hi[None, :] * cpml_state.psi_ezx_yhi + cy_hi[None, :] * dhx_dy_yhi
+    inv_eps_yhi = 1.0 / eps[:, -n:]
+    ez = ez.at[:, -n:].add(-dt * inv_eps_yhi * psi_ezx_yhi)
+
+    # PEC at outer boundaries (outermost cells of CPML)
+    ez = ez.at[0, :].set(0.0)
+    ez = ez.at[-1, :].set(0.0)
+    ez = ez.at[:, 0].set(0.0)
+    ez = ez.at[:, -1].set(0.0)
+
+    new_state = ADICPMLState2D(
+        psi_ezy_xlo=psi_ezy_xlo, psi_ezy_xhi=psi_ezy_xhi,
+        psi_hyx_xlo=psi_hyx_xlo, psi_hyx_xhi=psi_hyx_xhi,
+        psi_ezx_ylo=psi_ezx_ylo, psi_ezx_yhi=psi_ezx_yhi,
+        psi_hxy_ylo=psi_hxy_ylo, psi_hxy_yhi=psi_hxy_yhi,
+    )
+    return ez, hx, hy, new_state
+
+
+# ---------------------------------------------------------------------------
 # Full simulation loop
 # ---------------------------------------------------------------------------
 
@@ -308,7 +499,9 @@ def run_adi_2d(ez: jnp.ndarray, hx: jnp.ndarray, hy: jnp.ndarray,
                n_steps: int,
                sources: list | None = None,
                probes: list | None = None,
-               pec_mask: jnp.ndarray | None = None):
+               pec_mask: jnp.ndarray | None = None,
+               cpml_params: ADICPMLParams2D | None = None,
+               cpml_state: ADICPMLState2D | None = None):
     """Run a 2D TMz ADI-FDTD simulation for *n_steps* timesteps.
 
     Parameters
@@ -319,26 +512,22 @@ def run_adi_2d(ez: jnp.ndarray, hx: jnp.ndarray, hy: jnp.ndarray,
     dt, dx, dy : timestep and cell sizes
     n_steps : number of full timesteps
     sources : list of (i, j, waveform_array) tuples.
-        ``waveform_array`` has length ``n_steps``.  At each step *n*,
-        ``waveform_array[n]`` is added to ``Ez[i, j]``.
     probes : list of probe tuples.
-        ``(i, j)`` records ``Ez`` for backward compatibility.
-        ``(i, j, component)`` supports ``component`` in {``"ez"``, ``"hx"``, ``"hy"``}.
     pec_mask : (Nx, Ny) bool array or None
-        Internal PEC occupancy for TMz. When provided, ``Ez`` is zeroed on
-        those cells every half-step.
+    cpml_params : ADICPMLParams2D or None
+        CPML profile coefficients. When provided, CPML absorbing boundary
+        is applied after each ADI step (operator-splitting).
+    cpml_state : ADICPMLState2D or None
+        Initial CPML auxiliary state. Required when cpml_params is set.
 
     Returns
     -------
     ez, hx, hy : final field arrays
-    probe_data : (n_steps, n_probes) array of recorded Ez values,
-        or None if no probes.
+    probe_data : (n_steps, n_probes) array or None
     """
-    if float(jnp.max(jnp.abs(sigma))) > 0.0:
-        raise NotImplementedError(
-            "ADI-FDTD 2D integration currently supports lossless materials only; "
-            "conductivity-aware ADI has not been implemented yet."
-        )
+    use_cpml = cpml_params is not None
+    if use_cpml and cpml_state is None:
+        raise ValueError("cpml_state is required when cpml_params is provided")
 
     if sources is None:
         sources = []
@@ -370,43 +559,83 @@ def run_adi_2d(ez: jnp.ndarray, hx: jnp.ndarray, hy: jnp.ndarray,
     else:
         prb_meta = []
 
-    def step_fn(state, step_idx):
-        ez_s, hx_s, hy_s = state
+    if use_cpml:
+        def step_fn(state, step_idx):
+            ez_s, hx_s, hy_s, cs = state
 
-        # Inject sources (additive, soft source)
-        def inject_one(carry, src_idx):
-            ez_c = carry
-            i = src_ij[src_idx, 0]
-            j = src_ij[src_idx, 1]
-            ez_c = ez_c.at[i, j].add(src_waveforms[src_idx, step_idx])
-            return ez_c, None
+            # Inject sources
+            def inject_one(carry, src_idx):
+                ez_c = carry
+                i = src_ij[src_idx, 0]
+                j = src_ij[src_idx, 1]
+                ez_c = ez_c.at[i, j].add(src_waveforms[src_idx, step_idx])
+                return ez_c, None
 
-        if n_src > 0:
-            ez_s, _ = jax.lax.scan(inject_one, ez_s, jnp.arange(n_src))
+            if n_src > 0:
+                ez_s, _ = jax.lax.scan(inject_one, ez_s, jnp.arange(n_src))
 
-        # ADI step
-        ez_s, hx_s, hy_s = adi_step_2d(ez_s, hx_s, hy_s, eps_r, sigma, dt, dx, dy, pec_mask)
+            # ADI step (PEC at outer boundary handled by CPML)
+            ez_s, hx_s, hy_s = adi_step_2d(
+                ez_s, hx_s, hy_s, eps_r, sigma, dt, dx, dy, pec_mask)
 
-        # Record probes
-        if n_prb > 0:
-            samples = []
-            for pi, pj, component in prb_meta:
-                if component == "ez":
-                    samples.append(ez_s[pi, pj])
-                elif component == "hx":
-                    samples.append(hx_s[pi, pj])
-                else:
-                    samples.append(hy_s[pi, pj])
-            probe_vals = jnp.stack(samples)
-        else:
-            probe_vals = jnp.zeros(0)
+            # CPML correction (operator-splitting)
+            ez_s, hx_s, hy_s, cs = apply_adi_cpml_2d(
+                ez_s, hx_s, hy_s, cpml_params, cs, eps_r, dt, dx, dy)
 
-        return (ez_s, hx_s, hy_s), probe_vals
+            # Record probes
+            if n_prb > 0:
+                samples = []
+                for pi, pj, component in prb_meta:
+                    if component == "ez":
+                        samples.append(ez_s[pi, pj])
+                    elif component == "hx":
+                        samples.append(hx_s[pi, pj])
+                    else:
+                        samples.append(hy_s[pi, pj])
+                probe_vals = jnp.stack(samples)
+            else:
+                probe_vals = jnp.zeros(0)
 
-    init_state = (ez, hx, hy)
-    (ez_f, hx_f, hy_f), probe_data = jax.lax.scan(
-        step_fn, init_state, jnp.arange(n_steps)
-    )
+            return (ez_s, hx_s, hy_s, cs), probe_vals
+
+        init_state = (ez, hx, hy, cpml_state)
+        (ez_f, hx_f, hy_f, _), probe_data = jax.lax.scan(
+            step_fn, init_state, jnp.arange(n_steps))
+    else:
+        def step_fn(state, step_idx):
+            ez_s, hx_s, hy_s = state
+
+            def inject_one(carry, src_idx):
+                ez_c = carry
+                i = src_ij[src_idx, 0]
+                j = src_ij[src_idx, 1]
+                ez_c = ez_c.at[i, j].add(src_waveforms[src_idx, step_idx])
+                return ez_c, None
+
+            if n_src > 0:
+                ez_s, _ = jax.lax.scan(inject_one, ez_s, jnp.arange(n_src))
+
+            ez_s, hx_s, hy_s = adi_step_2d(
+                ez_s, hx_s, hy_s, eps_r, sigma, dt, dx, dy, pec_mask)
+
+            if n_prb > 0:
+                samples = []
+                for pi, pj, component in prb_meta:
+                    if component == "ez":
+                        samples.append(ez_s[pi, pj])
+                    elif component == "hx":
+                        samples.append(hx_s[pi, pj])
+                    else:
+                        samples.append(hy_s[pi, pj])
+                probe_vals = jnp.stack(samples)
+            else:
+                probe_vals = jnp.zeros(0)
+
+            return (ez_s, hx_s, hy_s), probe_vals
+
+        init_state = (ez, hx, hy)
+        (ez_f, hx_f, hy_f), probe_data = jax.lax.scan(
+            step_fn, init_state, jnp.arange(n_steps))
 
     if n_prb == 0:
         probe_data = None

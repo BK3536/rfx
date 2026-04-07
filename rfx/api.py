@@ -438,8 +438,8 @@ class Simulation:
         if self._solver == "adi":
             if self._mode != "2d_tmz":
                 raise ValueError("solver='adi' currently supports only mode='2d_tmz'")
-            if self._boundary != "pec":
-                raise ValueError("solver='adi' currently supports only boundary='pec'")
+            if self._boundary not in ("pec", "cpml"):
+                raise ValueError("solver='adi' supports boundary='pec' or 'cpml'")
             if self._dz_profile is not None:
                 raise ValueError("solver='adi' does not support nonuniform dz_profile")
 
@@ -2027,8 +2027,8 @@ class Simulation:
         """Validate that the current simulation is compatible with the ADI path."""
         if self._mode != "2d_tmz":
             raise ValueError("solver='adi' currently supports only mode='2d_tmz'")
-        if self._boundary != "pec":
-            raise ValueError("solver='adi' currently supports only boundary='pec'")
+        if self._boundary not in ("pec", "cpml"):
+            raise ValueError("solver='adi' supports boundary='pec' or 'cpml'")
         if self._refinement is not None:
             raise ValueError("solver='adi' does not support subgridding yet")
         if self._tfsf is not None:
@@ -2049,10 +2049,8 @@ class Simulation:
             raise ValueError("solver='adi' does not support thin-conductor corrections yet")
         if debye_spec is not None or lorentz_spec is not None:
             raise ValueError("solver='adi' does not support dispersive materials yet")
-        if float(jnp.max(jnp.abs(materials.sigma))) > 0.0:
-            raise ValueError(
-                "solver='adi' currently supports only lossless materials; non-zero conductivity is not yet implemented"
-            )
+        # Conductivity is now supported: implicit sigma in ADI tridiagonal.
+        # Internal absorbing layers also use sigma, so no restriction needed.
         for pe in self._ports:
             if pe.impedance != 0.0 or pe.extent is not None:
                 raise ValueError("solver='adi' currently supports only add_source()-style soft Ez sources")
@@ -2094,6 +2092,15 @@ class Simulation:
 
         eps_r_2d = materials.eps_r[:, :, 0]
         sigma_2d = materials.sigma[:, :, 0]
+
+        # Add implicit absorbing sigma layer for CPML boundary
+        if self._boundary == "cpml" and self._cpml_layers > 0:
+            from rfx.adi import make_adi_absorbing_sigma
+            nx_2d, ny_2d = eps_r_2d.shape
+            absorb_sigma = make_adi_absorbing_sigma(
+                nx_2d, ny_2d, self._cpml_layers, grid.dx)
+            sigma_2d = sigma_2d + absorb_sigma
+
         pec_mask_2d = None
         if pec_mask is not None:
             pec_mask_2d = pec_mask[:, :, 0]

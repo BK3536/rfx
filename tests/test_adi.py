@@ -294,22 +294,31 @@ def test_simulation_adi_rejects_unsupported_configs():
     with pytest.raises(ValueError, match="mode='2d_tmz'"):
         Simulation(freq_max=10e9, domain=(0.02, 0.02, 0.02), boundary="pec", solver="adi")
 
-    with pytest.raises(ValueError, match="boundary='pec'"):
-        Simulation(freq_max=10e9, domain=(0.02, 0.02, 0.01), boundary="cpml", mode="2d_tmz", solver="adi")
 
+def test_simulation_adi_cpml_boundary():
+    """ADI with CPML boundary should work (implicit absorbing sigma)."""
     sim = Simulation(
-        freq_max=10e9,
-        domain=(0.02, 0.02, 0.01),
-        boundary="pec",
-        mode="2d_tmz",
-        solver="adi",
+        freq_max=10e9, domain=(0.02, 0.02, 0.01),
+        boundary="cpml", mode="2d_tmz", solver="adi",
+    )
+    sim.add_source((0.01, 0.01, 0.0), "ez")
+    sim.add_probe((0.012, 0.01, 0.0), "ez")
+    result = sim.run(n_steps=20)
+    assert not jnp.any(jnp.isnan(result.time_series))
+
+
+def test_simulation_adi_lossy_material():
+    """ADI with lossy material should work (implicit sigma in tridiagonal)."""
+    sim = Simulation(
+        freq_max=10e9, domain=(0.02, 0.02, 0.01),
+        boundary="pec", mode="2d_tmz", solver="adi",
     )
     sim.add_material("lossy", eps_r=2.2, sigma=0.1)
     sim.add(Box((0.005, 0.005, 0.0), (0.015, 0.015, 0.01)), material="lossy")
     sim.add_source((0.01, 0.01, 0.0), "ez")
-
-    with pytest.raises(ValueError, match="lossless materials"):
-        sim.run(n_steps=10)
+    sim.add_probe((0.01, 0.01, 0.0), "ez")
+    result = sim.run(n_steps=20)
+    assert not jnp.any(jnp.isnan(result.time_series))
 
 
 def test_simulation_adi_rejects_port_loaded_excitation():
