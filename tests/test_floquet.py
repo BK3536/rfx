@@ -383,17 +383,18 @@ def test_unit_cell_with_floquet():
         domain=(Lx, Ly, Lz),
         boundary="cpml",
         cpml_layers=8,
+        dx=0.001,  # explicit dx to avoid auto mesh + non-uniform z
     )
 
     # Substrate
     sim.add_material("substrate", eps_r=2.2)
     sim.add(Box((0, 0, Lz / 2 - 0.001), (Lx, Ly, Lz / 2)), material="substrate")
 
-    # PEC patch (8mm x 8mm centered)
+    # PEC patch (8mm x 8mm, 1 cell thick to avoid zero-thickness rasterization)
     patch_w = 0.008
     x0 = (Lx - patch_w) / 2
     y0 = (Ly - patch_w) / 2
-    sim.add(Box((x0, y0, Lz / 2), (x0 + patch_w, y0 + patch_w, Lz / 2)), material="pec")
+    sim.add(Box((x0, y0, Lz / 2), (x0 + patch_w, y0 + patch_w, Lz / 2 + 0.001)), material="pec")
 
     # Floquet port
     sim.add_floquet_port(
