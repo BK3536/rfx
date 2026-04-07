@@ -164,7 +164,7 @@ def suggest_refinement_regions(
 # ---------------------------------------------------------------------------
 
 def auto_refine(sim, result, *, threshold: float = 0.5, component: str = "ez",
-                min_region_size: int = 2, ratio: int = 2):
+                min_region_size: int = 1, ratio: int = 2):
     """Automatically add a refinement region based on the error indicator.
 
     Computes the error indicator from *result*, finds the dominant high-
