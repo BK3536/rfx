@@ -425,10 +425,10 @@ def step_subgrid_3d(
     (hx_c, hy_c, hz_c), (hx_f, hy_f, hz_f) = _shared_node_coupling_h_3d(
         (hx_c, hy_c, hz_c), (hx_f, hy_f, hz_f), config)
 
-    # Inject fine H back into coarse (overlay: fine owns this region)
-    hx_c = hx_c.at[_fr].set(_downsample_3d(hx_f, ni, nj, nk, ratio))
-    hy_c = hy_c.at[_fr].set(_downsample_3d(hy_f, ni, nj, nk, ratio))
-    hz_c = hz_c.at[_fr].set(_downsample_3d(hz_f, ni, nj, nk, ratio))
+    # Note: fine→coarse overlay injection was tested but causes instability
+    # (coarse curl inconsistency at injection boundary). SAT-only coupling
+    # with correct energy accounting (excluding fine region from coarse)
+    # provides stable energy-conservative behavior.
 
     # === Step 3: E update (Ampere) on both grids using coupled H ===
     ex_c, ey_c, ez_c = _update_e_only(
@@ -447,10 +447,7 @@ def step_subgrid_3d(
     (ex_c, ey_c, ez_c), (ex_f, ey_f, ez_f) = _shared_node_coupling_3d(
         (ex_c, ey_c, ez_c), (ex_f, ey_f, ez_f), config)
 
-    # Inject fine E back into coarse (overlay)
-    ex_c = ex_c.at[_fr].set(_downsample_3d(ex_f, ni, nj, nk, ratio))
-    ey_c = ey_c.at[_fr].set(_downsample_3d(ey_f, ni, nj, nk, ratio))
-    ez_c = ez_c.at[_fr].set(_downsample_3d(ez_f, ni, nj, nk, ratio))
+    # No E overlay injection — same reason as H above.
 
     return SubgridState3D(
         ex_c=ex_c, ey_c=ey_c, ez_c=ez_c,
