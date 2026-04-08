@@ -152,10 +152,17 @@ def accumulate_ntff(
     Called from the scan body.  ``step_idx`` comes from the scan xs.
     """
     # Phase in float32/complex64 — Kahan summation handles precision.
+    # E is at time step n, H at n+1/2 in Yee leapfrog.
+    # Apply half-step phase correction to H components (indices 2,3)
+    # so that E and H DFTs are co-located in time.
     t = jnp.float32(step_idx) * jnp.float32(dt)
     freqs_hi = jnp.asarray(box.freqs, dtype=jnp.float32)
-    phase = jnp.exp(jnp.complex64(-1j) * 2 * jnp.pi * freqs_hi * t) * dt
-    ph = phase[:, None, None, None]  # broadcast to (nf, n1, n2, 4)
+    omega = 2 * jnp.pi * freqs_hi
+    phase_e = jnp.exp(jnp.complex64(-1j) * omega * t) * dt
+    phase_h = jnp.exp(jnp.complex64(-1j) * omega * (t + dt * 0.5)) * dt
+    # Stack [E_phase, E_phase, H_phase, H_phase] for the 4 tangential components
+    ph = jnp.stack([phase_e, phase_e, phase_h, phase_h], axis=-1)
+    ph = ph[:, None, None, :]  # (nf, 1, 1, 4)
 
     i0, i1 = box.i_lo, box.i_hi
     j0, j1 = box.j_lo, box.j_hi

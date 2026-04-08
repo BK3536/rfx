@@ -2184,6 +2184,28 @@ class Simulation:
                 # Can't check n_steps here (not known yet), but store hint
                 self._ntff_min_steps_hint = min_steps_for_ntff
 
+        # P1.9: Dielectric material extending into CPML region
+        if cpml_thickness > 0:
+            for entry in self._geometry:
+                if entry.material_name == "pec":
+                    continue
+                if hasattr(entry.shape, "bounding_box"):
+                    try:
+                        c1, c2 = entry.shape.bounding_box()
+                        for ax in range(min(3, len(self._domain))):
+                            d = self._domain[ax] if ax < len(self._domain) else self._domain[-1]
+                            if c1[ax] < cpml_thickness * 0.3 or c2[ax] > d - cpml_thickness * 0.3:
+                                _w.warn(
+                                    f"Material '{entry.material_name}' extends "
+                                    f"into CPML region along {'xyz'[ax]}-axis. "
+                                    f"CPML assumes vacuum — dielectric in PML "
+                                    f"causes increased reflections.",
+                                    stacklevel=3,
+                                )
+                                break
+                    except (NotImplementedError, TypeError):
+                        pass
+
         # P1.8: Port/source inside PEC geometry
         for pe in self._ports:
             pos = pe.position

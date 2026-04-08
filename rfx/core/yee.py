@@ -100,6 +100,9 @@ def update_h(state: FDTDState, materials: MaterialArrays, dt: float, dx: float,
 
     H^{n+1/2} = H^{n-1/2} - (dt / μ) * curl(E^n)
 
+    Note: uses a single ``dx`` for all three axes (cubic cells: dx=dy=dz).
+    For non-uniform z grids, use ``update_h_nu`` / ``update_e_nu`` instead.
+
     periodic: tuple of 3 bools selecting periodic boundary per axis (x, y, z).
     """
     def fwd(arr, axis):

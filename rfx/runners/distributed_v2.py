@@ -511,6 +511,15 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
     """
     import warnings
 
+    if exchange_interval > 1:
+        warnings.warn(
+            f"exchange_interval={exchange_interval}: ghost cells are stale "
+            f"for {exchange_interval-1} steps between exchanges, introducing "
+            f"O(dt*{exchange_interval}) boundary error. Use exchange_interval=1 "
+            f"for physically accurate results.",
+            stacklevel=2,
+        )
+
     # ------------------------------------------------------------------
     # Graceful fallback for features that require the full domain on a
     # single device.

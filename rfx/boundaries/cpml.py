@@ -236,7 +236,7 @@ def _kappa_correction(kappa, curl_slice, shape_broadcast):
 
 def apply_cpml_e(
     state, cpml_params, cpml_state: CPMLState, grid,
-    axes: str = "xyz",
+    axes: str = "xyz", materials=None,  # materials reserved for future per-cell CPML
 ) -> tuple:
     """Apply CPML correction to E-field update on all 6 faces.
 
@@ -247,7 +247,10 @@ def apply_cpml_e(
     n = grid.cpml_layers
     dt = grid.dt
     EPS_0 = 8.854187817e-12
-    coeff_e = dt / (EPS_0 * 1.0)
+    # CPML correction coefficient. Uses free-space eps_0 because CPML
+    # regions should contain only vacuum. If dielectric extends into PML,
+    # the preflight system warns the user to fix geometry placement.
+    coeff_e = dt / EPS_0
 
     # Unpack per-axis profiles and cell sizes (stored as Python floats,
     # safe inside JIT — no tracing of grid.dz needed).

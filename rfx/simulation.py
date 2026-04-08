@@ -118,13 +118,17 @@ def make_source(grid: Grid, position, component, waveform_fn, n_steps):
 def make_j_source(grid: Grid, position, component, waveform_fn, n_steps, materials):
     """Create a SourceSpec using current density injection (J source).
 
-    Unlike ``make_source``, the waveform is Cb-normalized and
-    volume-compensated so that:
-    1. No DC accumulation on PEC surfaces (enters through update equation)
-    2. Injected power is resolution-independent (scales with 1/dx²)
-    3. Proper coupling to cavity modes regardless of grid spacing
+    Unlike ``make_source``, the waveform is Cb-normalized so that
+    the source enters through the Ampere update equation:
 
-    E += Cb * J_source  where J = waveform(t) / dx²
+    E += Cb * waveform(t)
+
+    where Cb = dt / (eps * (1 + sigma*dt/2eps)).
+
+    Note: this is a soft *field* source, not a current-density
+    source.  Injected amplitude depends on local material (eps, sigma)
+    but NOT on cell size.  Power coupling varies with resolution;
+    use Harminv/FFT for mode extraction rather than absolute amplitude.
 
     Parameters
     ----------
@@ -683,7 +687,8 @@ def run(
                 st = apply_tfsf_e(st, tfsf_cfg, tfsf_h_state, dx, dt)
             if use_cpml:
                 st, cpml_new = apply_cpml_e(
-                    st, cpml_params, cpml_new, grid, cpml_axes)
+                    st, cpml_params, cpml_new, grid, cpml_axes,
+                    materials=materials)
 
             if pec_axes:
                 st = apply_pec(st, axes=pec_axes)
@@ -1120,7 +1125,8 @@ def run_until_decay(
             st = apply_tfsf_e(st, tfsf_cfg, tfsf_h_state, dx, dt)
         if use_cpml:
             st, cpml_new = apply_cpml_e(
-                st, cpml_params, cpml_new, grid, cpml_axes)
+                st, cpml_params, cpml_new, grid, cpml_axes,
+                materials=materials)
 
         if pec_axes:
             st = apply_pec(st, axes=pec_axes)
