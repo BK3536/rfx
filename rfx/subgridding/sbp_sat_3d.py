@@ -120,40 +120,53 @@ def init_subgrid_3d(
     return config, state
 
 
-def _update_3d(ex, ey, ez, hx, hy, hz, dt, dx,
-               mats=None, pec_mask=None, boundary_pec=True):
-    """Full 3D Yee update using rfx core kernels.
+def _make_mats(shape):
+    """Create vacuum MaterialArrays."""
+    from rfx.core.yee import MaterialArrays
+    return MaterialArrays(
+        eps_r=jnp.ones(shape, dtype=jnp.float32),
+        sigma=jnp.zeros(shape, dtype=jnp.float32),
+        mu_r=jnp.ones(shape, dtype=jnp.float32),
+    )
 
-    Parameters
-    ----------
-    mats : MaterialArrays or None
-        If None, uses vacuum.
-    pec_mask : array or None
-        Boolean mask for interior PEC geometry.
-    boundary_pec : bool
-        If True, apply PEC at domain boundaries.
-    """
-    from rfx.core.yee import FDTDState, MaterialArrays, update_h, update_e
-    from rfx.boundaries.pec import apply_pec, apply_pec_mask
 
+def _update_h_only(ex, ey, ez, hx, hy, hz, dt, dx, mats=None):
+    """H half-step only (Faraday)."""
+    from rfx.core.yee import FDTDState, update_h
     shape = ex.shape
     state = FDTDState(ex=ex, ey=ey, ez=ez, hx=hx, hy=hy, hz=hz,
                       step=jnp.array(0, dtype=jnp.int32))
     if mats is None:
-        mats = MaterialArrays(
-            eps_r=jnp.ones(shape, dtype=jnp.float32),
-            sigma=jnp.zeros(shape, dtype=jnp.float32),
-            mu_r=jnp.ones(shape, dtype=jnp.float32),
-        )
-
+        mats = _make_mats(shape)
     state = update_h(state, mats, dt, dx)
+    return state.hx, state.hy, state.hz
+
+
+def _update_e_only(ex, ey, ez, hx, hy, hz, dt, dx, mats=None,
+                   pec_mask=None, boundary_pec=True):
+    """E full-step only (Ampere) + PEC."""
+    from rfx.core.yee import FDTDState, update_e
+    from rfx.boundaries.pec import apply_pec, apply_pec_mask
+    shape = ex.shape
+    state = FDTDState(ex=ex, ey=ey, ez=ez, hx=hx, hy=hy, hz=hz,
+                      step=jnp.array(0, dtype=jnp.int32))
+    if mats is None:
+        mats = _make_mats(shape)
     state = update_e(state, mats, dt, dx)
     if boundary_pec:
         state = apply_pec(state)
     if pec_mask is not None:
         state = apply_pec_mask(state, pec_mask)
+    return state.ex, state.ey, state.ez
 
-    return state.ex, state.ey, state.ez, state.hx, state.hy, state.hz
+
+def _update_3d(ex, ey, ez, hx, hy, hz, dt, dx,
+               mats=None, pec_mask=None, boundary_pec=True):
+    """Full 3D Yee update (H + E) using rfx core kernels."""
+    hx, hy, hz = _update_h_only(ex, ey, ez, hx, hy, hz, dt, dx, mats)
+    ex, ey, ez = _update_e_only(ex, ey, ez, hx, hy, hz, dt, dx, mats,
+                                pec_mask, boundary_pec)
+    return ex, ey, ez, hx, hy, hz
 
 
 def _downsample_2d(fine_face, n_coarse_j, n_coarse_k, ratio):
@@ -266,6 +279,85 @@ def _shared_node_coupling_3d(state_c_fields, state_f_fields, config):
     return (ex_c, ey_c, ez_c), (ex_f, ey_f, ez_f)
 
 
+def _shared_node_coupling_h_3d(state_c_fields, state_f_fields, config):
+    """SAT penalty coupling for tangential H-components on 6 faces.
+
+    Mirrors _shared_node_coupling_3d but for H fields.
+    Required for energy conservation per Cheng et al. 2025.
+
+    For each face, tangential H components are:
+    - x-face: Hy, Hz
+    - y-face: Hx, Hz
+    - z-face: Hx, Hy
+    """
+    hx_c, hy_c, hz_c = state_c_fields
+    hx_f, hy_f, hz_f = state_f_fields
+
+    ratio = config.ratio
+    fi, fj, fk = config.fi_lo, config.fj_lo, config.fk_lo
+    ni = config.fi_hi - fi
+    nj = config.fj_hi - fj
+    nk = config.fk_hi - fk
+
+    tau = config.tau
+    alpha_f = tau * ratio / (ratio + 1.0)
+    alpha_c = tau * 1.0 / (ratio + 1.0)
+
+    def _sat_couple_h(hc_arr, hf_arr, c_slice, f_slice,
+                      nj_ds, nk_ds, ny_up, nz_up):
+        hc_face = hc_arr[c_slice]
+        hf_face = hf_arr[f_slice]
+        hf_ds = _downsample_2d(hf_face, nj_ds, nk_ds, ratio)
+        hc_us = _upsample_2d(hc_face, ny_up, nz_up, ratio)
+        hc_arr = hc_arr.at[c_slice].add(alpha_c * (hf_ds - hc_face))
+        hf_arr = hf_arr.at[f_slice].add(alpha_f * (hc_us - hf_face))
+        return hc_arr, hf_arr
+
+    # x-lo face: tangential H = Hy, Hz
+    if nj > 0 and nk > 0 and config.ny_f > 0 and config.nz_f > 0:
+        c_sl = (fi, slice(fj, fj+nj), slice(fk, fk+nk))
+        f_sl = (0, slice(None), slice(None))
+        hy_c, hy_f = _sat_couple_h(hy_c, hy_f, c_sl, f_sl, nj, nk, config.ny_f, config.nz_f)
+        hz_c, hz_f = _sat_couple_h(hz_c, hz_f, c_sl, f_sl, nj, nk, config.ny_f, config.nz_f)
+
+    # x-hi face
+    if nj > 0 and nk > 0 and config.ny_f > 0 and config.nz_f > 0:
+        c_sl = (config.fi_hi - 1, slice(fj, fj+nj), slice(fk, fk+nk))
+        f_sl = (-1, slice(None), slice(None))
+        hy_c, hy_f = _sat_couple_h(hy_c, hy_f, c_sl, f_sl, nj, nk, config.ny_f, config.nz_f)
+        hz_c, hz_f = _sat_couple_h(hz_c, hz_f, c_sl, f_sl, nj, nk, config.ny_f, config.nz_f)
+
+    # y-lo face: tangential H = Hx, Hz
+    if ni > 0 and nk > 0 and config.nx_f > 0 and config.nz_f > 0:
+        c_sl = (slice(fi, fi+ni), fj, slice(fk, fk+nk))
+        f_sl = (slice(None), 0, slice(None))
+        hx_c, hx_f = _sat_couple_h(hx_c, hx_f, c_sl, f_sl, ni, nk, config.nx_f, config.nz_f)
+        hz_c, hz_f = _sat_couple_h(hz_c, hz_f, c_sl, f_sl, ni, nk, config.nx_f, config.nz_f)
+
+    # y-hi face
+    if ni > 0 and nk > 0 and config.nx_f > 0 and config.nz_f > 0:
+        c_sl = (slice(fi, fi+ni), config.fj_hi - 1, slice(fk, fk+nk))
+        f_sl = (slice(None), -1, slice(None))
+        hx_c, hx_f = _sat_couple_h(hx_c, hx_f, c_sl, f_sl, ni, nk, config.nx_f, config.nz_f)
+        hz_c, hz_f = _sat_couple_h(hz_c, hz_f, c_sl, f_sl, ni, nk, config.nx_f, config.nz_f)
+
+    # z-lo face: tangential H = Hx, Hy
+    if ni > 0 and nj > 0 and config.nx_f > 0 and config.ny_f > 0:
+        c_sl = (slice(fi, fi+ni), slice(fj, fj+nj), fk)
+        f_sl = (slice(None), slice(None), 0)
+        hx_c, hx_f = _sat_couple_h(hx_c, hx_f, c_sl, f_sl, ni, nj, config.nx_f, config.ny_f)
+        hy_c, hy_f = _sat_couple_h(hy_c, hy_f, c_sl, f_sl, ni, nj, config.nx_f, config.ny_f)
+
+    # z-hi face
+    if ni > 0 and nj > 0 and config.nx_f > 0 and config.ny_f > 0:
+        c_sl = (slice(fi, fi+ni), slice(fj, fj+nj), config.fk_hi - 1)
+        f_sl = (slice(None), slice(None), -1)
+        hx_c, hx_f = _sat_couple_h(hx_c, hx_f, c_sl, f_sl, ni, nj, config.nx_f, config.ny_f)
+        hy_c, hy_f = _sat_couple_h(hy_c, hy_f, c_sl, f_sl, ni, nj, config.nx_f, config.ny_f)
+
+    return (hx_c, hy_c, hz_c), (hx_f, hy_f, hz_f)
+
+
 def step_subgrid_3d(
     state: SubgridState3D,
     config: SubgridConfig3D,
@@ -288,21 +380,35 @@ def step_subgrid_3d(
     """
     dt = config.dt
 
-    # Update coarse grid (with boundary PEC)
-    ex_c, ey_c, ez_c, hx_c, hy_c, hz_c = _update_3d(
+    # === Step 1: H update (Faraday) on both grids ===
+    hx_c, hy_c, hz_c = _update_h_only(
         state.ex_c, state.ey_c, state.ez_c,
         state.hx_c, state.hy_c, state.hz_c,
+        dt, config.dx_c, mats=mats_c)
+
+    hx_f, hy_f, hz_f = _update_h_only(
+        state.ex_f, state.ey_f, state.ez_f,
+        state.hx_f, state.hy_f, state.hz_f,
+        dt, config.dx_f, mats=mats_f)
+
+    # === Step 2: SAT_H coupling (tangential H on all 6 faces) ===
+    (hx_c, hy_c, hz_c), (hx_f, hy_f, hz_f) = _shared_node_coupling_h_3d(
+        (hx_c, hy_c, hz_c), (hx_f, hy_f, hz_f), config)
+
+    # === Step 3: E update (Ampere) on both grids using coupled H ===
+    ex_c, ey_c, ez_c = _update_e_only(
+        state.ex_c, state.ey_c, state.ez_c,
+        hx_c, hy_c, hz_c,
         dt, config.dx_c, mats=mats_c, pec_mask=pec_mask_c,
         boundary_pec=True)
 
-    # Update fine grid (no boundary PEC — interfaces handled by coupling)
-    ex_f, ey_f, ez_f, hx_f, hy_f, hz_f = _update_3d(
+    ex_f, ey_f, ez_f = _update_e_only(
         state.ex_f, state.ey_f, state.ez_f,
-        state.hx_f, state.hy_f, state.hz_f,
+        hx_f, hy_f, hz_f,
         dt, config.dx_f, mats=mats_f, pec_mask=pec_mask_f,
         boundary_pec=False)
 
-    # Shared-node coupling: all tangential E on all 6 faces, bidirectional
+    # === Step 4: SAT_E coupling (tangential E on all 6 faces) ===
     (ex_c, ey_c, ez_c), (ex_f, ey_f, ez_f) = _shared_node_coupling_3d(
         (ex_c, ey_c, ez_c), (ex_f, ey_f, ez_f), config)
 
