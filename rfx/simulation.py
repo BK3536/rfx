@@ -20,7 +20,7 @@ from rfx.core.yee import (
     update_e, update_e_aniso, update_h, EPS_0, _shift_bwd,
     precompute_coeffs, update_he_fast,
 )
-from rfx.boundaries.pec import apply_pec, apply_pec_occupancy
+from rfx.boundaries.pec import apply_pec, apply_pec_faces, apply_pec_occupancy
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +91,7 @@ class SimResult(NamedTuple):
     time_series: jnp.ndarray
     ntff_data: object = None
     dft_planes: tuple | None = None
+    flux_monitors: tuple | None = None
     waveguide_ports: tuple | None = None
     wire_port_sparams: tuple | None = None
     snapshots: dict | None = None
@@ -392,6 +393,7 @@ def run(
     sources: list[SourceSpec] | None = None,
     probes: list[ProbeSpec] | None = None,
     dft_planes: list | None = None,
+    flux_monitors: list | None = None,
     waveguide_ports: list | None = None,
     ntff: object | None = None,
     snapshot: SnapshotSpec | None = None,
@@ -453,6 +455,7 @@ def run(
     sources = sources or []
     probes = probes or []
     dft_planes = dft_planes or []
+    flux_monitors = flux_monitors or []
     waveguide_ports = waveguide_ports or []
 
     dt = grid.dt
@@ -483,6 +486,12 @@ def run(
     else:
         pec_axes = "".join(axis for axis in pec_axes if axis in default_pec_axes)
 
+    # ---- per-face PEC from grid.pec_faces ----
+    _pec_faces = getattr(grid, "pec_faces", None) or set()
+    use_pec_faces = bool(_pec_faces)
+    # Freeze the set into a tuple for use inside the JIT-traced body
+    _pec_faces_frozen = frozenset(_pec_faces) if use_pec_faces else frozenset()
+
     # ---- subsystem flags (resolved at trace time) ----
     use_cpml = boundary == "cpml" and grid.cpml_layers > 0
     use_debye = debye is not None
@@ -490,6 +499,7 @@ def run(
     use_tfsf = tfsf is not None
     use_ntff = ntff is not None
     use_dft_planes = len(dft_planes) > 0
+    use_flux_monitors = len(flux_monitors) > 0
     use_waveguide_ports = len(waveguide_ports) > 0
     use_snapshot = snapshot is not None
     use_pec_mask = pec_mask is not None
@@ -578,6 +588,17 @@ def run(
 
     if use_dft_planes:
         carry_init["dft_planes"] = tuple(probe.accumulator for probe in dft_planes)
+    if use_flux_monitors:
+        from rfx.probes.probes import _FLUX_COMPONENTS as _FC
+        # Pre-extract metadata for the scan body (avoids closure issues)
+        # Tuple: (axis, index, freqs, comp_names, lo1, hi1, lo2, hi2)
+        flux_meta = tuple(
+            (fm.axis, fm.index, fm.freqs, _FC[fm.axis],
+             fm.lo1, fm.hi1, fm.lo2, fm.hi2) for fm in flux_monitors
+        )
+        carry_init["flux_monitors"] = tuple(
+            (fm.e1_dft, fm.e2_dft, fm.h1_dft, fm.h2_dft) for fm in flux_monitors
+        )
     if use_waveguide_ports:
         carry_init["waveguide_port_accs"] = tuple(
             (
@@ -661,7 +682,8 @@ def run(
                 st = apply_tfsf_h(st, tfsf_cfg, carry["tfsf"], dx, dt)
             if use_cpml:
                 st, cpml_new = apply_cpml_h(
-                    st, cpml_params, carry["cpml"], grid, cpml_axes)
+                    st, cpml_params, carry["cpml"], grid, cpml_axes,
+                    materials=materials)
             if use_tfsf:
                 if _tfsf_is_2d:
                     tfsf_h_state = update_tfsf_2d_h(tfsf_cfg, carry["tfsf"], dx, dt)
@@ -692,6 +714,8 @@ def run(
 
             if pec_axes:
                 st = apply_pec(st, axes=pec_axes)
+            if use_pec_faces:
+                st = apply_pec_faces(st, _pec_faces_frozen)
 
             if use_conformal:
                 from rfx.geometry.conformal import apply_conformal_pec
@@ -803,6 +827,47 @@ def run(
                     acc + plane[None, :, :] * phase[:, None, None] * dt
                 )
 
+        if use_flux_monitors:
+            t_flux = st.step * dt
+            new_flux_accs = []
+            for (e1_acc, e2_acc, h1_acc, h2_acc), (ax, idx, fqs, comp_names, _lo1, _hi1, _lo2, _hi2) in zip(
+                carry["flux_monitors"], flux_meta
+            ):
+                e1n, e2n, h1n, h2n = comp_names
+                # H-fields are offset by +dx/2 along the normal axis on
+                # the Yee grid.  Average H at idx-1 and idx to co-locate
+                # with E at idx, giving a correct Poynting cross-product.
+                # Slice to the finite-size region [lo1:hi1, lo2:hi2].
+                idx_m1 = max(idx - 1, 0)
+                if ax == 0:
+                    e1 = getattr(st, e1n)[idx, _lo1:_hi1, _lo2:_hi2]
+                    e2 = getattr(st, e2n)[idx, _lo1:_hi1, _lo2:_hi2]
+                    h1 = (getattr(st, h1n)[idx_m1, _lo1:_hi1, _lo2:_hi2] + getattr(st, h1n)[idx, _lo1:_hi1, _lo2:_hi2]) * 0.5
+                    h2 = (getattr(st, h2n)[idx_m1, _lo1:_hi1, _lo2:_hi2] + getattr(st, h2n)[idx, _lo1:_hi1, _lo2:_hi2]) * 0.5
+                elif ax == 1:
+                    e1 = getattr(st, e1n)[_lo1:_hi1, idx, _lo2:_hi2]
+                    e2 = getattr(st, e2n)[_lo1:_hi1, idx, _lo2:_hi2]
+                    h1 = (getattr(st, h1n)[_lo1:_hi1, idx_m1, _lo2:_hi2] + getattr(st, h1n)[_lo1:_hi1, idx, _lo2:_hi2]) * 0.5
+                    h2 = (getattr(st, h2n)[_lo1:_hi1, idx_m1, _lo2:_hi2] + getattr(st, h2n)[_lo1:_hi1, idx, _lo2:_hi2]) * 0.5
+                else:
+                    e1 = getattr(st, e1n)[_lo1:_hi1, _lo2:_hi2, idx]
+                    e2 = getattr(st, e2n)[_lo1:_hi1, _lo2:_hi2, idx]
+                    h1 = (getattr(st, h1n)[_lo1:_hi1, _lo2:_hi2, idx_m1] + getattr(st, h1n)[_lo1:_hi1, _lo2:_hi2, idx]) * 0.5
+                    h2 = (getattr(st, h2n)[_lo1:_hi1, _lo2:_hi2, idx_m1] + getattr(st, h2n)[_lo1:_hi1, _lo2:_hi2, idx]) * 0.5
+                t_f64 = t_flux.astype(jnp.float64) if hasattr(t_flux, 'astype') else jnp.float64(t_flux)
+                fqs64 = fqs.astype(jnp.float64)
+                # E is at time t_flux = step*dt; H is at t_flux - dt/2
+                phase_e = jnp.exp(-1j * 2.0 * jnp.pi * fqs64 * t_f64)
+                phase_h = jnp.exp(-1j * 2.0 * jnp.pi * fqs64 * (t_f64 - jnp.float64(dt * 0.5)))
+                kernel_e = (phase_e[:, None, None] * dt).astype(jnp.complex128)
+                kernel_h = (phase_h[:, None, None] * dt).astype(jnp.complex128)
+                new_flux_accs.append((
+                    e1_acc + e1.astype(jnp.float64)[None, :, :] * kernel_e,
+                    e2_acc + e2.astype(jnp.float64)[None, :, :] * kernel_e,
+                    h1_acc + h1.astype(jnp.float64)[None, :, :] * kernel_h,
+                    h2_acc + h2.astype(jnp.float64)[None, :, :] * kernel_h,
+                ))
+
         # Snapshot output
         if use_snapshot:
             snap_fields = _take_snapshot(st)
@@ -824,6 +889,8 @@ def run(
             new_carry["ntff"] = ntff_new
         if use_dft_planes:
             new_carry["dft_planes"] = tuple(new_dft_planes)
+        if use_flux_monitors:
+            new_carry["flux_monitors"] = tuple(new_flux_accs)
         if use_waveguide_ports:
             new_carry["waveguide_port_accs"] = tuple(new_waveguide_port_accs)
         if use_wire_sparams:
@@ -854,6 +921,14 @@ def run(
             for probe, acc in zip(dft_planes, final_carry["dft_planes"])
         )
 
+    final_flux_monitors = None
+    if use_flux_monitors:
+        from rfx.probes.probes import FluxMonitor as _FM
+        final_flux_monitors = tuple(
+            fm._replace(e1_dft=accs[0], e2_dft=accs[1], h1_dft=accs[2], h2_dft=accs[3])
+            for fm, accs in zip(flux_monitors, final_carry["flux_monitors"])
+        )
+
     final_waveguide_ports = None
     if use_waveguide_ports:
         final_waveguide_ports = tuple(
@@ -879,6 +954,7 @@ def run(
         time_series=time_series,
         ntff_data=final_carry.get("ntff"),
         dft_planes=final_dft_planes,
+        flux_monitors=final_flux_monitors,
         waveguide_ports=final_waveguide_ports,
         wire_port_sparams=final_wire_sparams,
         snapshots=snapshots,
@@ -911,6 +987,7 @@ def run_until_decay(
     sources: list[SourceSpec] | None = None,
     probes: list[ProbeSpec] | None = None,
     dft_planes: list | None = None,
+    flux_monitors: list | None = None,
     waveguide_ports: list | None = None,
     ntff: object | None = None,
     snapshot: SnapshotSpec | None = None,
@@ -955,6 +1032,7 @@ def run_until_decay(
     sources = sources or []
     probes = probes or []
     dft_planes = dft_planes or []
+    flux_monitors = flux_monitors or []
     waveguide_ports = waveguide_ports or []
 
     dt = grid.dt
@@ -989,8 +1067,14 @@ def run_until_decay(
     use_debye = debye is not None
     use_lorentz = lorentz is not None
     use_tfsf = tfsf is not None
+    # ---- per-face PEC from grid.pec_faces ----
+    _pec_faces_decay = getattr(grid, "pec_faces", None) or set()
+    use_pec_faces = bool(_pec_faces_decay)
+    _pec_faces_frozen = frozenset(_pec_faces_decay) if use_pec_faces else frozenset()
+
     use_ntff = ntff is not None
     use_dft_planes = len(dft_planes) > 0
+    use_flux_monitors = len(flux_monitors) > 0
     use_waveguide_ports = len(waveguide_ports) > 0
     use_pec_mask = pec_mask is not None
     use_pec_occupancy = pec_occupancy is not None
@@ -1067,6 +1151,16 @@ def run_until_decay(
         )
         wire_sparam_meta = tuple(wire_port_sparams)
 
+    if use_flux_monitors:
+        from rfx.probes.probes import _FLUX_COMPONENTS as _FC_decay
+        flux_meta_decay = tuple(
+            (fm.axis, fm.index, fm.freqs, _FC_decay[fm.axis],
+             fm.lo1, fm.hi1, fm.lo2, fm.hi2) for fm in flux_monitors
+        )
+        carry["flux_monitors"] = tuple(
+            (fm.e1_dft, fm.e2_dft, fm.h1_dft, fm.h2_dft) for fm in flux_monitors
+        )
+
     if use_lumped_rlc:
         from rfx.lumped import init_rlc_state, update_rlc_element
         carry["rlc_states"] = tuple(init_rlc_state() for _ in lumped_rlc)
@@ -1102,7 +1196,8 @@ def run_until_decay(
             st = apply_tfsf_h(st, tfsf_cfg, carry_in["tfsf"], dx, dt)
         if use_cpml:
             st, cpml_new = apply_cpml_h(
-                st, cpml_params, carry_in["cpml"], grid, cpml_axes)
+                st, cpml_params, carry_in["cpml"], grid, cpml_axes,
+                materials=materials)
         if use_tfsf:
             if _tfsf_is_2d:
                 tfsf_h_state = update_tfsf_2d_h(tfsf_cfg, carry_in["tfsf"], dx, dt)
@@ -1130,6 +1225,8 @@ def run_until_decay(
 
         if pec_axes:
             st = apply_pec(st, axes=pec_axes)
+        if use_pec_faces:
+            st = apply_pec_faces(st, _pec_faces_frozen)
 
         if use_conformal:
             from rfx.geometry.conformal import apply_conformal_pec
@@ -1233,6 +1330,43 @@ def run_until_decay(
                     acc + plane[None, :, :] * phase[:, None, None] * dt
                 )
 
+        # Flux monitor DFT accumulation (co-located E/H, finite-size region)
+        if use_flux_monitors:
+            t_flux = st.step * dt
+            new_flux_accs = []
+            for (e1_acc, e2_acc, h1_acc, h2_acc), (ax, idx, fqs, comp_names, _lo1, _hi1, _lo2, _hi2) in zip(
+                carry_in["flux_monitors"], flux_meta_decay
+            ):
+                e1n, e2n, h1n, h2n = comp_names
+                idx_m1 = max(idx - 1, 0)
+                if ax == 0:
+                    e1 = getattr(st, e1n)[idx, _lo1:_hi1, _lo2:_hi2]
+                    e2 = getattr(st, e2n)[idx, _lo1:_hi1, _lo2:_hi2]
+                    h1 = (getattr(st, h1n)[idx_m1, _lo1:_hi1, _lo2:_hi2] + getattr(st, h1n)[idx, _lo1:_hi1, _lo2:_hi2]) * 0.5
+                    h2 = (getattr(st, h2n)[idx_m1, _lo1:_hi1, _lo2:_hi2] + getattr(st, h2n)[idx, _lo1:_hi1, _lo2:_hi2]) * 0.5
+                elif ax == 1:
+                    e1 = getattr(st, e1n)[_lo1:_hi1, idx, _lo2:_hi2]
+                    e2 = getattr(st, e2n)[_lo1:_hi1, idx, _lo2:_hi2]
+                    h1 = (getattr(st, h1n)[_lo1:_hi1, idx_m1, _lo2:_hi2] + getattr(st, h1n)[_lo1:_hi1, idx, _lo2:_hi2]) * 0.5
+                    h2 = (getattr(st, h2n)[_lo1:_hi1, idx_m1, _lo2:_hi2] + getattr(st, h2n)[_lo1:_hi1, idx, _lo2:_hi2]) * 0.5
+                else:
+                    e1 = getattr(st, e1n)[_lo1:_hi1, _lo2:_hi2, idx]
+                    e2 = getattr(st, e2n)[_lo1:_hi1, _lo2:_hi2, idx]
+                    h1 = (getattr(st, h1n)[_lo1:_hi1, _lo2:_hi2, idx_m1] + getattr(st, h1n)[_lo1:_hi1, _lo2:_hi2, idx]) * 0.5
+                    h2 = (getattr(st, h2n)[_lo1:_hi1, _lo2:_hi2, idx_m1] + getattr(st, h2n)[_lo1:_hi1, _lo2:_hi2, idx]) * 0.5
+                t_f64 = t_flux.astype(jnp.float64) if hasattr(t_flux, 'astype') else jnp.float64(t_flux)
+                fqs64 = fqs.astype(jnp.float64)
+                phase_e = jnp.exp(-1j * 2.0 * jnp.pi * fqs64 * t_f64)
+                phase_h = jnp.exp(-1j * 2.0 * jnp.pi * fqs64 * (t_f64 - jnp.float64(dt * 0.5)))
+                kernel_e = (phase_e[:, None, None] * dt).astype(jnp.complex128)
+                kernel_h = (phase_h[:, None, None] * dt).astype(jnp.complex128)
+                new_flux_accs.append((
+                    e1_acc + e1.astype(jnp.float64)[None, :, :] * kernel_e,
+                    e2_acc + e2.astype(jnp.float64)[None, :, :] * kernel_e,
+                    h1_acc + h1.astype(jnp.float64)[None, :, :] * kernel_h,
+                    h2_acc + h2.astype(jnp.float64)[None, :, :] * kernel_h,
+                ))
+
         # Monitor field value
         monitor_val = getattr(st, monitor_component)[mon_idx[0], mon_idx[1], mon_idx[2]]
 
@@ -1250,6 +1384,8 @@ def run_until_decay(
             new_carry["ntff"] = ntff_new
         if use_dft_planes:
             new_carry["dft_planes"] = tuple(new_dft_planes)
+        if use_flux_monitors:
+            new_carry["flux_monitors"] = tuple(new_flux_accs)
         if use_waveguide_ports:
             new_carry["waveguide_port_accs"] = tuple(new_waveguide_port_accs)
         if use_wire_sparams:
@@ -1317,11 +1453,19 @@ def run_until_decay(
             for wp_meta, accs in zip(wire_sparam_meta, carry["wire_sparam_accs"])
         )
 
+    final_flux_monitors = None
+    if use_flux_monitors:
+        final_flux_monitors = tuple(
+            fm._replace(e1_dft=accs[0], e2_dft=accs[1], h1_dft=accs[2], h2_dft=accs[3])
+            for fm, accs in zip(flux_monitors, carry["flux_monitors"])
+        )
+
     return SimResult(
         state=carry["fdtd"] if return_state else None,
         time_series=time_series,
         ntff_data=carry.get("ntff"),
         dft_planes=final_dft_planes,
+        flux_monitors=final_flux_monitors,
         waveguide_ports=final_waveguide_ports,
         wire_port_sparams=final_wire_sparams,
         snapshots=None,

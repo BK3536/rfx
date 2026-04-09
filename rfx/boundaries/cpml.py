@@ -90,8 +90,9 @@ def _cpml_profile(
     n_layers: int,
     dt: float,
     dx: float,
-    order: int = 3,
+    order: int = 2,
     kappa_max: float = 1.0,
+    R_asymptotic: float = 1e-15,
 ) -> CPMLParams:
     """Compute graded CPML profile using polynomial grading.
 
@@ -104,21 +105,27 @@ def _cpml_profile(
     dx : float
         Cell size (meters).
     order : int
-        Polynomial grading order.
+        Polynomial grading order.  Default 2 (quadratic, matching Meep).
     kappa_max : float
         Maximum κ stretching parameter. 1.0 = standard CPML (no stretching).
         Values > 1 improve evanescent wave absorption.
+    R_asymptotic : float
+        Target asymptotic reflection coefficient.  σ_max is derived from
+        this value using the Meep formula:
+        ``σ_max = -ln(R) * (m+1) / (2 * η * d)``
+        where ``d = n_layers * dx``.  Default 1e-15 (matching Meep).
     """
     EPS_0 = 8.854187817e-12
     MU_0 = 1.2566370614e-6
 
-    # Optimal σ_max (Taflove & Hagness, eq 7.67)
-    # σ_opt = 0.8 * (m+1) / (η * Δx) where η = sqrt(μ/ε)
     eta = np.sqrt(MU_0 / EPS_0)  # ≈ 376.73 Ω
+    d = n_layers * dx             # PML physical thickness
+    # σ_max from target reflection (Meep formula):
+    #   R = exp(-2 * σ_max * d / ((m+1) * η))
+    #   => σ_max = -ln(R) * (m+1) / (2 * η * d)
+    sigma_max = -np.log(R_asymptotic) * (order + 1) / (2.0 * eta * d)
     # For CFS-CPML (κ>1), scale σ_max by κ_max (Gedney recommendation).
-    # The κ stretching provides impedance matching that allows stronger σ
-    # without increasing interface reflections, improving evanescent absorption.
-    sigma_max = 0.8 * (order + 1) / (eta * dx) * kappa_max
+    sigma_max *= kappa_max
 
     # Graded profiles: polynomial from max at outer boundary (index 0)
     # to 0 at interior edge (index n-1) for the lo face.
@@ -276,10 +283,17 @@ def apply_cpml_e(
     n = grid.cpml_layers
     dt = grid.dt
     EPS_0 = 8.854187817e-12
-    # CPML correction coefficient. Uses free-space eps_0 because CPML
-    # regions should contain only vacuum. If dielectric extends into PML,
-    # the preflight system warns the user to fix geometry placement.
-    coeff_e = dt / EPS_0
+    # Material-aware CPML: use local eps_r so guided modes in dielectric
+    # waveguides see an impedance-matched absorber (equivalent to UPML).
+    # Falls back to free-space eps_0 when materials is None.
+    if materials is not None:
+        _ce_full = dt / (materials.eps_r * EPS_0)  # (nx, ny, nz)
+        # Pre-slice to each PML face region for broadcasting with psi arrays
+        ce_xlo = _ce_full[:n, :, :];  ce_xhi = _ce_full[-n:, :, :]
+        ce_ylo = _ce_full[:, :n, :];  ce_yhi = _ce_full[:, -n:, :]
+        ce_zlo = _ce_full[:, :, :n];  ce_zhi = _ce_full[:, :, -n:]
+    else:
+        ce_xlo = ce_xhi = ce_ylo = ce_yhi = ce_zlo = ce_zhi = dt / EPS_0
 
     # Unpack per-axis profiles and cell sizes (stored as Python floats,
     # safe inside JIT — no tracing of grid.dz needed).
@@ -316,8 +330,8 @@ def apply_cpml_e(
         curl_hz_dx_xlo = (hz_xlo - hz_shifted_xlo) / dx_x
 
         new_psi_ey_xlo = b_x_lo * cpml_state.psi_ey_xlo + c_x_lo * curl_hz_dx_xlo
-        ey = ey.at[:n, :, :].add(-coeff_e * new_psi_ey_xlo)
-        ey = ey.at[:n, :, :].add(-coeff_e * (1.0 / k_x_lo - 1.0) * curl_hz_dx_xlo)
+        ey = ey.at[:n, :, :].add(-ce_xlo * new_psi_ey_xlo)
+        ey = ey.at[:n, :, :].add(-ce_xlo * (1.0 / k_x_lo - 1.0) * curl_hz_dx_xlo)
 
         # --- X-hi: Ey correction from dHz/dx ---
         hz_xhi = state.hz[-n:, :, :]
@@ -325,8 +339,8 @@ def apply_cpml_e(
         curl_hz_dx_xhi = (hz_xhi - hz_shifted_xhi) / dx_x
 
         new_psi_ey_xhi = b_x_hi * cpml_state.psi_ey_xhi + c_x_hi * curl_hz_dx_xhi
-        ey = ey.at[-n:, :, :].add(-coeff_e * new_psi_ey_xhi)
-        ey = ey.at[-n:, :, :].add(-coeff_e * (1.0 / k_x_hi - 1.0) * curl_hz_dx_xhi)
+        ey = ey.at[-n:, :, :].add(-ce_xhi * new_psi_ey_xhi)
+        ey = ey.at[-n:, :, :].add(-ce_xhi * (1.0 / k_x_hi - 1.0) * curl_hz_dx_xhi)
 
         # --- X-lo: Ez correction from dHy/dx ---
         hy_xlo = state.hy[:n, :, :]
@@ -336,8 +350,8 @@ def apply_cpml_e(
 
         new_psi_ez_xlo = b_x_lo * cpml_state.psi_ez_xlo + c_x_lo * curl_hy_dx_xlo_t
         correction_ez_xlo = jnp.transpose(new_psi_ez_xlo, (0, 2, 1))
-        ez = ez.at[:n, :, :].add(coeff_e * correction_ez_xlo)
-        ez = ez.at[:n, :, :].add(coeff_e * (1.0 / k_x_lo - 1.0) * curl_hy_dx_xlo)
+        ez = ez.at[:n, :, :].add(ce_xlo * correction_ez_xlo)
+        ez = ez.at[:n, :, :].add(ce_xlo * (1.0 / k_x_lo - 1.0) * curl_hy_dx_xlo)
 
         # --- X-hi: Ez correction from dHy/dx ---
         hy_xhi = state.hy[-n:, :, :]
@@ -347,8 +361,8 @@ def apply_cpml_e(
 
         new_psi_ez_xhi = b_x_hi * cpml_state.psi_ez_xhi + c_x_hi * curl_hy_dx_xhi_t
         correction_ez_xhi = jnp.transpose(new_psi_ez_xhi, (0, 2, 1))
-        ez = ez.at[-n:, :, :].add(coeff_e * correction_ez_xhi)
-        ez = ez.at[-n:, :, :].add(coeff_e * (1.0 / k_x_hi - 1.0) * curl_hy_dx_xhi)
+        ez = ez.at[-n:, :, :].add(ce_xhi * correction_ez_xhi)
+        ez = ez.at[-n:, :, :].add(ce_xhi * (1.0 / k_x_hi - 1.0) * curl_hy_dx_xhi)
     else:
         new_psi_ey_xlo = cpml_state.psi_ey_xlo
         new_psi_ey_xhi = cpml_state.psi_ey_xhi
@@ -369,9 +383,9 @@ def apply_cpml_e(
 
         new_psi_ex_ylo = b_y_lo * cpml_state.psi_ex_ylo + c_y_lo * curl_hz_dy_ylo_t
         correction_ex_ylo = jnp.transpose(new_psi_ex_ylo, (1, 0, 2))
-        ex = ex.at[:, :n, :].add(coeff_e * correction_ex_ylo)
+        ex = ex.at[:, :n, :].add(ce_ylo * correction_ex_ylo)
         kappa_corr_ylo = jnp.transpose((1.0 / k_y_lo - 1.0) * curl_hz_dy_ylo_t, (1, 0, 2))
-        ex = ex.at[:, :n, :].add(coeff_e * kappa_corr_ylo)
+        ex = ex.at[:, :n, :].add(ce_ylo * kappa_corr_ylo)
 
         # --- Y-hi: Ex correction from dHz/dy ---
         hz_yhi = state.hz[:, -n:, :]
@@ -382,9 +396,9 @@ def apply_cpml_e(
 
         new_psi_ex_yhi = b_y_hi * cpml_state.psi_ex_yhi + c_y_hi * curl_hz_dy_yhi_t
         correction_ex_yhi = jnp.transpose(new_psi_ex_yhi, (1, 0, 2))
-        ex = ex.at[:, -n:, :].add(coeff_e * correction_ex_yhi)
+        ex = ex.at[:, -n:, :].add(ce_yhi * correction_ex_yhi)
         kappa_corr_yhi = jnp.transpose((1.0 / k_y_hi - 1.0) * curl_hz_dy_yhi_t, (1, 0, 2))
-        ex = ex.at[:, -n:, :].add(coeff_e * kappa_corr_yhi)
+        ex = ex.at[:, -n:, :].add(ce_yhi * kappa_corr_yhi)
 
         # --- Y-lo: Ez correction from dHx/dy ---
         hx_ylo = state.hx[:, :n, :]
@@ -395,9 +409,9 @@ def apply_cpml_e(
 
         new_psi_ez_ylo = b_y_lo * cpml_state.psi_ez_ylo + c_y_lo * curl_hx_dy_ylo_t
         correction_ez_ylo = jnp.transpose(new_psi_ez_ylo, (2, 0, 1))
-        ez = ez.at[:, :n, :].add(-coeff_e * correction_ez_ylo)
+        ez = ez.at[:, :n, :].add(-ce_ylo * correction_ez_ylo)
         kappa_corr_ez_ylo = jnp.transpose((1.0 / k_y_lo - 1.0) * curl_hx_dy_ylo_t, (2, 0, 1))
-        ez = ez.at[:, :n, :].add(-coeff_e * kappa_corr_ez_ylo)
+        ez = ez.at[:, :n, :].add(-ce_ylo * kappa_corr_ez_ylo)
 
         # --- Y-hi: Ez correction from dHx/dy ---
         hx_yhi = state.hx[:, -n:, :]
@@ -408,9 +422,9 @@ def apply_cpml_e(
 
         new_psi_ez_yhi = b_y_hi * cpml_state.psi_ez_yhi + c_y_hi * curl_hx_dy_yhi_t
         correction_ez_yhi = jnp.transpose(new_psi_ez_yhi, (2, 0, 1))
-        ez = ez.at[:, -n:, :].add(-coeff_e * correction_ez_yhi)
+        ez = ez.at[:, -n:, :].add(-ce_yhi * correction_ez_yhi)
         kappa_corr_ez_yhi = jnp.transpose((1.0 / k_y_hi - 1.0) * curl_hx_dy_yhi_t, (2, 0, 1))
-        ez = ez.at[:, -n:, :].add(-coeff_e * kappa_corr_ez_yhi)
+        ez = ez.at[:, -n:, :].add(-ce_yhi * kappa_corr_ez_yhi)
     else:
         new_psi_ex_ylo = cpml_state.psi_ex_ylo
         new_psi_ex_yhi = cpml_state.psi_ex_yhi
@@ -431,10 +445,10 @@ def apply_cpml_e(
 
         new_psi_ex_zlo = b_zl * cpml_state.psi_ex_zlo + c_zl * curl_hy_dz_zlo_t
         correction_ex_zlo = jnp.transpose(new_psi_ex_zlo, (1, 2, 0))
-        ex = ex.at[:, :, :n].add(-coeff_e * correction_ex_zlo)
+        ex = ex.at[:, :, :n].add(-ce_zlo * correction_ex_zlo)
         # κ correction for Z-lo Ex
         kappa_corr_ex_zlo = jnp.transpose((1.0 / k_zl - 1.0) * curl_hy_dz_zlo_t, (1, 2, 0))
-        ex = ex.at[:, :, :n].add(-coeff_e * kappa_corr_ex_zlo)
+        ex = ex.at[:, :, :n].add(-ce_zlo * kappa_corr_ex_zlo)
 
         # --- Z-hi: Ex correction from dHy/dz ---
         hy_zhi = state.hy[:, :, -n:]
@@ -445,9 +459,9 @@ def apply_cpml_e(
 
         new_psi_ex_zhi = b_zh * cpml_state.psi_ex_zhi + c_zh * curl_hy_dz_zhi_t
         correction_ex_zhi = jnp.transpose(new_psi_ex_zhi, (1, 2, 0))
-        ex = ex.at[:, :, -n:].add(-coeff_e * correction_ex_zhi)
+        ex = ex.at[:, :, -n:].add(-ce_zhi * correction_ex_zhi)
         kappa_corr_ex_zhi = jnp.transpose((1.0 / k_zh - 1.0) * curl_hy_dz_zhi_t, (1, 2, 0))
-        ex = ex.at[:, :, -n:].add(-coeff_e * kappa_corr_ex_zhi)
+        ex = ex.at[:, :, -n:].add(-ce_zhi * kappa_corr_ex_zhi)
 
         # --- Z-lo: Ey correction from dHx/dz ---
         hx_zlo = state.hx[:, :, :n]
@@ -458,9 +472,9 @@ def apply_cpml_e(
 
         new_psi_ey_zlo = b_zl * cpml_state.psi_ey_zlo + c_zl * curl_hx_dz_zlo_t
         correction_ey_zlo = jnp.transpose(new_psi_ey_zlo, (2, 1, 0))
-        ey = ey.at[:, :, :n].add(coeff_e * correction_ey_zlo)
+        ey = ey.at[:, :, :n].add(ce_zlo * correction_ey_zlo)
         kappa_corr_ey_zlo = jnp.transpose((1.0 / k_zl - 1.0) * curl_hx_dz_zlo_t, (2, 1, 0))
-        ey = ey.at[:, :, :n].add(coeff_e * kappa_corr_ey_zlo)
+        ey = ey.at[:, :, :n].add(ce_zlo * kappa_corr_ey_zlo)
 
         # --- Z-hi: Ey correction from dHx/dz ---
         hx_zhi = state.hx[:, :, -n:]
@@ -471,9 +485,9 @@ def apply_cpml_e(
 
         new_psi_ey_zhi = b_zh * cpml_state.psi_ey_zhi + c_zh * curl_hx_dz_zhi_t
         correction_ey_zhi = jnp.transpose(new_psi_ey_zhi, (2, 1, 0))
-        ey = ey.at[:, :, -n:].add(coeff_e * correction_ey_zhi)
+        ey = ey.at[:, :, -n:].add(ce_zhi * correction_ey_zhi)
         kappa_corr_ey_zhi = jnp.transpose((1.0 / k_zh - 1.0) * curl_hx_dz_zhi_t, (2, 1, 0))
-        ey = ey.at[:, :, -n:].add(coeff_e * kappa_corr_ey_zhi)
+        ey = ey.at[:, :, -n:].add(ce_zhi * kappa_corr_ey_zhi)
     else:
         new_psi_ex_zlo = cpml_state.psi_ex_zlo
         new_psi_ex_zhi = cpml_state.psi_ex_zhi
@@ -504,16 +518,24 @@ def apply_cpml_e(
 
 def apply_cpml_h(
     state, cpml_params, cpml_state: CPMLState, grid,
-    axes: str = "xyz",
+    axes: str = "xyz", materials=None,
 ) -> tuple:
     """Apply CPML correction to H-field update on all 6 faces.
 
     Accepts either legacy ``CPMLParams`` or ``CPMLAxisParams``.
+    When *materials* is provided, uses local mu_r for impedance-matched
+    guided-mode absorption (equivalent to UPML).
     """
     n = grid.cpml_layers
     dt = grid.dt
     MU_0 = 1.2566370614e-6
-    coeff_h = dt / MU_0
+    if materials is not None and hasattr(materials, 'mu_r'):
+        _ch_full = dt / (materials.mu_r * MU_0)  # (nx, ny, nz)
+        ch_xlo = _ch_full[:n, :, :];  ch_xhi = _ch_full[-n:, :, :]
+        ch_ylo = _ch_full[:, :n, :];  ch_yhi = _ch_full[:, -n:, :]
+        ch_zlo = _ch_full[:, :, :n];  ch_zhi = _ch_full[:, :, -n:]
+    else:
+        ch_xlo = ch_xhi = ch_ylo = ch_yhi = ch_zlo = ch_zhi = dt / MU_0
 
     # Unpack per-axis profiles and cell sizes
     if isinstance(cpml_params, CPMLAxisParams):
@@ -548,8 +570,8 @@ def apply_cpml_h(
         curl_ez_dx_xlo = (ez_shifted_xlo - ez_xlo) / dx_x
 
         new_psi_hy_xlo = b_x_lo * cpml_state.psi_hy_xlo + c_x_lo * curl_ez_dx_xlo
-        hy = hy.at[:n, :, :].add(coeff_h * new_psi_hy_xlo)
-        hy = hy.at[:n, :, :].add(coeff_h * (1.0 / k_x_lo - 1.0) * curl_ez_dx_xlo)
+        hy = hy.at[:n, :, :].add(ch_xlo * new_psi_hy_xlo)
+        hy = hy.at[:n, :, :].add(ch_xlo * (1.0 / k_x_lo - 1.0) * curl_ez_dx_xlo)
 
         # --- X-hi: Hy correction from dEz/dx ---
         ez_xhi = state.ez[-n:, :, :]
@@ -557,8 +579,8 @@ def apply_cpml_h(
         curl_ez_dx_xhi = (ez_shifted_xhi - ez_xhi) / dx_x
 
         new_psi_hy_xhi = b_x_hi * cpml_state.psi_hy_xhi + c_x_hi * curl_ez_dx_xhi
-        hy = hy.at[-n:, :, :].add(coeff_h * new_psi_hy_xhi)
-        hy = hy.at[-n:, :, :].add(coeff_h * (1.0 / k_x_hi - 1.0) * curl_ez_dx_xhi)
+        hy = hy.at[-n:, :, :].add(ch_xhi * new_psi_hy_xhi)
+        hy = hy.at[-n:, :, :].add(ch_xhi * (1.0 / k_x_hi - 1.0) * curl_ez_dx_xhi)
 
         # --- X-lo: Hz correction from dEy/dx ---
         ey_xlo = state.ey[:n, :, :]
@@ -568,8 +590,8 @@ def apply_cpml_h(
 
         new_psi_hz_xlo = b_x_lo * cpml_state.psi_hz_xlo + c_x_lo * curl_ey_dx_xlo_t
         correction_hz_xlo = jnp.transpose(new_psi_hz_xlo, (0, 2, 1))
-        hz = hz.at[:n, :, :].add(-coeff_h * correction_hz_xlo)
-        hz = hz.at[:n, :, :].add(-coeff_h * (1.0 / k_x_lo - 1.0) * curl_ey_dx_xlo)
+        hz = hz.at[:n, :, :].add(-ch_xlo * correction_hz_xlo)
+        hz = hz.at[:n, :, :].add(-ch_xlo * (1.0 / k_x_lo - 1.0) * curl_ey_dx_xlo)
 
         # --- X-hi: Hz correction from dEy/dx ---
         ey_xhi = state.ey[-n:, :, :]
@@ -579,8 +601,8 @@ def apply_cpml_h(
 
         new_psi_hz_xhi = b_x_hi * cpml_state.psi_hz_xhi + c_x_hi * curl_ey_dx_xhi_t
         correction_hz_xhi = jnp.transpose(new_psi_hz_xhi, (0, 2, 1))
-        hz = hz.at[-n:, :, :].add(-coeff_h * correction_hz_xhi)
-        hz = hz.at[-n:, :, :].add(-coeff_h * (1.0 / k_x_hi - 1.0) * curl_ey_dx_xhi)
+        hz = hz.at[-n:, :, :].add(-ch_xhi * correction_hz_xhi)
+        hz = hz.at[-n:, :, :].add(-ch_xhi * (1.0 / k_x_hi - 1.0) * curl_ey_dx_xhi)
     else:
         new_psi_hy_xlo = cpml_state.psi_hy_xlo
         new_psi_hy_xhi = cpml_state.psi_hy_xhi
@@ -601,9 +623,9 @@ def apply_cpml_h(
 
         new_psi_hx_ylo = b_y_lo * cpml_state.psi_hx_ylo + c_y_lo * curl_ez_dy_ylo_t
         correction_hx_ylo = jnp.transpose(new_psi_hx_ylo, (1, 0, 2))
-        hx = hx.at[:, :n, :].add(-coeff_h * correction_hx_ylo)
+        hx = hx.at[:, :n, :].add(-ch_ylo * correction_hx_ylo)
         kappa_corr_hx_ylo = jnp.transpose((1.0 / k_y_lo - 1.0) * curl_ez_dy_ylo_t, (1, 0, 2))
-        hx = hx.at[:, :n, :].add(-coeff_h * kappa_corr_hx_ylo)
+        hx = hx.at[:, :n, :].add(-ch_ylo * kappa_corr_hx_ylo)
 
         # --- Y-hi: Hx correction from dEz/dy ---
         ez_yhi = state.ez[:, -n:, :]
@@ -614,9 +636,9 @@ def apply_cpml_h(
 
         new_psi_hx_yhi = b_y_hi * cpml_state.psi_hx_yhi + c_y_hi * curl_ez_dy_yhi_t
         correction_hx_yhi = jnp.transpose(new_psi_hx_yhi, (1, 0, 2))
-        hx = hx.at[:, -n:, :].add(-coeff_h * correction_hx_yhi)
+        hx = hx.at[:, -n:, :].add(-ch_yhi * correction_hx_yhi)
         kappa_corr_hx_yhi = jnp.transpose((1.0 / k_y_hi - 1.0) * curl_ez_dy_yhi_t, (1, 0, 2))
-        hx = hx.at[:, -n:, :].add(-coeff_h * kappa_corr_hx_yhi)
+        hx = hx.at[:, -n:, :].add(-ch_yhi * kappa_corr_hx_yhi)
 
         # --- Y-lo: Hz correction from dEx/dy ---
         ex_ylo = state.ex[:, :n, :]
@@ -627,9 +649,9 @@ def apply_cpml_h(
 
         new_psi_hz_ylo = b_y_lo * cpml_state.psi_hz_ylo + c_y_lo * curl_ex_dy_ylo_t
         correction_hz_ylo = jnp.transpose(new_psi_hz_ylo, (2, 0, 1))
-        hz = hz.at[:, :n, :].add(coeff_h * correction_hz_ylo)
+        hz = hz.at[:, :n, :].add(ch_ylo * correction_hz_ylo)
         kappa_corr_hz_ylo = jnp.transpose((1.0 / k_y_lo - 1.0) * curl_ex_dy_ylo_t, (2, 0, 1))
-        hz = hz.at[:, :n, :].add(coeff_h * kappa_corr_hz_ylo)
+        hz = hz.at[:, :n, :].add(ch_ylo * kappa_corr_hz_ylo)
 
         # --- Y-hi: Hz correction from dEx/dy ---
         ex_yhi = state.ex[:, -n:, :]
@@ -640,9 +662,9 @@ def apply_cpml_h(
 
         new_psi_hz_yhi = b_y_hi * cpml_state.psi_hz_yhi + c_y_hi * curl_ex_dy_yhi_t
         correction_hz_yhi = jnp.transpose(new_psi_hz_yhi, (2, 0, 1))
-        hz = hz.at[:, -n:, :].add(coeff_h * correction_hz_yhi)
+        hz = hz.at[:, -n:, :].add(ch_yhi * correction_hz_yhi)
         kappa_corr_hz_yhi = jnp.transpose((1.0 / k_y_hi - 1.0) * curl_ex_dy_yhi_t, (2, 0, 1))
-        hz = hz.at[:, -n:, :].add(coeff_h * kappa_corr_hz_yhi)
+        hz = hz.at[:, -n:, :].add(ch_yhi * kappa_corr_hz_yhi)
     else:
         new_psi_hx_ylo = cpml_state.psi_hx_ylo
         new_psi_hx_yhi = cpml_state.psi_hx_yhi
@@ -663,9 +685,9 @@ def apply_cpml_h(
 
         new_psi_hx_zlo = b_zl * cpml_state.psi_hx_zlo + c_zl * curl_ey_dz_zlo_t
         correction_hx_zlo = jnp.transpose(new_psi_hx_zlo, (1, 2, 0))
-        hx = hx.at[:, :, :n].add(coeff_h * correction_hx_zlo)
+        hx = hx.at[:, :, :n].add(ch_zlo * correction_hx_zlo)
         kappa_corr_hx_zlo = jnp.transpose((1.0 / k_zl - 1.0) * curl_ey_dz_zlo_t, (1, 2, 0))
-        hx = hx.at[:, :, :n].add(coeff_h * kappa_corr_hx_zlo)
+        hx = hx.at[:, :, :n].add(ch_zlo * kappa_corr_hx_zlo)
 
         # --- Z-hi: Hx correction from dEy/dz ---
         ey_zhi = state.ey[:, :, -n:]
@@ -676,9 +698,9 @@ def apply_cpml_h(
 
         new_psi_hx_zhi = b_zh * cpml_state.psi_hx_zhi + c_zh * curl_ey_dz_zhi_t
         correction_hx_zhi = jnp.transpose(new_psi_hx_zhi, (1, 2, 0))
-        hx = hx.at[:, :, -n:].add(coeff_h * correction_hx_zhi)
+        hx = hx.at[:, :, -n:].add(ch_zhi * correction_hx_zhi)
         kappa_corr_hx_zhi = jnp.transpose((1.0 / k_zh - 1.0) * curl_ey_dz_zhi_t, (1, 2, 0))
-        hx = hx.at[:, :, -n:].add(coeff_h * kappa_corr_hx_zhi)
+        hx = hx.at[:, :, -n:].add(ch_zhi * kappa_corr_hx_zhi)
 
         # --- Z-lo: Hy correction from dEx/dz ---
         ex_zlo = state.ex[:, :, :n]
@@ -689,9 +711,9 @@ def apply_cpml_h(
 
         new_psi_hy_zlo = b_zl * cpml_state.psi_hy_zlo + c_zl * curl_ex_dz_zlo_t
         correction_hy_zlo = jnp.transpose(new_psi_hy_zlo, (2, 1, 0))
-        hy = hy.at[:, :, :n].add(-coeff_h * correction_hy_zlo)
+        hy = hy.at[:, :, :n].add(-ch_zlo * correction_hy_zlo)
         kappa_corr_hy_zlo = jnp.transpose((1.0 / k_zl - 1.0) * curl_ex_dz_zlo_t, (2, 1, 0))
-        hy = hy.at[:, :, :n].add(-coeff_h * kappa_corr_hy_zlo)
+        hy = hy.at[:, :, :n].add(-ch_zlo * kappa_corr_hy_zlo)
 
         # --- Z-hi: Hy correction from dEx/dz ---
         ex_zhi = state.ex[:, :, -n:]
@@ -702,9 +724,9 @@ def apply_cpml_h(
 
         new_psi_hy_zhi = b_zh * cpml_state.psi_hy_zhi + c_zh * curl_ex_dz_zhi_t
         correction_hy_zhi = jnp.transpose(new_psi_hy_zhi, (2, 1, 0))
-        hy = hy.at[:, :, -n:].add(-coeff_h * correction_hy_zhi)
+        hy = hy.at[:, :, -n:].add(-ch_zhi * correction_hy_zhi)
         kappa_corr_hy_zhi = jnp.transpose((1.0 / k_zh - 1.0) * curl_ex_dz_zhi_t, (2, 1, 0))
-        hy = hy.at[:, :, -n:].add(-coeff_h * kappa_corr_hy_zhi)
+        hy = hy.at[:, :, -n:].add(-ch_zhi * kappa_corr_hy_zhi)
     else:
         new_psi_hx_zlo = cpml_state.psi_hx_zlo
         new_psi_hx_zhi = cpml_state.psi_hx_zhi
