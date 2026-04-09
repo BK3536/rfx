@@ -10,7 +10,7 @@ from rfx.simulation import (
     run as _run, run_until_decay as _run_until_decay,
 )
 from rfx.sources.sources import LumpedPort, setup_lumped_port, WirePort, setup_wire_port
-from rfx.probes.probes import extract_s_matrix, extract_s_matrix_wire, init_dft_plane_probe
+from rfx.probes.probes import extract_s_matrix, extract_s_matrix_wire, init_dft_plane_probe, init_flux_monitor
 from rfx.sources.waveguide_port import (
     extract_waveguide_sparams,
     waveguide_plane_positions,
@@ -238,6 +238,50 @@ def run_uniform(
             )
         )
 
+    # Flux monitors (Poynting flux through plane)
+    flux_monitors = []
+    for pe in getattr(sim, '_flux_monitors', []):
+        axis_idx = axis_to_index[pe.axis]
+        plane_pos = [0.0, 0.0, 0.0]
+        plane_pos[axis_idx] = pe.coordinate
+        grid_index = grid.position_to_index(tuple(plane_pos))[axis_idx]
+        freqs_arr = (
+            pe.freqs
+            if pe.freqs is not None
+            else jnp.linspace(sim._freq_max / 10, sim._freq_max, pe.n_freqs)
+        )
+        # Compute tangential index bounds from size (finite flux region)
+        tangential_axes = [a for a in range(3) if a != axis_idx]
+        domain_sizes = [sim._domain[a] for a in tangential_axes]
+        grid_ns = [grid.shape[a] for a in tangential_axes]
+        if pe.size is not None:
+            # User-specified or default center (domain midpoint)
+            user_center = pe.center if hasattr(pe, 'center') and pe.center is not None else None
+            bounds = []
+            for idx_t, (s, dom, n) in enumerate(zip(pe.size, domain_sizes, grid_ns)):
+                c = user_center[idx_t] if user_center is not None else dom / 2.0
+                pad = getattr(grid, ['pad_x', 'pad_y', 'pad_z'][tangential_axes[idx_t]], 0)
+                # Convert physical coordinate to grid index (add CPML padding offset)
+                lo = max(0, int(round(c / grid.dx - s / (2.0 * grid.dx))) + pad)
+                hi = min(n, int(round(c / grid.dx + s / (2.0 * grid.dx))) + pad)
+                bounds.append((lo, hi))
+            lo1, hi1 = bounds[0]
+            lo2, hi2 = bounds[1]
+        else:
+            lo1, hi1 = 0, grid_ns[0]
+            lo2, hi2 = 0, grid_ns[1]
+        flux_monitors.append(
+            init_flux_monitor(
+                axis=axis_idx,
+                index=grid_index,
+                freqs=freqs_arr,
+                grid_shape=grid.shape,
+                dx=grid.dx,
+                dft_total_steps=n_steps,
+                lo1=lo1, hi1=hi1, lo2=lo2, hi2=hi2,
+            )
+        )
+
     if sim._waveguide_ports:
         cpml_axes = grid.cpml_axes
         pec_axes = "".join(axis for axis in "xyz" if axis not in cpml_axes)
@@ -360,6 +404,7 @@ def run_uniform(
             sources=sources,
             probes=probes,
             dft_planes=dft_planes,
+            flux_monitors=flux_monitors,
             waveguide_ports=waveguide_ports,
             ntff=ntff_box,
             snapshot=snapshot,
@@ -385,6 +430,7 @@ def run_uniform(
             sources=sources,
             probes=probes,
             dft_planes=dft_planes,
+            flux_monitors=flux_monitors,
             waveguide_ports=waveguide_ports,
             ntff=ntff_box,
             snapshot=snapshot,
@@ -529,6 +575,17 @@ def run_uniform(
                 for entry, probe in zip(sim._dft_planes, sim_result.dft_planes or ())
             }
             if sim._dft_planes
+            else None
+        ),
+        flux_monitors=(
+            {
+                entry.name: fm
+                for entry, fm in zip(
+                    getattr(sim, '_flux_monitors', []),
+                    sim_result.flux_monitors or (),
+                )
+            }
+            if getattr(sim, '_flux_monitors', [])
             else None
         ),
         waveguide_ports=waveguide_ports_result,

@@ -59,7 +59,7 @@ from rfx.floquet import (
 from rfx.simulation import (
     SnapshotSpec,
 )
-from rfx.adi import ADIState2D, run_adi_2d
+from rfx.adi import ADIState2D, ADIState3D, run_adi_2d
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +124,7 @@ class Result(NamedTuple):
     ntff_data: object = None
     ntff_box: object = None
     dft_planes: dict | None = None
+    flux_monitors: dict | None = None
     waveguide_ports: dict | None = None
     waveguide_sparams: dict | None = None
     snapshots: dict | None = None
@@ -278,6 +279,17 @@ class _DFTPlaneEntry:
 
 
 @dataclass(frozen=True)
+class _FluxMonitorEntry:
+    name: str
+    axis: str
+    coordinate: float
+    freqs: jnp.ndarray | None
+    n_freqs: int
+    size: tuple[float, float] | None = None    # tangential extent (dim1, dim2)
+    center: tuple[float, float] | None = None  # tangential center (dim1, dim2)
+
+
+@dataclass(frozen=True)
 class _WaveguidePortEntry:
     name: str
     x_position: float
@@ -386,6 +398,7 @@ class Simulation:
         *,
         boundary: str = "cpml",
         cpml_layers: int = 8,
+        cpml_kappa_max: float = 1.0,
         pec_faces: set[str] | list[str] | None = None,
         dx: float | None = None,
         mode: str = "3d",
@@ -440,6 +453,7 @@ class Simulation:
         self._domain = domain
         self._boundary = boundary
         self._cpml_layers = cpml_layers if boundary == "cpml" else 0
+        self._cpml_kappa_max = cpml_kappa_max
         self._dx = dx
         self._mode = mode
         self._dz_profile = dz_profile
@@ -448,8 +462,8 @@ class Simulation:
         self._adi_cfl_factor = adi_cfl_factor
 
         if self._solver == "adi":
-            if self._mode != "2d_tmz":
-                raise ValueError("solver='adi' currently supports only mode='2d_tmz'")
+            if self._mode not in ("2d_tmz", "3d"):
+                raise ValueError("solver='adi' supports mode='3d' or mode='2d_tmz'")
             if self._boundary not in ("pec", "cpml"):
                 raise ValueError("solver='adi' supports boundary='pec' or 'cpml'")
             if self._dz_profile is not None:
@@ -465,6 +479,7 @@ class Simulation:
         self._ntff: tuple | None = None  # (corner_lo, corner_hi, freqs)
         self._tfsf: _TFSFEntry | None = None
         self._dft_planes: list[_DFTPlaneEntry] = []
+        self._flux_monitors: list[_FluxMonitorEntry] = []
         self._waveguide_ports: list[_WaveguidePortEntry] = []
         self._periodic_axes: str = ""
         self._refinement: dict | None = None
@@ -1361,6 +1376,70 @@ class Simulation:
         ))
         return self
 
+    def add_flux_monitor(
+        self,
+        *,
+        axis: str,
+        coordinate: float,
+        freqs: jnp.ndarray | None = None,
+        n_freqs: int = 50,
+        size: tuple[float, float] | None = None,
+        center: tuple[float, float] | None = None,
+        name: str | None = None,
+    ) -> "Simulation":
+        """Add a Poynting flux monitor on a plane (Meep flux-region equivalent).
+
+        Accumulates frequency-domain E and H tangential components to
+        compute ``integral Re(E x H*) . n_hat dA`` at each frequency.
+
+        Parameters
+        ----------
+        axis : "x", "y", or "z"
+            Plane normal axis.
+        coordinate : float
+            Physical coordinate in metres along the selected axis.
+        freqs : array or None
+            Monitor frequencies in Hz.
+        n_freqs : int
+            Number of frequencies if freqs is None.
+        size : (float, float) or None
+            Physical extent in the two tangential directions.  ``None``
+            means the full plane (legacy behaviour).
+        center : (float, float) or None
+            Physical centre of the flux region in the two tangential
+            directions.  ``None`` defaults to the domain midpoint.
+            For example, for an x-normal monitor the two tangential
+            axes are (y, z).
+        name : str or None
+            Result key. Default: ``flux_{axis}_{idx}``.
+        """
+        if axis not in ("x", "y", "z"):
+            raise ValueError(f"axis must be 'x', 'y', or 'z', got {axis!r}")
+        axis_idx = {"x": 0, "y": 1, "z": 2}[axis]
+        if coordinate < 0 or coordinate > self._domain[axis_idx]:
+            raise ValueError(
+                f"coordinate {coordinate} m is outside the {axis}-domain "
+                f"[0, {self._domain[axis_idx]}]"
+            )
+        if freqs is not None:
+            freqs_arr = jnp.asarray(freqs)
+        else:
+            freqs_arr = None
+
+        if name is None:
+            name = f"flux_{axis}_{len(self._flux_monitors)}"
+
+        self._flux_monitors.append(_FluxMonitorEntry(
+            name=name,
+            axis=axis,
+            coordinate=coordinate,
+            freqs=freqs_arr,
+            n_freqs=n_freqs,
+            size=size,
+            center=center,
+        ))
+        return self
+
     # ---- NTFF ----
 
     def add_ntff_box(
@@ -1407,6 +1486,7 @@ class Simulation:
                 cpml_layers=self._cpml_layers,
                 cpml_axes=cpml_axes,
                 mode=self._mode,
+                kappa_max=self._cpml_kappa_max,
                 pec_faces=self._pec_faces,
             )
         return Grid(
@@ -1415,6 +1495,7 @@ class Simulation:
             dx=self._dx,
             cpml_layers=self._cpml_layers,
             mode=self._mode,
+            kappa_max=self._cpml_kappa_max,
             pec_faces=self._pec_faces,
         )
 
@@ -1478,6 +1559,51 @@ class Simulation:
                         lorentz_masks_by_pole[pole] = lorentz_masks_by_pole[pole] | mask
                     else:
                         lorentz_masks_by_pole[pole] = mask
+
+        # Extend material properties into CPML padding so that guided
+        # modes in dielectric waveguides see an impedance-matched absorber
+        # (equivalent to UPML).  Each CPML face copies the interior-edge
+        # slice outward, as if the geometry continued beyond the domain.
+        if self._boundary == "cpml" and self._cpml_layers > 0:
+            n = self._cpml_layers
+            for arr_name in ("eps_r", "sigma", "mu_r"):
+                arr = locals()[arr_name]
+                if grid.pad_x > 0:
+                    arr = arr.at[:n, :, :].set(arr[n:n+1, :, :])      # x-lo
+                    arr = arr.at[-n:, :, :].set(arr[-n-1:-n, :, :])    # x-hi
+                if grid.pad_y > 0:
+                    arr = arr.at[:, :n, :].set(arr[:, n:n+1, :])      # y-lo
+                    arr = arr.at[:, -n:, :].set(arr[:, -n-1:-n, :])    # y-hi
+                if grid.pad_z > 0:
+                    arr = arr.at[:, :, :n].set(arr[:, :, n:n+1])      # z-lo
+                    arr = arr.at[:, :, -n:].set(arr[:, :, -n-1:-n])    # z-hi
+                locals()[arr_name]  # reassign through locals won't work; use explicit
+            # Re-bind after modification (locals() trick doesn't persist)
+            eps_r_ext = eps_r
+            sigma_ext = sigma
+            mu_r_ext = mu_r
+            if grid.pad_x > 0:
+                eps_r_ext = eps_r_ext.at[:n,:,:].set(eps_r_ext[n:n+1,:,:])
+                eps_r_ext = eps_r_ext.at[-n:,:,:].set(eps_r_ext[-n-1:-n,:,:])
+                sigma_ext = sigma_ext.at[:n,:,:].set(sigma_ext[n:n+1,:,:])
+                sigma_ext = sigma_ext.at[-n:,:,:].set(sigma_ext[-n-1:-n,:,:])
+                mu_r_ext = mu_r_ext.at[:n,:,:].set(mu_r_ext[n:n+1,:,:])
+                mu_r_ext = mu_r_ext.at[-n:,:,:].set(mu_r_ext[-n-1:-n,:,:])
+            if grid.pad_y > 0:
+                eps_r_ext = eps_r_ext.at[:,:n,:].set(eps_r_ext[:,n:n+1,:])
+                eps_r_ext = eps_r_ext.at[:,-n:,:].set(eps_r_ext[:,-n-1:-n,:])
+                sigma_ext = sigma_ext.at[:,:n,:].set(sigma_ext[:,n:n+1,:])
+                sigma_ext = sigma_ext.at[:,-n:,:].set(sigma_ext[:,-n-1:-n,:])
+                mu_r_ext = mu_r_ext.at[:,:n,:].set(mu_r_ext[:,n:n+1,:])
+                mu_r_ext = mu_r_ext.at[:,-n:,:].set(mu_r_ext[:,-n-1:-n,:])
+            if grid.pad_z > 0:
+                eps_r_ext = eps_r_ext.at[:,:,:n].set(eps_r_ext[:,:,n:n+1])
+                eps_r_ext = eps_r_ext.at[:,:,-n:].set(eps_r_ext[:,:,-n-1:-n])
+                sigma_ext = sigma_ext.at[:,:,:n].set(sigma_ext[:,:,n:n+1])
+                sigma_ext = sigma_ext.at[:,:,-n:].set(sigma_ext[:,:,-n-1:-n])
+                mu_r_ext = mu_r_ext.at[:,:,:n].set(mu_r_ext[:,:,n:n+1])
+                mu_r_ext = mu_r_ext.at[:,:,-n:].set(mu_r_ext[:,:,-n-1:-n])
+            eps_r, sigma, mu_r = eps_r_ext, sigma_ext, mu_r_ext
 
         materials = MaterialArrays(eps_r=eps_r, sigma=sigma, mu_r=mu_r)
 
@@ -1718,6 +1844,34 @@ class Simulation:
         # Build configs — may be a single config or a list of configs per port
         has_multimode = any(entry.n_modes > 1 for entry in entries)
         raw_cfgs = [self._build_waveguide_port_config(entry, grid, freqs, n_steps) for entry in entries]
+
+        # Unify source waveform across all ports so that the S-matrix
+        # extraction uses identical excitation.  Different source spectra
+        # (from mismatched f0/bandwidth) cause S11 ≠ S22 artifacts in the
+        # unnormalized path because V/I decomposition error varies with
+        # frequency.  Use port 0's waveform as the canonical source.
+        def _flatten_cfgs(cfgs):
+            out = []
+            for c in cfgs:
+                if isinstance(c, list):
+                    out.extend(c)
+                else:
+                    out.append(c)
+            return out
+
+        flat0 = _flatten_cfgs(raw_cfgs)
+        ref_t0 = flat0[0].src_t0
+        ref_tau = flat0[0].src_tau
+        need_unify = any(
+            c.src_t0 != ref_t0 or c.src_tau != ref_tau for c in flat0[1:]
+        )
+        if need_unify:
+            raw_cfgs = [
+                cfg._replace(src_t0=ref_t0, src_tau=ref_tau)
+                if not isinstance(cfg, list)
+                else [c._replace(src_t0=ref_t0, src_tau=ref_tau) for c in cfg]
+                for cfg in raw_cfgs
+            ]
 
         if has_multimode:
             # Multi-mode path: each raw_cfg is a list of WaveguidePortConfig
@@ -2369,8 +2523,8 @@ class Simulation:
 
     def _validate_adi_configuration(self, materials: MaterialArrays, debye_spec, lorentz_spec) -> None:
         """Validate that the current simulation is compatible with the ADI path."""
-        if self._mode != "2d_tmz":
-            raise ValueError("solver='adi' currently supports only mode='2d_tmz'")
+        if self._mode not in ("2d_tmz", "3d"):
+            raise ValueError("solver='adi' supports mode='3d' or mode='2d_tmz'")
         if self._boundary not in ("pec", "cpml"):
             raise ValueError("solver='adi' supports boundary='pec' or 'cpml'")
         if self._refinement is not None:
@@ -2397,12 +2551,13 @@ class Simulation:
         # Internal absorbing layers also use sigma, so no restriction needed.
         for pe in self._ports:
             if pe.impedance != 0.0 or pe.extent is not None:
-                raise ValueError("solver='adi' currently supports only add_source()-style soft Ez sources")
-            if pe.component != "ez":
-                raise ValueError("solver='adi' currently supports only Ez soft sources in TMz mode")
+                raise ValueError("solver='adi' currently supports only add_source()-style soft sources")
+            if self._mode == "2d_tmz" and pe.component != "ez":
+                raise ValueError("solver='adi' in 2D TMz mode supports only Ez soft sources")
+        _valid_adi_probes = {"ez", "hx", "hy"} if self._mode == "2d_tmz" else {"ex", "ey", "ez", "hx", "hy", "hz"}
         for probe in self._probes:
-            if probe.component not in ("ez", "hx", "hy"):
-                raise ValueError("solver='adi' currently supports probes on ez/hx/hy only")
+            if probe.component not in _valid_adi_probes:
+                raise ValueError(f"solver='adi' supports probes on {_valid_adi_probes} only")
 
     def _run_adi_from_materials(
         self,
@@ -2415,7 +2570,7 @@ class Simulation:
         pec_mask: jnp.ndarray | None = None,
         return_state: bool = True,
     ):
-        """Run the integrated 2D TMz ADI solver path."""
+        """Run the integrated ADI solver path (2D TMz or 3D)."""
         import copy
 
         self._validate_adi_configuration(materials, debye_spec, lorentz_spec)
@@ -2423,6 +2578,67 @@ class Simulation:
         dt = float(grid.dt * self._adi_cfl_factor)
         times = jnp.arange(n_steps, dtype=jnp.float32) * dt
 
+        grid_out = copy.copy(grid)
+        grid_out.dt = dt
+
+        # ---- 3D path ----
+        if self._mode == "3d":
+            from rfx.adi import run_adi_3d, ADIState3D, make_adi_absorbing_sigma_3d
+
+            sources_3d = []
+            for pe in self._ports:
+                i, j, k = grid.position_to_index(pe.position)
+                waveform = jax.vmap(pe.waveform)(times)
+                sources_3d.append((i, j, k, pe.component, waveform))
+
+            probes_3d = []
+            for pe in self._probes:
+                i, j, k = grid.position_to_index(pe.position)
+                probes_3d.append((i, j, k, pe.component))
+
+            eps_r_3d = materials.eps_r
+            sigma_3d = materials.sigma
+
+            if self._boundary == "cpml" and self._cpml_layers > 0:
+                nx, ny, nz = grid.shape
+                absorb_sigma = make_adi_absorbing_sigma_3d(
+                    nx, ny, nz, self._cpml_layers, grid.dx, grid.dx, grid.dx)
+                sigma_3d = sigma_3d + absorb_sigma
+
+            shape = grid.shape
+            zeros = jnp.zeros(shape, dtype=jnp.float32)
+            ex_f, ey_f, ez_f, hx_f, hy_f, hz_f, probe_data = run_adi_3d(
+                zeros, zeros, zeros, zeros, zeros, zeros,
+                eps_r_3d, sigma_3d,
+                dt, grid.dx, grid.dx, grid.dx,
+                n_steps,
+                sources=sources_3d,
+                probes=probes_3d,
+                pec_mask=pec_mask,
+            )
+            if probe_data is None:
+                probe_data = jnp.zeros((n_steps, 0), dtype=jnp.float32)
+
+            if return_state:
+                state = ADIState3D(
+                    ex=ex_f, ey=ey_f, ez=ez_f,
+                    hx=hx_f, hy=hy_f, hz=hz_f,
+                    step=jnp.asarray(n_steps, dtype=jnp.int32),
+                )
+                return Result(
+                    state=state,
+                    time_series=probe_data,
+                    s_params=None, freqs=None,
+                    grid=grid_out, dt=dt,
+                    freq_range=(self._freq_max / 10, self._freq_max, self._boundary),
+                )
+            return ForwardResult(
+                time_series=probe_data,
+                ntff_data=None, ntff_box=None,
+                grid=grid_out,
+            )
+
+        # ---- 2D TMz path ----
         sources = []
         for pe in self._ports:
             i, j, _ = grid.position_to_index(pe.position)
@@ -2467,9 +2683,6 @@ class Simulation:
         )
         if probe_data is None:
             probe_data = jnp.zeros((n_steps, 0), dtype=ez_f.dtype)
-
-        grid_out = copy.copy(grid)
-        grid_out.dt = dt
 
         if return_state:
             state = ADIState2D(

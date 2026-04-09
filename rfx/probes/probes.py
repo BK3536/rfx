@@ -424,6 +424,139 @@ from rfx.core.dft_utils import dft_window_weight as _dft_window_weight
 
 
 # ---------------------------------------------------------------------------
+# Poynting Flux DFT Monitor (Meep flux-region equivalent)
+# ---------------------------------------------------------------------------
+
+class FluxMonitor(NamedTuple):
+    """Running DFT accumulator for Poynting flux through a plane.
+
+    Accumulates frequency-domain E and H tangential components on a
+    (possibly finite-size) region of the plane to compute
+    ∫ Re(E × H*) · n̂ dA at each frequency.
+
+    For x-normal plane: flux = Re(Ey·Hz* - Ez·Hy*) integrated over y,z.
+    For y-normal plane: flux = Re(Ez·Hx* - Ex·Hz*) integrated over x,z.
+    For z-normal plane: flux = Re(Ex·Hy* - Ey·Hx*) integrated over x,y.
+    """
+    e1_dft: jnp.ndarray   # (n_freqs, n1, n2) complex — first tangential E
+    e2_dft: jnp.ndarray   # (n_freqs, n1, n2) complex — second tangential E
+    h1_dft: jnp.ndarray   # (n_freqs, n1, n2) complex — first tangential H
+    h2_dft: jnp.ndarray   # (n_freqs, n1, n2) complex — second tangential H
+    freqs: jnp.ndarray    # (n_freqs,) float
+    axis: int             # normal axis (0=x, 1=y, 2=z)
+    index: int            # grid index along normal axis
+    dx: float             # cell size for area integration
+    total_steps: int
+    window: str
+    window_alpha: float
+    lo1: int = 0          # start index in first tangential dimension
+    hi1: int = -1         # end index (exclusive); -1 = full extent
+    lo2: int = 0          # start index in second tangential dimension
+    hi2: int = -1         # end index (exclusive); -1 = full extent
+
+
+# Tangential field component names for each normal axis
+_FLUX_COMPONENTS = {
+    0: ("ey", "ez", "hy", "hz"),  # x-normal: Ey, Ez, Hy, Hz
+    1: ("ez", "ex", "hz", "hx"),  # y-normal: Ez, Ex, Hz, Hx
+    2: ("ex", "ey", "hx", "hy"),  # z-normal: Ex, Ey, Hx, Hy
+}
+
+
+def init_flux_monitor(
+    axis: int,
+    index: int,
+    freqs: jnp.ndarray,
+    grid_shape: tuple[int, int, int],
+    dx: float,
+    dft_total_steps: int = 0,
+    dft_window: str = "rect",
+    dft_window_alpha: float = 0.25,
+    lo1: int = 0,
+    hi1: int = -1,
+    lo2: int = 0,
+    hi2: int = -1,
+) -> FluxMonitor:
+    """Create a Poynting flux monitor on a (possibly finite-size) plane region.
+
+    ``lo1/hi1`` and ``lo2/hi2`` restrict the DFT accumulation to a
+    sub-region of the tangential plane.  -1 means "full extent".
+    """
+    if axis == 0:
+        full1, full2 = grid_shape[1], grid_shape[2]
+    elif axis == 1:
+        full1, full2 = grid_shape[0], grid_shape[2]
+    else:
+        full1, full2 = grid_shape[0], grid_shape[1]
+
+    if hi1 < 0:
+        hi1 = full1
+    if hi2 < 0:
+        hi2 = full2
+
+    n1 = hi1 - lo1
+    n2 = hi2 - lo2
+    nf = len(freqs)
+    zeros = jnp.zeros((nf, n1, n2), dtype=jnp.complex128)
+    return FluxMonitor(
+        e1_dft=zeros, e2_dft=zeros,
+        h1_dft=zeros, h2_dft=zeros,
+        freqs=freqs, axis=axis, index=index,
+        dx=float(dx),
+        total_steps=int(dft_total_steps),
+        window=dft_window,
+        window_alpha=float(dft_window_alpha),
+        lo1=lo1, hi1=hi1, lo2=lo2, hi2=hi2,
+    )
+
+
+def update_flux_monitor(
+    mon: FluxMonitor, state, dt: float,
+) -> FluxMonitor:
+    """Accumulate one timestep of E and H tangential fields."""
+    t = state.step * dt
+    e1_name, e2_name, h1_name, h2_name = _FLUX_COMPONENTS[mon.axis]
+
+    def _slice(field):
+        if mon.axis == 0:
+            return field[mon.index, :, :]
+        elif mon.axis == 1:
+            return field[:, mon.index, :]
+        return field[:, :, mon.index]
+
+    e1 = _slice(getattr(state, e1_name))
+    e2 = _slice(getattr(state, e2_name))
+    h1 = _slice(getattr(state, h1_name))
+    h2 = _slice(getattr(state, h2_name))
+
+    phase = jnp.exp(-1j * 2.0 * jnp.pi * mon.freqs * t)
+    weight = _dft_window_weight(state.step, mon.total_steps, mon.window, mon.window_alpha)
+    kernel = phase[:, None, None] * dt * weight
+
+    return mon._replace(
+        e1_dft=mon.e1_dft + e1[None, :, :] * kernel,
+        e2_dft=mon.e2_dft + e2[None, :, :] * kernel,
+        h1_dft=mon.h1_dft + h1[None, :, :] * kernel,
+        h2_dft=mon.h2_dft + h2[None, :, :] * kernel,
+    )
+
+
+def flux_spectrum(mon: FluxMonitor) -> jnp.ndarray:
+    """Compute Poynting flux spectrum from accumulated DFT fields.
+
+    Returns
+    -------
+    flux : (n_freqs,) float
+        ∫ Re(E × H*) · n̂ dA at each frequency.
+        Positive = power flowing in +axis direction.
+    """
+    # Poynting: S_n = E1*H2* - E2*H1* (cyclic cross product)
+    dA = mon.dx * mon.dx
+    integrand = mon.e1_dft * jnp.conj(mon.h2_dft) - mon.e2_dft * jnp.conj(mon.h1_dft)
+    return jnp.real(jnp.sum(integrand, axis=(-2, -1))) * dA
+
+
+# ---------------------------------------------------------------------------
 # Wire port voltage / current extraction
 # ---------------------------------------------------------------------------
 

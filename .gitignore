@@ -13,6 +13,19 @@ docs/research_notes/
 docs/codex_specs/
 docs/reports/
 docs/superpowers/
+docs/agent-memory/
+docs/agent/
+docs/guide/
+docs/guides/
+
+# Internal scripts (debugging, infra sync, GPU validation)
+scripts/validate_codex_fixes.py
+scripts/gpu_verify_issues.py
+scripts/check_public_docs_*.py
+scripts/export_public_docs_to_gitops.py
+scripts/test_patch_nonuniform.py
+scripts/validate_new_features.py
+scripts/generate_field_snapshots.py
 
 # VESSL cluster configs (internal infra)
 **/vessl*.yaml
