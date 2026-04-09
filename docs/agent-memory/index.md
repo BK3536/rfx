@@ -1,5 +1,9 @@
 # rfx Agent Memory — Durable Knowledge Index
 
+## Read first
+
+- `public-site-sync-checklist.md`
+
 ## Session Handover (2026-04-07, updated end of session 2)
 
 ### Completed This Session
