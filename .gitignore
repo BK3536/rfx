@@ -31,7 +31,10 @@ scripts/generate_field_snapshots.py
 **/vessl*.yaml
 **/vessl*.yml
 
-# Dev trial/slop examples (only 01-08, 40_*, 50_* are public)
+# Scratch / reference examples (not part of rfx)
+forge_example/
+
+# Dev trial/slop examples
 examples/benchmark_jax_vs_numpy.py
 examples/gpu_benchmark.py
 examples/gpu_benchmark_results.json
