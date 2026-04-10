@@ -8,6 +8,12 @@ sidebar:
 
 rfx is a JAX-based differentiable 3D FDTD electromagnetic simulator designed with agent-friendliness as a first-class concern. This guide explains how LLM agents (Claude, GPT, Gemini, etc.) can use rfx to autonomously design and simulate RF structures.
 
+Agents should treat the **uniform Cartesian Yee RF workflow** as the current
+claims-bearing reference lane. Non-uniform graded-z, distributed, subgridding,
+and Floquet/Bloch workflows should be treated as shadow or experimental lanes
+unless the task explicitly requires them and the current support matrix allows
+the requested combination.
+
 ---
 
 ## Why rfx Is Agent-Friendly
@@ -84,6 +90,9 @@ result = (
 | Inverse design (gradient) | Full | `DesignRegion`, JAX grad |
 | Oblique incidence scattering | Partial | `add_tfsf_source(angle_deg=...)` |
 | Eigenmode expansion | Optional | `solve_waveguide_modes()` (requires scipy) |
+
+For thin-substrate graded-z workflows, prefer to treat them as a
+**shadow-qualification path** rather than the default first choice.
 
 ---
 

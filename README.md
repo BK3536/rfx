@@ -13,6 +13,8 @@
 
 **v1.3.1** — 500+ tests, GPU-benchmarked (7,309 Mcells/s on RTX 4090), 11-case accuracy validation.
 
+> **Project status (April 2026):** `rfx` is still in active validation and early conceptualization. Treat the current `main` branch as an initial-stage release rather than a finalized, fully qualified simulator; the support surface, validation evidence, and higher-level workflows will continue to be tightened and expanded in upcoming iterations.
+
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Tests](https://github.com/bk-squared/rfx/actions/workflows/test.yml/badge.svg)](https://github.com/bk-squared/rfx/actions)
 [![PyPI](https://img.shields.io/pypi/v/rfx-fdtd)](https://pypi.org/project/rfx-fdtd/)
@@ -20,16 +22,21 @@
 
 ## At a Glance
 
+Current correctness-bearing support is centered on the **uniform Cartesian Yee
+reference lane**. Non-uniform graded-z, distributed execution, SBP-SAT
+subgridding, and Floquet/Bloch workflows should be treated according to
+`docs/guides/support_matrix.md`, not as blanket guarantees.
+
 | | |
 |---|---|
 | **GPU-accelerated** | 7,309 Mcells/s on RTX 4090, 5,249 on A6000 via `jax.lax.scan` JIT |
 | **Differentiable** | `jax.grad` through full time-stepping for inverse design |
 | **Topology optimization** | Density-based with filtering, projection, and beta continuation |
 | **Conformal PEC** | Dey-Mittra method for 2nd-order accuracy on curved conductors |
-| **Multi-GPU** | `jax.pmap` distributed FDTD with 1D slab decomposition |
+| **Multi-GPU** | `jax.pmap` distributed FDTD with 1D slab decomposition (experimental lane) |
 | **SBP-SAT subgridding** | JIT-compiled local mesh refinement (experimental in 3D) |
 | **Multi-mode ports** | Analytical TE/TM eigenmodes for waveguide S-matrix |
-| **Floquet ports** | Phased-array unit-cell analysis with Bloch periodic BC |
+| **Floquet ports** | Phased-array unit-cell analysis with Bloch periodic BC (experimental lane) |
 | **Accuracy validated** | 5-case benchmark against Balanis/Pozar (patch 1.97%, cavity 0.016%) |
 | **500+ tests** | CI with ruff lint + pytest, 0 xfails |
 
@@ -108,8 +115,8 @@ Cross-validation vs Meep/OpenEMS: 0.000-0.007% on cavities and waveguides.
 - 3D/2D Yee FDTD with CFS-CPML (kappa=5.0, < -40 dB reflectivity)
 - Conformal PEC via Dey-Mittra (2nd-order on curved surfaces)
 - SBP-SAT subgridding with JIT (experimental in 3D, stable in 1D/2D)
-- Non-uniform z-mesh for thin substrates
-- Multi-GPU via jax.pmap (1D slab decomposition, PEC+CPML+dispersion)
+- Non-uniform z-mesh for thin substrates (shadow qualification lane)
+- Multi-GPU via jax.pmap (experimental distributed lane)
 - Mixed precision (float16 fields, 2x memory reduction)
 - Auto-configuration from geometry + frequency range
 
@@ -117,7 +124,7 @@ Cross-validation vs Meep/OpenEMS: 0.000-0.007% on cavities and waveguides.
 - GaussianPulse, ModulatedGaussian, CW, custom waveforms
 - Lumped/wire ports, lumped RLC (series/parallel ADE)
 - Multi-mode waveguide ports (analytical TE/TM eigenmodes)
-- Floquet ports with Bloch periodic BC
+- Floquet ports with Bloch periodic BC (experimental lane)
 - Oblique TFSF (2D TMz + TEz auxiliary grids)
 
 ### Materials
@@ -148,6 +155,11 @@ Cross-validation vs Meep/OpenEMS: 0.000-0.007% on cavities and waveguides.
 ## Documentation
 
 Full documentation: **[remilab.ai/rfx](https://remilab.ai/rfx/)**
+
+Repo-level support and reference-lane contract artifacts:
+
+- `docs/guides/support_matrix.md`
+- `docs/guides/reference_lane_contract.md`
 
 Canonical public-doc sources in this repo:
 
