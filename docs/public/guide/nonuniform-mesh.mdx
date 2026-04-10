@@ -6,7 +6,24 @@ sidebar:
 ---
 
 
-rfx supports a **graded z-profile** (non-uniform Yee grid) with uniform dx and dy. This is the standard approach used by CST Microwave Studio and OpenEMS for printed-circuit structures where the substrate is thin compared to the free-space wavelength.
+rfx provides a **graded z-profile** (non-uniform Yee grid) with uniform dx and
+dy. In the current support contract, this is a **shadow qualification lane**:
+retained for thin-substrate workflows, but not the current claims-bearing
+reference lane.
+
+### Current support status
+
+- retained for thin-substrate / layered RF qualification work
+- no silent fallback / no silent feature dropping
+- unsupported combinations now fail clearly
+
+Current unsupported combinations:
+- Floquet + non-uniform z mesh
+- NTFF + non-uniform z mesh
+- DFT planes + non-uniform z mesh
+- TFSF + non-uniform z mesh
+- waveguide ports + non-uniform z mesh
+- lumped RLC + non-uniform z mesh
 
 ---
 
@@ -14,8 +31,8 @@ rfx supports a **graded z-profile** (non-uniform Yee grid) with uniform dx and d
 
 | Situation | Recommendation |
 |---|---|
-| Substrate much thinner than wavelength (e.g., 1.6 mm FR4 at 2.4 GHz, lambda = 125 mm) | Non-uniform z mandatory |
-| Layer stack with multiple thin dielectric sheets | Non-uniform z for each layer |
+| Substrate much thinner than wavelength (e.g., 1.6 mm FR4 at 2.4 GHz, lambda = 125 mm) | Non-uniform z is the shadow-lane tool to evaluate |
+| Layer stack with multiple thin dielectric sheets | Non-uniform z for each layer, with shadow-lane caveats |
 | Bulk 3-D structure with no thin z-features | Uniform grid |
 | RCS / far-field only | Uniform grid is usually sufficient |
 

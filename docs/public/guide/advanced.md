@@ -8,6 +8,10 @@ This page collects features beyond the minimal builder workflow. The current
 advanced surface spans distributed execution, radiation-aware optimisation,
 material fitting, nonlinear materials, and a research-grade example bundle.
 
+These workflows are **not** the current claims-bearing reference lane. Use this
+page as an advanced/qualification surface, and prefer the uniform Cartesian
+Yee workflow when you need the most mature correctness envelope.
+
 ## Multi-GPU Distributed FDTD
 
 rfx can distribute the Yee update across multiple GPUs on a single host via
@@ -23,8 +27,8 @@ result = sim.run(n_steps=2000, devices=jax.devices()[:2])
 
 Current distributed support is strongest for slab-decomposed 3-D problems with
 PEC/CPML boundaries, soft sources, probes, dispersive media, and lumped-port
-workflows. Unsupported configurations are designed to fail clearly or fall back
-conservatively.
+workflows. Treat this as an **experimental lane** rather than a blanket support
+claim.
 
 ## NTFF-Aware Far-Field Optimisation
 
@@ -110,7 +114,8 @@ part of the current public capability surface.
 
 ### Non-uniform z mesh
 
-For thin substrates and layered RF structures, `rfx` supports graded z spacing:
+For thin substrates and layered RF structures, `rfx` provides a **graded z
+shadow lane**:
 
 ```python
 sim = Simulation(
@@ -122,6 +127,14 @@ sim = Simulation(
 ```
 
 See [Non-Uniform Mesh](/rfx/guide/nonuniform-mesh/) for the recommended workflow.
+
+Current non-uniform hard-fail combinations include:
+- Floquet + non-uniform z mesh
+- NTFF + non-uniform z mesh
+- DFT planes + non-uniform z mesh
+- TFSF + non-uniform z mesh
+- waveguide ports + non-uniform z mesh
+- lumped RLC + non-uniform z mesh
 
 ### Lumped RLC elements
 
@@ -168,4 +181,5 @@ The repo ships a research-style example bundle under `examples/50_advanced/`:
 - visualization showcase
 
 The matching `examples/50_advanced/gpu_validation/` scripts provide a compact
-regression layer for these workflows.
+regression layer for these workflows, but they should still be treated as
+advanced-lane evidence rather than blanket support promotion.

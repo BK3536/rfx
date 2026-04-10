@@ -12,6 +12,11 @@ rfx is a 3-D finite-difference time-domain (FDTD) electromagnetic simulator buil
 The docs below cover the stable **v1.3.1** package surface and call out
 selected post-release improvements already merged on `main`.
 
+The current **claims-bearing reference lane** is the uniform Cartesian Yee RF
+workflow. Non-uniform graded-z, distributed, subgridding, and Floquet/Bloch
+surfaces should be treated as shadow or experimental lanes unless a guide says
+otherwise explicitly.
+
 ---
 
 ## Why rfx
@@ -19,15 +24,15 @@ selected post-release improvements already merged on `main`.
 | Feature | Detail |
 |---|---|
 | **GPU acceleration** | 7,309 Mcells/s on RTX 4090, 5,847 on RTX 3090, 5,249 on RTX A6000 |
-| **Multi-GPU distributed FDTD** | `jax.pmap` slab decomposition for larger 3-D jobs on a single multi-GPU host |
+| **Multi-GPU distributed FDTD** | `jax.pmap` slab decomposition for larger 3-D jobs on a single multi-GPU host (experimental lane) |
 | **Autodiff** | `jax.grad` through the full time-stepping loop for topology and shape optimization |
 | **Topology optimization** | Density-based filtering, projection, and beta continuation for inverse design |
 | **Time-domain optimization objectives** | Use proxy losses such as `minimize_reflected_energy()` and `maximize_transmitted_energy()` inside differentiable loops |
 | **Conformal PEC** | Dey-Mittra method for 2nd-order accuracy on curved conductors |
 | **Material fitting** | Debye/Lorentz fitting plus differentiable FDTD-based refinement from S-parameters |
-| **Non-uniform mesh + auto-config** | Graded z-profiles and `auto_configure()` for thin substrates and broadband setups |
+| **Non-uniform mesh + auto-config** | Graded z-profiles and `auto_configure()` for thin substrates and broadband setups (shadow lane) |
 | **Harminv resonance** | High-Q mode extraction with sub-bin frequency precision |
-| **Multi-mode + Floquet ports** | Rectangular TE/TM eigenmodes and phased-array unit-cell workflows with Bloch periodic BC |
+| **Multi-mode + Floquet ports** | Rectangular TE/TM eigenmodes and phased-array unit-cell workflows with Bloch periodic BC (Floquet is experimental) |
 | **Cross-validated** | Published 5-case RF validation plus earlier cavity/waveguide cross-validation vs. Meep and OpenEMS |
 | **500+ tests** | Pytest suite with lint + CPU/GPU coverage and advanced-example validation scripts |
 
@@ -57,7 +62,7 @@ pip install "jax[cuda12]" rfx-fdtd
 ## Recent highlights
 
 - **v1.3.x** added published-result validation, convergence-study helpers, mixed precision, RIS workflows, and major GPU speedups.
-- **v1.2.0** added **multi-GPU distributed FDTD** with CPML, dispersive materials, and lumped-port support in the distributed runner.
+- **v1.2.0** added **multi-GPU distributed FDTD** as an advanced lane for larger 3-D jobs; treat support details as guide-scoped rather than blanket guarantees.
 - Current `main` adds **JAX-differentiable far-field computation**, NTFF-aware `optimize()` objectives, improved inverse-design UX, and a **research-grade advanced example bundle** under `examples/50_advanced/`.
 
 Pages that describe evolving or research-grade workflows should say so
@@ -115,9 +120,9 @@ Simulation ──► add_material / add / add_port / add_probe / add_ntff_box
 - [Materials & Geometry](guide/materials-geometry/) — library materials, Debye/Lorentz, CSG shapes, PCB stackup
 - [Sources & Ports](guide/sources-ports/) — point sources, lumped/wire ports, multi-mode waveguide ports, Floquet ports
 - [Probes & S-Parameters](guide/probes-sparams/) — DFT probes, S-matrix, Harminv, de-embedding, Smith chart
-- [Non-Uniform Mesh](guide/nonuniform-mesh/) — graded z-profiles for thin-substrate structures
+- [Non-Uniform Mesh](guide/nonuniform-mesh/) — graded z-profiles for thin-substrate structures (shadow qualification lane)
 - [Waveguide Ports](guide/waveguide-ports/) — multi-mode waveguide S-matrix with TE/TM eigenmodes
-- [Floquet Ports](guide/floquet-ports/) — phased-array unit-cell analysis with Bloch BC
+- [Floquet Ports](guide/floquet-ports/) — phased-array unit-cell analysis with Bloch BC (experimental lane)
 
 ### Analysis & Validation
 
