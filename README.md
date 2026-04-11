@@ -11,7 +11,7 @@
 
 **Differentiable 3D FDTD electromagnetic simulator for RF and microwave engineering — powered by JAX.**
 
-**v1.3.1** — 500+ tests, GPU-benchmarked (7,309 Mcells/s on RTX 4090), 11-case accuracy validation.
+**v1.4.0** — 500+ tests, GPU-benchmarked (7,309 Mcells/s on RTX 4090), published RF benchmarks, and current-main cross-solver validation notes.
 
 > **Project status (April 2026):** `rfx` is still in active validation and early conceptualization. Treat the current `main` branch as an initial-stage release rather than a finalized, fully qualified simulator; the support surface, validation evidence, and higher-level workflows will continue to be tightened and expanded in upcoming iterations.
 
@@ -33,7 +33,7 @@ subgridding, and Floquet/Bloch workflows should be treated according to
 | **Differentiable** | `jax.grad` through full time-stepping for inverse design |
 | **Topology optimization** | Density-based with filtering, projection, and beta continuation |
 | **Conformal PEC** | Dey-Mittra method for 2nd-order accuracy on curved conductors |
-| **Multi-GPU** | `jax.pmap` distributed FDTD with 1D slab decomposition (experimental lane) |
+| **Multi-GPU** | Single-host multi-GPU distributed FDTD with 1D slab decomposition (experimental lane) |
 | **SBP-SAT subgridding** | JIT-compiled local mesh refinement (experimental in 3D) |
 | **Multi-mode ports** | Analytical TE/TM eigenmodes for waveguide S-matrix |
 | **Floquet ports** | Phased-array unit-cell analysis with Bloch periodic BC (experimental lane) |
@@ -207,7 +207,7 @@ Gitops-side snapshot/build CI lives in the deploy repo:
   title        = {rfx: JAX-based differentiable 3D FDTD simulator for RF engineering},
   institution  = {REMI Lab, Chungnam National University},
   year         = {2026},
-  version      = {1.3.1},
+  version      = {1.4.0},
   url          = {https://github.com/bk-squared/rfx}
 }
 ```
