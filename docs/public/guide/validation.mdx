@@ -49,6 +49,8 @@ The strongest independent checks live in the test suite:
 - `tests/test_meep_crossval_patch.py` — dielectric-loaded cavity vs Meep.
 - `tests/test_crossval_comprehensive.py` — multi-case comparisons against Meep
   and OpenEMS.
+- `examples/crossval/12_patch_antenna.py` — current-main practical patch
+  resonance cross-check vs OpenEMS.
 
 Use these comparisons when you want to justify the solver core rather than a
 single RF design workflow.
@@ -59,10 +61,37 @@ single RF design workflow.
 | Dielectric-loaded cavity resonances | `tests/test_meep_crossval_patch.py`, `tests/test_crossval_comprehensive.py` | The dielectric-loaded cases stay within the documented cross-solver tolerance. |
 | WR-90 cutoff | `tests/test_crossval_comprehensive.py` | The cutoff case is essentially exact at the documented resolution. |
 | Lumped-port sanity checks | `tests/test_crossval_comprehensive.py` | The port model preserves the expected magnitude and phase behavior. |
+| Finite-ground-plane 2.4 GHz patch resonance | `examples/crossval/12_patch_antenna.py` | The current practical patch workflow aligns with OpenEMS when both solvers use the physically correct finite-ground-plane + PML setup. Treat this as workflow evidence, not as the primary benchmark table. |
 
 The public summary in `README.md` currently quotes 0.000–0.007% agreement on
 cavities and waveguides. Keep that number paired with the exact benchmark family
 it describes.
+
+### Current-main practical patch check
+
+The latest practical patch cross-check lives in
+`examples/crossval/12_patch_antenna.py`. It is useful because it exercises a
+real thin-substrate antenna workflow rather than a cavity-like benchmark, but
+it still needs careful wording:
+
+- it uses a **finite** ground plane modelled as geometry, not
+  `pec_faces={"z_lo"}`
+- it uses **PML**, not MUR, on the OpenEMS reference side
+- it relies on **Harminv resonance extraction** as the primary comparison, with
+  lumped-port S11 used as a secondary diagnostic
+- it uses graded z-resolution, so it belongs in the **workflow-validation**
+  layer rather than the claims-bearing uniform-Yee benchmark table
+
+| Measurement | Resonance | Delta vs Balanis TL |
+|---|---:|---:|
+| Balanis transmission-line model | 2.4235 GHz | — |
+| rfx Harminv | 2.4621 GHz | +1.59% |
+| OpenEMS Harminv | 2.4868 GHz | +2.61% |
+| rfx vs OpenEMS | — | **0.99%** |
+
+That result is strong evidence that the current finite-ground-plane patch setup
+is physically coherent. It is **not** a reason to skip the published benchmark
+table above when making top-level public claims.
 
 ---
 
@@ -87,6 +116,7 @@ use them as the primary numerical anchor for solver accuracy.
 | Script / area | Purpose |
 |---|---|
 | `examples/40_accuracy_validation/run_all.py` | Runs the core published benchmark set |
+| `examples/crossval/12_patch_antenna.py` | Runs the current-main FR4 patch cross-check against OpenEMS |
 | `examples/50_advanced/gpu_validation/run_gpu_validation.py` | Runs the advanced workflow regression checks |
 | `tests/test_crossval_comprehensive.py` | Compact reference for the strongest cross-solver assertions |
 | `docs/public/guide/changelog.mdx` | Public summary of current headline results |

@@ -9,7 +9,7 @@ sidebar:
 
 rfx is a 3-D finite-difference time-domain (FDTD) electromagnetic simulator built in JAX. It targets RF and microwave engineers who need accurate broadband field solutions, practical RF workflow tooling, and native gradient support for inverse design — without leaving Python.
 
-The docs below cover the stable **v1.3.1** package surface and call out
+The docs below cover the stable **v1.4.0** package surface and call out
 selected post-release improvements already merged on `main`.
 
 The current **claims-bearing reference lane** is the uniform Cartesian Yee RF
@@ -24,7 +24,7 @@ otherwise explicitly.
 | Feature | Detail |
 |---|---|
 | **GPU acceleration** | 7,309 Mcells/s on RTX 4090, 5,847 on RTX 3090, 5,249 on RTX A6000 |
-| **Multi-GPU distributed FDTD** | `jax.pmap` slab decomposition for larger 3-D jobs on a single multi-GPU host (experimental lane) |
+| **Multi-GPU distributed FDTD** | Single-host slab-decomposed execution for larger 3-D jobs on a multi-GPU machine (experimental lane) |
 | **Autodiff** | `jax.grad` through the full time-stepping loop for topology and shape optimization |
 | **Topology optimization** | Density-based filtering, projection, and beta continuation for inverse design |
 | **Time-domain optimization objectives** | Use proxy losses such as `minimize_reflected_energy()` and `maximize_transmitted_energy()` inside differentiable loops |
@@ -63,7 +63,8 @@ pip install "jax[cuda12]" rfx-fdtd
 
 - **v1.3.x** added published-result validation, convergence-study helpers, mixed precision, RIS workflows, and major GPU speedups.
 - **v1.2.0** added **multi-GPU distributed FDTD** as an advanced lane for larger 3-D jobs; treat support details as guide-scoped rather than blanket guarantees.
-- Current `main` adds **JAX-differentiable far-field computation**, NTFF-aware `optimize()` objectives, improved inverse-design UX, and a **research-grade advanced example bundle** under `examples/50_advanced/`.
+- **v1.4.0** added **JAX-differentiable far-field computation**, NTFF-aware `optimize()` objectives, improved inverse-design UX, and a **research-grade advanced example bundle** under `examples/50_advanced/`.
+- Current `main` also adds a **2.4 GHz finite-ground-plane patch cross-check** under `examples/crossval/12_patch_antenna.py`, where the current rfx workflow and OpenEMS agree within **0.99%** on the resonance when both solvers use the physically correct setup.
 
 Pages that describe evolving or research-grade workflows should say so
 explicitly. Use the user guide for the supported surface, and treat advanced or
@@ -166,6 +167,10 @@ Simulation ──► add_material / add / add_port / add_probe / add_ntff_box
 ## Repo examples
 
 The public site focuses on guides. For runnable research-style workflows, see `examples/50_advanced/` for patch optimization, waveguide inverse design, broadband matching, array coupling, dielectric-lens shaping, material characterization, and GPU validation scripts.
+
+For the current practical patch-validation reference, also see
+`examples/crossval/12_patch_antenna.py`, which exercises the finite-ground-plane
+FR4 patch workflow against OpenEMS.
 
 ## Guide Index
 
