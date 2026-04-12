@@ -76,7 +76,7 @@ def init_subgrid_3d(
     fine_region: tuple[int, int, int, int, int, int] = (15, 25, 15, 25, 15, 25),
     ratio: int = 3,
     courant: float = 0.45,
-    tau: float = 1.0,
+    tau: float = 0.5,
 ) -> tuple[SubgridConfig3D, SubgridState3D]:
     """Initialize 3D subgridded domain.
 

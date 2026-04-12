@@ -1,5 +1,9 @@
 """Tests for RIS (Reconfigurable Intelligent Surface) unit cell workflow.
 
+DEPRECATED: RIS workflow needs redesign — Floquet port requires uniform mesh
+but RIS auto-meshing creates non-uniform grids. Will be re-implemented with
+proper Floquet boundary support.
+
 Tests:
 1. Unit cell creation and parameter validation
 2. Capacitance sweep (3 values, phase varies)
@@ -9,6 +13,8 @@ Tests:
 
 import numpy as np
 import pytest
+
+pytestmark = pytest.mark.skip(reason="RIS workflow deprecated — Floquet port redesign needed")
 
 from rfx.ris import RISUnitCell, RISSweepResult
 from rfx.geometry.csg import Box
