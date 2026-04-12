@@ -9,7 +9,11 @@ from rfx.subgridding.sbp_sat_3d import (
 
 
 def test_3d_stability():
-    """Energy bounded over 1000 steps (3D is slower, fewer steps)."""
+    """Energy must be non-increasing over 1000 steps in PEC cavity.
+
+    This is the fundamental SBP-SAT stability guarantee. If energy grows,
+    the coupling coefficients are wrong.
+    """
     config, state = init_subgrid_3d(
         shape_c=(20, 20, 20), dx_c=0.003,
         fine_region=(7, 13, 7, 13, 7, 13), ratio=3,
@@ -17,26 +21,24 @@ def test_3d_stability():
     state = state._replace(ez_c=state.ez_c.at[4, 4, 4].set(1.0))
     initial_energy = compute_energy_3d(state, config)
 
+    max_energy = initial_energy
     for i in range(1000):
         state = step_subgrid_3d(state, config)
+        if (i + 1) % 100 == 0:
+            e = compute_energy_3d(state, config)
+            # Allow tiny float32 growth per step (~1e-6 relative)
+            assert e <= max_energy * 1.001, (
+                f"Energy grew at step {i+1}: {e:.6e} > {max_energy:.6e} "
+                f"(growth {e/max_energy:.6f}x)"
+            )
+            max_energy = max(max_energy, e)
 
     final_energy = compute_energy_3d(state, config)
-    print("\n3D stability (1000 steps):")
-    print(f"  Initial: {initial_energy:.6e}")
-    print(f"  Final:   {final_energy:.6e}")
-
-    assert np.isfinite(final_energy), "Final energy should be finite"
-    # NOTE: 3D SBP-SAT coupling is experimental — energy should ideally be
-    # non-increasing but current penalty coefficients allow growth. See
-    # Cheng et al. 2025 for proper energy-stable derivation.
-    assert np.isfinite(final_energy), "Energy should remain finite"
-    growth = final_energy / max(initial_energy, 1e-30)
-    if growth > 1.1:
-        import warnings
-        warnings.warn(
-            f"SBP-SAT 3D energy grew {growth:.1f}x (experimental — "
-            f"coupling coefficients need Cheng et al. 2025 derivation)"
-        )
+    print(f"\n3D energy conservation: initial={initial_energy:.6e}, "
+          f"final={final_energy:.6e}, ratio={final_energy/initial_energy:.6f}")
+    assert final_energy <= initial_energy * 1.01, (
+        f"Total energy grew {final_energy/initial_energy:.4f}x over 1000 steps"
+    )
 
 
 def test_3d_fine_grid_receives_signal():
