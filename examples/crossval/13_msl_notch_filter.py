@@ -166,7 +166,9 @@ print("PART 1: rfx 2-port S-matrix (port 1 excited, port 2 matched)")
 print("=" * 70)
 
 n_cpml = 8
-port_margin = 5e-3          # > CPML thickness (8 × 500 μm = 4 mm)
+absorber_len = 10e-3             # graded lossy zone at each x end
+# Ports sit just inside the lossless region (past the absorber zone).
+port_margin = absorber_len + 1e-3      # 11 mm from each x-boundary
 feed_waveform = GaussianPulse(f0=f_max / 2, bandwidth=1.0)
 
 sim = Simulation(
@@ -182,24 +184,51 @@ sim = Simulation(
 )
 sim.add_material("ro4350b", eps_r=substrate_epr)
 
-# Substrate — lossless
+# Substrate — lossless core
 sim.add(Box((0, 0, 0),
             (dom_x, dom_y, substrate_thickness)),
         material="ro4350b")
 
-# Main microstrip line (along x) — MUST terminate AT each port so the
-# ports act as proper matched loads. Previously the MSL spanned the
-# entire x range (0 to dom_x), which made the vertical wire ports
-# behave as shunt columns in the middle of an unterminated infinite
-# line — waves sailed right past them into the CPML, creating huge
-# Fabry-Perot round trips. Fix: start and end the MSL exactly at the
-# port x positions.
+# Graded MSL absorber zones at each x end. The absorber is a series of
+# thin substrate slabs with quadratically increasing conductivity σ.
+# A smooth σ ramp (0 → σ_max) avoids the discrete reflection that
+# plagued the earlier "block of σ=5" approach, while accumulating
+# enough attenuation over ~10 mm to damp the Fabry-Perot round trips.
+#
+# σ_max tuning: in FDTD with explicit E update, effective one-way
+# attenuation ≈ (σ_max · L · η) / 6 per absorber zone, where L is the
+# absorber length and η ≈ 200 Ω for RO4350B. σ_max = 2 S/m with
+# L = 10 mm gives ≈ 0.67 Np ≈ 5.8 dB one-way. Three round trips
+# through two absorbers → ~35 dB total F-P suppression. Enough to
+# make the stub notch visible above the comb.
+n_absorber_slabs = 10            # 10 steps in the σ ramp
+sigma_max_absorber = 0.2         # S/m at the outermost slab (gentle)
+slab_dx = absorber_len / n_absorber_slabs
+
+for end in ("lo", "hi"):
+    for n in range(n_absorber_slabs):
+        # Quadratic grading: σ_n = σ_max * (n / N)²
+        sigma_n = sigma_max_absorber * ((n + 1) / n_absorber_slabs) ** 2
+        mat_name = f"abs_{end}_{n}"
+        sim.add_material(mat_name, eps_r=substrate_epr, sigma=sigma_n)
+        if end == "lo":
+            # Absorber zone at x = [0, absorber_len]
+            x_lo = n * slab_dx
+            x_hi = (n + 1) * slab_dx
+        else:
+            # Absorber zone at x = [dom_x - absorber_len, dom_x]
+            x_lo = dom_x - absorber_len + n * slab_dx
+            x_hi = dom_x - absorber_len + (n + 1) * slab_dx
+        sim.add(Box((x_lo, 0, 0), (x_hi, dom_y, substrate_thickness)),
+                material=mat_name)
+
+# Main microstrip line (along x) — extends through the full domain
+# including into the absorber zones so the wave experiences the graded
+# loss as it leaves each port.
 msl_y_lo = -MSL_width / 2 + y_shift
 msl_y_hi = +MSL_width / 2 + y_shift
-msl_x_lo_rfx = port_margin            # line starts at port 1
-msl_x_hi_rfx = dom_x - port_margin    # line ends at port 2
-sim.add(Box((msl_x_lo_rfx, msl_y_lo, substrate_thickness),
-            (msl_x_hi_rfx, msl_y_hi, substrate_thickness + dz_sub)),
+sim.add(Box((0, msl_y_lo, substrate_thickness),
+            (dom_x, msl_y_hi, substrate_thickness + dz_sub)),
         material="pec")
 
 # Open-circuit quarter-wave stub (perpendicular to MSL, centered at x=0)
@@ -210,21 +239,23 @@ sim.add(Box((stub_x_lo, msl_y_hi, substrate_thickness),
              substrate_thickness + dz_sub)),
         material="pec")
 
-# Port 1 — excited wire port at MSL centerline, outward "-x"
+# Ports — wire-port probes (high Z so they don't add significant σ;
+# the graded absorber handles termination, not the port). Z0 = 1000 Ω
+# makes σ_port ~1/20 of a 50 Ω port → minimal perturbation to the MSL.
 n_msl_y = 1
+Z_probe = 1000.0
 sim.add_port(
     position=(port_margin, y_shift, 0.0),
     component="ez",
-    impedance=50.0,
+    impedance=Z_probe,
     extent=substrate_thickness,
     waveform=feed_waveform,
     direction="-x",
 )
-# Port 2 — passive matched load at MSL centerline, outward "+x"
 sim.add_port(
     position=(dom_x - port_margin, y_shift, 0.0),
     component="ez",
-    impedance=50.0,
+    impedance=Z_probe,
     extent=substrate_thickness,
     excite=False,
     direction="+x",
