@@ -871,6 +871,13 @@ class Simulation:
 
         if waveform is None and excite:
             waveform = GaussianPulse(f0=self._freq_max / 2, bandwidth=0.8)
+        if waveform is not None and not excite:
+            import warnings as _w
+            _w.warn(
+                "waveform is ignored when excite=False (passive matched load). "
+                "Remove the waveform argument to suppress this warning.",
+                stacklevel=2,
+            )
 
         self._ports.append(_PortEntry(
             position=position, component=component,
@@ -2230,7 +2237,11 @@ class Simulation:
         if dx is None:
             dx = C0 / self._freq_max / 20.0
 
-        # Determine minimum z cell size
+        # Determine minimum cell size per axis — use profile min when
+        # non-uniform xy is active, so we don't flag features that are
+        # actually well-resolved in their local fine-mesh region.
+        min_dx = float(min(self._dx_profile)) if self._dx_profile is not None else dx
+        min_dy = float(min(self._dy_profile)) if self._dy_profile is not None else dx
         if self._dz_profile is not None:
             min_dz = min(self._dz_profile)
         else:
@@ -2250,7 +2261,7 @@ class Simulation:
             else:
                 continue
 
-            cell_sizes = [dx, dx, min_dz]
+            cell_sizes = [min_dx, min_dy, min_dz]
 
             for axis, (dim, cell) in enumerate(zip(dims, cell_sizes)):
                 if dim <= 0:
@@ -2367,6 +2378,29 @@ class Simulation:
 
         dx = self._dx or C0 / self._freq_max / 20.0
         cpml_thickness = self._cpml_layers * dx if self._boundary in ("cpml", "upml") else 0
+
+        # Warn about pec_faces + finite PEC objects co-existing.
+        # pec_faces creates an INFINITE PEC boundary face across the whole
+        # domain side. Users building antennas or finite-GP structures
+        # often use pec_faces thinking it's a "ground plane" — but it's
+        # a full-domain boundary condition, not a finite structure.
+        if self._pec_faces and self._geometry:
+            has_finite_pec = any(
+                entry.material_name == "pec"
+                for entry in self._geometry
+            )
+            if has_finite_pec:
+                pec_face_list = ", ".join(sorted(self._pec_faces))
+                _w.warn(
+                    f"pec_faces={{{pec_face_list}}} creates an INFINITE PEC "
+                    f"boundary AND the geometry contains finite PEC objects. "
+                    f"For antennas or finite-GP structures, the pec_faces "
+                    f"boundary makes the ground plane cover the entire domain "
+                    f"face, which changes the physics (cavity vs radiating "
+                    f"antenna). If you need a finite ground plane, remove "
+                    f"pec_faces and use an explicit PEC Box instead.",
+                    stacklevel=3,
+                )
 
         if self._boundary == "upml" and self._refinement is not None:
             raise ValueError("boundary='upml' does not support subgridding/refinement")
@@ -2858,7 +2892,8 @@ class Simulation:
                     excitation=pe.waveform,
                 )
                 materials = setup_wire_port(grid, wp, materials)
-                sources.extend(make_wire_port_sources(grid, wp, materials, n_steps))
+                if pe.excite:
+                    sources.extend(make_wire_port_sources(grid, wp, materials, n_steps))
                 for cell in _wire_port_cells(grid, wp):
                     if pec_mask_local is not None:
                         pec_mask_local = pec_mask_local.at[cell[0], cell[1], cell[2]].set(False)
@@ -2873,7 +2908,8 @@ class Simulation:
                 excitation=pe.waveform,
             )
             materials = setup_lumped_port(grid, lp, materials)
-            sources.append(make_port_source(grid, lp, materials, n_steps))
+            if pe.excite:
+                sources.append(make_port_source(grid, lp, materials, n_steps))
             idx = grid.position_to_index(pe.position)
             if pec_mask_local is not None:
                 pec_mask_local = pec_mask_local.at[idx[0], idx[1], idx[2]].set(False)
@@ -3005,6 +3041,14 @@ class Simulation:
         ForwardResult
             Minimal differentiable observables (time series and optional NTFF).
         """
+        if (self._dz_profile is not None
+                or self._dx_profile is not None
+                or self._dy_profile is not None):
+            raise ValueError(
+                "forward() does not support non-uniform mesh profiles "
+                "(dx_profile / dy_profile / dz_profile). Use run() instead, "
+                "or remove the profiles for a uniform-mesh differentiable sim."
+            )
         grid = self._build_grid()
         materials, debye_spec, lorentz_spec, pec_mask, _, _ = self._assemble_materials(grid)
 
