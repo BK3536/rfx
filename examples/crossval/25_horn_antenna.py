@@ -273,19 +273,62 @@ else:
     PASS = False
 
 # =============================================================================
-# Plot
+# Geometry: eps_r xz cross-section at y = cy (side view)
+# =============================================================================
+grid_sim = sim._build_grid()
+mats_sim, _, _, pec_mask_sim, _, _ = sim._assemble_materials(grid_sim)
+eps3d = np.array(mats_sim.eps_r)   # (Nx, Ny, Nz)
+pec3d = np.array(pec_mask_sim)     # (Nx, Ny, Nz) bool
+
+# y slice at center
+iy_center = int(round(cy / dx))
+iy_center = min(iy_center, eps3d.shape[1] - 1)
+eps_xz = eps3d[:, iy_center, :]   # (Nx, Nz)
+pec_xz = pec3d[:, iy_center, :]   # (Nx, Nz) bool
+
+nx_g, nz_g = eps_xz.shape
+x_mm = np.linspace(0, dom_x * 1e3, nx_g)
+z_mm = np.linspace(0, dom_z * 1e3, nz_g)
+
+# =============================================================================
+# Plot: 1x3 figure
 # =============================================================================
 pat_dB = radiation_pattern(ff)   # (n_freqs, n_theta, n_phi) normalized dB
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5),
-                                subplot_kw=dict())
+fig = plt.figure(figsize=(18, 5))
 fig.suptitle(
     f"Open-Ended WR-90 Waveguide at {f0/1e9:.0f} GHz  |  "
     f"D = {D_dbi:.1f} dBi (analytical {D_analytical_dbi:.1f} dBi)",
     fontsize=13,
 )
 
-# 1. Cartesian radiation pattern
+# 1. Geometry xz cross-section
+ax_geo = fig.add_subplot(131)
+im_geo = ax_geo.imshow(
+    eps_xz.T, origin="lower", aspect="equal",
+    extent=[0, dom_x * 1e3, 0, dom_z * 1e3],
+    cmap="YlOrBr", vmin=1.0, vmax=2.0,
+)
+plt.colorbar(im_geo, ax=ax_geo, label="eps_r", shrink=0.85)
+# Overlay PEC walls
+ax_geo.contourf(x_mm, z_mm, pec_xz.T.astype(float),
+                levels=[0.5, 1.5], colors=["black"], alpha=0.85)
+ax_geo.contour(x_mm, z_mm, pec_xz.T.astype(float),
+               levels=[0.5], colors=["white"], linewidths=0.8)
+# Mark aperture, port, back wall
+ax_geo.axhline(z_aperture * 1e3, color="cyan", lw=1.2, ls="--",
+               label=f"Aperture z={z_aperture*1e3:.0f}mm")
+ax_geo.axhline(port_z * 1e3, color="lime", lw=1.0, ls=":",
+               label=f"Port z={port_z*1e3:.0f}mm")
+ax_geo.axhline(back_wall_z * 1e3, color="red", lw=1.0, ls=":",
+               label=f"Back wall z={back_wall_z*1e3:.0f}mm")
+ax_geo.set_xlabel("x (mm)")
+ax_geo.set_ylabel("z (mm)")
+ax_geo.set_title("Geometry: xz cross-section at y=cy")
+ax_geo.legend(fontsize=7, loc="upper right")
+
+# 2. Cartesian radiation pattern
+ax1 = fig.add_subplot(132)
 e_pat = np.asarray(pat_dB[0, :, idx_e])    # E-plane
 h_pat = np.asarray(pat_dB[0, :, idx_h])    # H-plane
 ax1.plot(theta_deg, e_pat, "b-", linewidth=2, label="E-plane (phi=0)")
@@ -301,8 +344,8 @@ ax1.legend(fontsize=9)
 ax1.grid(True, alpha=0.3)
 ax1.set_title(f"Radiation Pattern  (BW={bw_3dB:.0f} deg)")
 
-# 2. Polar plot (E-plane, upper hemisphere)
-ax2 = fig.add_subplot(122, projection="polar")
+# 3. Polar plot (E-plane, upper hemisphere)
+ax2 = fig.add_subplot(133, projection="polar")
 ax2.set_theta_zero_location("N")
 ax2.set_theta_direction(-1)
 e_clipped = np.maximum(e_pat, -30.0) + 30.0   # shift so -30 dB → 0

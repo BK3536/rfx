@@ -248,11 +248,48 @@ else:
     PASS = False
 
 # =============================================================================
-# Plot
+# Plot: 1x3 figure
 # =============================================================================
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+scale = 1e3
+fig, (ax_xz, ax1, ax2) = plt.subplots(1, 3, figsize=(18, 5))
 fig.suptitle("rfx: Coupled Microstrip BPF (FR-4, f0=3 GHz)", fontsize=14)
 
+# --- Left: xz cross-section at y = line_A_y_center ---
+# Physical z extent from dz profile: sum of dz cells
+z_edges = np.concatenate([[0.0], np.cumsum(dz_profile)])
+dom_z_actual = float(z_edges[-1])
+# Find z coordinates at substrate and trace heights
+# Draw the key layers as rectangles on xz plane
+ax_xz.set_aspect("auto")
+# Substrate (FR-4, eps_r=4.4)
+ax_xz.add_patch(plt.Rectangle(
+    (0, 0), dom_x * scale, h_sub * scale,
+    facecolor="#d4a849", edgecolor="none", alpha=0.6, label=f"FR-4 (eps_r={eps_r:.1f})"))
+# Ground plane (PEC, dz_sub thick at bottom)
+ax_xz.add_patch(plt.Rectangle(
+    (0, 0), dom_x * scale, dz_sub * scale,
+    facecolor="dimgray", edgecolor="none", alpha=0.9, label="Ground (PEC)"))
+# Microstrip trace A (on top of substrate)
+ax_xz.add_patch(plt.Rectangle(
+    (res_x0 * scale, trace_z0 * scale), L_res * scale, (trace_z1 - trace_z0) * scale,
+    facecolor="gold", edgecolor="k", linewidth=0.8, label="Trace A (PEC)"))
+# Air above substrate
+ax_xz.add_patch(plt.Rectangle(
+    (0, h_sub * scale), dom_x * scale, (dom_z_actual - h_sub) * scale,
+    facecolor="#cce5ff", edgecolor="none", alpha=0.35, label="Air"))
+# Port marker
+ax_xz.axvline(port1_x * scale, color="blue", lw=1.2, ls=":", alpha=0.8, label=f"P1 x={port1_x*scale:.1f}mm")
+ax_xz.axvline(port2_x * scale, color="red",  lw=1.2, ls=":", alpha=0.8, label=f"P2 x={port2_x*scale:.1f}mm")
+# Axis labels
+ax_xz.set_xlabel("x (mm)")
+ax_xz.set_ylabel("z (mm)")
+ax_xz.set_xlim(0, dom_x * scale)
+ax_xz.set_ylim(0, min(dom_z_actual * scale, h_sub * scale * 6))  # zoom on near structure
+ax_xz.set_title("Geometry: xz cross-section at y=line_A")
+ax_xz.legend(fontsize=7, loc="upper right")
+ax_xz.grid(True, alpha=0.3)
+
+# --- Center: S21 ---
 ax1.plot(freqs_plot / 1e9, s21_norm, "r-", linewidth=1.5, label="S21 (rfx, normalised)")
 ax1.axvline(f0 / 1e9, color="k", ls="--", alpha=0.5, label=f"Design f0 = {f0/1e9:.1f} GHz")
 ax1.axvline(f_peak / 1e9, color="g", ls=":", alpha=0.8,
@@ -267,8 +304,7 @@ ax1.legend(fontsize=8)
 ax1.grid(True, alpha=0.3)
 ax1.set_title("Transmission (S21)")
 
-# Geometry schematic (top view, mm units)
-scale = 1e3
+# --- Right: geometry top view ---
 ax2.set_aspect("equal")
 ax2.add_patch(plt.Rectangle(
     (res_x0 * scale, line_A_y0 * scale),

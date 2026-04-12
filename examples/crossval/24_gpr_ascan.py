@@ -121,8 +121,8 @@ print(f"dt ~ {dt_approx*1e12:.1f} ps,  n_steps = {n_steps}")
 print()
 
 
-def run_sim(with_soil):
-    """Run one 2D TMz simulation and return (time_series, dt)."""
+def run_sim(with_soil, return_state=False):
+    """Run one 2D TMz simulation and return (time_series, dt[, result, sim])."""
     sim = Simulation(
         freq_max=f_max,
         domain=(dom_x, dom_y, dx),
@@ -149,7 +149,11 @@ def run_sim(with_soil):
     sim.add_probe(position=(tx_x, tx_y, 0.0), component="ez")
     sim.preflight(strict=False)
     result = sim.run(n_steps=n_steps)
-    return np.array(result.time_series).ravel(), float(result.dt)
+    ts = np.array(result.time_series).ravel()
+    dt = float(result.dt)
+    if return_state:
+        return ts, dt, result, sim
+    return ts, dt
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +166,7 @@ print(f"  {time.time()-t_wall:.1f}s")
 
 print("Run 2: soil + buried pipe...")
 t_wall = time.time()
-sig_gpr, _ = run_sim(with_soil=True)
+sig_gpr, _, result_gpr, sim_gpr = run_sim(with_soil=True, return_state=True)
 print(f"  {time.time()-t_wall:.1f}s")
 
 # ---------------------------------------------------------------------------
@@ -290,16 +294,71 @@ elif amp_surf == 0:
     PASS = False
 
 # ---------------------------------------------------------------------------
-# Plot
+# Geometry and field snapshot (from soil+pipe run)
 # ---------------------------------------------------------------------------
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+grid_gpr = sim_gpr._build_grid()
+mats_gpr, _, _, pec_mask_gpr, _, _ = sim_gpr._assemble_materials(grid_gpr)
+eps2d   = np.array(mats_gpr.eps_r)[:, :, 0]   # (Nx, Ny)
+pec2d   = np.array(pec_mask_gpr)[:, :, 0]      # (Nx, Ny) bool
+ez_snap = np.array(result_gpr.state.ez)[:, :, 0]  # (Nx, Ny)
+
+# Physical coordinate axes (mm)
+nx_grid, ny_grid = eps2d.shape
+x_ax = np.linspace(0, dom_x * 1e3, nx_grid)
+y_ax = np.linspace(0, dom_y * 1e3, ny_grid)
+
+# ---------------------------------------------------------------------------
+# Plot: 2x2 figure
+# ---------------------------------------------------------------------------
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 fig.suptitle(
     "GPR A-Scan -- rfx 2D TMz FDTD | Reference subtraction",
     fontsize=13,
 )
 
-# Left: raw A-scans + reflectogram
-ax1 = axes[0]
+# --- Top-left: eps_r geometry map with PEC pipe contour ---
+ax_geo = axes[0, 0]
+im_geo = ax_geo.imshow(
+    eps2d.T, origin="lower", aspect="equal",
+    extent=[0, dom_x * 1e3, 0, dom_y * 1e3],
+    cmap="YlOrBr", vmin=1.0, vmax=eps_r_soil + 0.5,
+)
+plt.colorbar(im_geo, ax=ax_geo, label="eps_r", shrink=0.85)
+# Overlay PEC pipe as filled contour
+ax_geo.contourf(x_ax, y_ax, pec2d.T.astype(float),
+                levels=[0.5, 1.5], colors=["black"], alpha=0.8)
+ax_geo.contour(x_ax, y_ax, pec2d.T.astype(float),
+               levels=[0.5], colors=["white"], linewidths=0.8)
+# Soil surface
+ax_geo.axhline(y_soil * 1e3, color="cyan", lw=1.2, ls="--", label=f"Soil surface y={y_soil*1e3:.0f}mm")
+# TX/RX marker
+ax_geo.plot(tx_x * 1e3, tx_y * 1e3, "r^", ms=8, label="TX/RX")
+ax_geo.set_xlabel("x (mm)")
+ax_geo.set_ylabel("y (mm)")
+ax_geo.set_title("Geometry: eps_r (soil+pipe run)")
+ax_geo.legend(fontsize=7, loc="upper right")
+
+# --- Top-right: Ez field snapshot ---
+ax_fld = axes[0, 1]
+ez_max = max(np.max(np.abs(ez_snap)), 1e-30)
+im_fld = ax_fld.imshow(
+    ez_snap.T, origin="lower", aspect="equal",
+    extent=[0, dom_x * 1e3, 0, dom_y * 1e3],
+    cmap="RdBu_r", vmin=-ez_max, vmax=ez_max,
+)
+plt.colorbar(im_fld, ax=ax_fld, label="Ez (final state)", shrink=0.85)
+# Overlay PEC pipe contour
+ax_fld.contour(x_ax, y_ax, pec2d.T.astype(float),
+               levels=[0.5], colors=["lime"], linewidths=1.0)
+ax_fld.axhline(y_soil * 1e3, color="cyan", lw=1.0, ls="--", alpha=0.6)
+ax_fld.plot(tx_x * 1e3, tx_y * 1e3, "r^", ms=7, label="TX/RX")
+ax_fld.set_xlabel("x (mm)")
+ax_fld.set_ylabel("y (mm)")
+ax_fld.set_title("Ez field snapshot (final state, soil+pipe)")
+ax_fld.legend(fontsize=7, loc="upper right")
+
+# --- Bottom-left: raw A-scans + reflectogram ---
+ax1 = axes[1, 0]
 ax1.plot(t_ns, sig_air, color="gray", lw=0.5, alpha=0.6, label="Free-space ref")
 ax1.plot(t_ns, sig_gpr, "b-",  lw=0.5, alpha=0.6, label="Soil + pipe")
 ax1.plot(t_ns, reflecto, "r-", lw=0.9, label="Reflectogram (diff)")
@@ -312,8 +371,8 @@ ax1.set_title("Raw A-Scans + reflectogram")
 ax1.legend(fontsize=8)
 ax1.grid(True, alpha=0.3)
 
-# Right: zoomed reflectogram with predicted arrival markers
-ax2 = axes[1]
+# --- Bottom-right: zoomed reflectogram with predicted arrival markers ---
+ax2 = axes[1, 1]
 t_zoom_hi = t_pipe_expected * 1e9 * 1.4
 mask_z = t_ns <= t_zoom_hi
 if np.any(mask_z):
