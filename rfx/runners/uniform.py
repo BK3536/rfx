@@ -176,7 +176,8 @@ def run_uniform(
             )
             wire_ports.append(wp)
             materials = setup_wire_port(grid, wp, materials)
-            sources.extend(make_wire_port_sources(grid, wp, materials, n_steps))
+            if pe.excite:
+                sources.extend(make_wire_port_sources(grid, wp, materials, n_steps))
             # Clear PEC mask at wire cells (probe pierces ground plane)
             if pec_mask is not None:
                 from rfx.sources.sources import _wire_port_cells
@@ -190,7 +191,8 @@ def run_uniform(
             )
             lumped_ports.append(lp)
             materials = setup_lumped_port(grid, lp, materials)
-            sources.append(make_port_source(grid, lp, materials, n_steps))
+            if pe.excite:
+                sources.append(make_port_source(grid, lp, materials, n_steps))
             # Clear PEC mask at lumped port cell
             if pec_mask is not None:
                 idx = grid.position_to_index(pe.position)
