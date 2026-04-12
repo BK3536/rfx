@@ -51,24 +51,21 @@ v1.4.0 → v1.5.0: **9 failures → 3 failures** (6 fixed: gradient NameError, o
 
 ---
 
-### Crossval Examples 현황
+### Crossval Examples 현황 (2026-04-12 정리)
 
-| File | Description | Status |
-|------|-------------|--------|
-| `01_field_progression_review.py` | Field progression review: rfx vs Meep | Committed |
-| `01_meep_waveguide_bend.py` | Waveguide bend transmittance (Meep Basics) | Committed |
-| `02_deep_field_diagnostic.py` | Deep field diagnostic: rfx vs Meep bend | Committed |
-| `03_grid_aligned_comparison.py` | Grid-aligned field comparison | Committed |
-| `04_courant_test.py` | Courant number S=0.5 test | Committed |
-| `05_meep_ring_resonator.py` | Ring resonator: rfx vs Meep (Harminv) | Committed |
-| `06_straight_waveguide_flux.py` | Meep Tutorial #1 — Straight waveguide | Committed |
-| `07_multilayer_fresnel.py` | **Fresnel slab — TFSF + 1D ref + time-gate, all PASS** | Fixed 2026-04-10 |
-| `24_gpr_ascan.py` | Ground Penetrating Radar A-Scan | Committed |
-| `25_horn_antenna.py` | Open-ended rectangular waveguide horn | Committed |
-| `26_coupled_line_bpf.py` | Coupled microstrip line BPF | Committed |
+| # | File | Reference | Validates | Status |
+|---|------|-----------|-----------|--------|
+| 01 | `01_waveguide_bend.py` | Meep | T(f), self-T, \|rfx-Meep\| < 0.10 | A (valid) |
+| 02 | `02_ring_resonator.py` | Meep | Harminv mode freqs, mean error < 5% | A (PASS/FAIL added) |
+| 03 | `03_straight_waveguide_flux.py` | Meep | Flux shape correlation > 0.90 | A (PASS/FAIL added) |
+| 04 | `04_multilayer_fresnel.py` | Analytic + Meep | TFSF R/T, mean error < 5% | A (valid) |
+| 05 | `05_patch_antenna.py` | OpenEMS + Analytic | Patch resonance, rfx vs OpenEMS < 20% | A (valid) |
+| 06 | `06_msl_notch_filter.py` | OpenEMS ref | MSL notch freq < 15% | B (weak threshold) |
+| 07 | `07_inverse_design_demo.py` | None (self-test) | Gradient pipeline converges | B (demo) |
 
-**Note**: 01-05는 Meep cross-validation 계열 (waveguide bend 진단 집중). 24-26은 독립 RF 시나리오.
-GPU 실행 결과 미확인 — 다음 세션에서 crossval GPU run 필요.
+**Deleted (2026-04-12):** 8 scripts removed — diagnostic artifacts (01a, 02, 03, 04, 08a) and broken self-tests (24 GPR, 25 horn, 26 BPF) that had no external reference and meaningless thresholds.
+
+**Rule:** Crossval scripts MUST compare against an external reference (Meep, OpenEMS, analytic) with quantitative PASS/FAIL thresholds < 10%. Self-tests and diagnostics do not belong in `crossval/`.
 
 ---
 
