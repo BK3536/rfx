@@ -3180,6 +3180,21 @@ class Simulation:
         if self._boundary == "upml" and devices is not None and len(devices) > 1:
             raise ValueError("boundary='upml' does not support distributed execution")
 
+        # ---- Distributed + nonuniform is a known gap (Phase B, see
+        # docs/research_notes/2026-04-15_nonuniform_completion_handoff.md).
+        # Without this guard the distributed path silently builds a uniform
+        # grid via _build_grid() and drops the user's profile on the floor.
+        if (devices is not None and len(devices) > 1
+                and (self._dz_profile is not None
+                     or self._dx_profile is not None
+                     or self._dy_profile is not None)):
+            raise ValueError(
+                "Non-uniform grids (dz_profile / dx_profile / dy_profile) "
+                "are not yet supported on the distributed multi-device "
+                "path. Run without `devices=` for the single-device "
+                "non-uniform lane, or request Phase B implementation."
+            )
+
         # ---- Distributed multi-device path ----
         if devices is not None and len(devices) > 1:
             if n_steps is None:
