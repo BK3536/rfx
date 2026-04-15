@@ -28,7 +28,7 @@ Memory-efficient inverse design + NU physics correctness.
 
 ### Validation
 
-- NU patch antenna (2.4 GHz FR4, dx = 1 mm, dz_sub = 0.25 mm, lossy FR4) reaches **θ ≈ 1° broadside peak** with **Q ≈ 28**, harminv f_res **2.65 GHz vs Balanis 2.42 GHz (9.3 %)**. Artifacts generated at runtime under `docs/research_notes/issue31_figs/`.
+- NU patch antenna (2.4 GHz FR4, dx = 1 mm, dz_sub = 0.25 mm, lossy FR4) reaches **θ ≈ 1° broadside peak** with **Q ≈ 28**. Harminv f_res **2.65 GHz vs Balanis 2.42 GHz (+9.3 %)** — within the known coarse-mesh +8 % rfx bias documented in [`docs/research_notes/2026-04-11_crossval12_patch_antenna.md`](../../research_notes/2026-04-11_crossval12_patch_antenna.md) (rfx and OpenEMS straddle the Balanis value with ±~8 % opposite-sign discretization biases at dx = 1 mm; both converge to ~1 % at mesh_res ≤ 0.5 mm).
 - Full NU test suite (50+ tests: `tests/test_nonuniform_*`, plus new preflight / smooth / n_warmup / visualize / ntff_sweep / s11_at_freq pins) passes on both CPU and RTX 4090 GPU (VESSL).
 
 ---
