@@ -114,6 +114,12 @@ class WaveguidePortConfig(NamedTuple):
     a: float
     b: float
     dx: float
+    # Per-axis transverse cell widths covering the port aperture.
+    # Shape (nu_port,) and (nv_port,) respectively. For uniform Yee grids
+    # both arrays are constant ``dx``; on a NonUniformGrid these are the
+    # slice of ``dx_arr`` / ``dy_arr`` / ``dz`` covering the aperture.
+    u_widths: jnp.ndarray
+    v_widths: jnp.ndarray
     source_x_m: float
     reference_x_m: float
     probe_x_m: float
@@ -137,6 +143,9 @@ class WaveguidePortConfig(NamedTuple):
 
 def _te_mode_profiles(a: float, b: float, m: int, n: int,
                       y_coords: np.ndarray, z_coords: np.ndarray,
+                      *,
+                      u_widths: np.ndarray | None = None,
+                      v_widths: np.ndarray | None = None,
                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute TE_mn E and H transverse mode profiles.
 
@@ -162,9 +171,13 @@ def _te_mode_profiles(a: float, b: float, m: int, n: int,
     hz = ey.copy()
 
     # Normalize: integral(Ey² + Ez²) dA = 1
-    dy = y_coords[1] - y_coords[0] if len(y_coords) > 1 else a
-    dz = z_coords[1] - z_coords[0] if len(z_coords) > 1 else b
-    power = np.sum(ey**2 + ez**2) * dy * dz
+    if u_widths is not None and v_widths is not None:
+        dA = np.asarray(u_widths)[:, None] * np.asarray(v_widths)[None, :]
+        power = float(np.sum((ey**2 + ez**2) * dA))
+    else:
+        dy = y_coords[1] - y_coords[0] if len(y_coords) > 1 else a
+        dz = z_coords[1] - z_coords[0] if len(z_coords) > 1 else b
+        power = np.sum(ey**2 + ez**2) * dy * dz
     if power > 0:
         norm = np.sqrt(power)
         ey /= norm
@@ -177,6 +190,9 @@ def _te_mode_profiles(a: float, b: float, m: int, n: int,
 
 def _tm_mode_profiles(a: float, b: float, m: int, n: int,
                       y_coords: np.ndarray, z_coords: np.ndarray,
+                      *,
+                      u_widths: np.ndarray | None = None,
+                      v_widths: np.ndarray | None = None,
                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute TM_mn E and H transverse mode profiles.
 
@@ -197,9 +213,13 @@ def _tm_mode_profiles(a: float, b: float, m: int, n: int,
     hy = -ez.copy()
     hz = ey.copy()
 
-    dy = y_coords[1] - y_coords[0] if len(y_coords) > 1 else a
-    dz = z_coords[1] - z_coords[0] if len(z_coords) > 1 else b
-    power = np.sum(ey**2 + ez**2) * dy * dz
+    if u_widths is not None and v_widths is not None:
+        dA = np.asarray(u_widths)[:, None] * np.asarray(v_widths)[None, :]
+        power = float(np.sum((ey**2 + ez**2) * dA))
+    else:
+        dy = y_coords[1] - y_coords[0] if len(y_coords) > 1 else a
+        dz = z_coords[1] - z_coords[0] if len(z_coords) > 1 else b
+        power = np.sum(ey**2 + ez**2) * dy * dz
     if power > 0:
         norm = np.sqrt(power)
         ey /= norm
@@ -218,7 +238,7 @@ def cutoff_frequency(a: float, b: float, m: int, n: int) -> float:
 
 def init_waveguide_port(
     port: WaveguidePort,
-    dx: float,
+    dx,
     freqs: jnp.ndarray,
     f0: float = 5e9,
     bandwidth: float = 0.5,
@@ -233,11 +253,21 @@ def init_waveguide_port(
 
     Parameters
     ----------
+    dx : float or grid
+        Either a scalar Yee cell size (uniform grid path) or a Grid-like
+        object exposing per-axis cell-width arrays. NonUniformGrid is
+        supported via duck-typing on ``dx_arr``/``dy_arr``/``dz``.
     probe_offset : int
         Cells downstream from source for measurement probe.
     ref_offset : int
         Cells downstream from source for reference probe.
     """
+    # Duck-type: if `dx` looks like a grid (has dx_arr / dz arrays),
+    # use per-axis widths slicing the aperture; else assume scalar dx.
+    grid_obj = None
+    if hasattr(dx, "dx_arr") and hasattr(dx, "dz"):
+        grid_obj = dx
+        dx = float(grid_obj.dx)
     m, n = port.mode
     normal_axis = port.normal_axis
     if normal_axis not in ("x", "y", "z"):
@@ -265,13 +295,41 @@ def init_waveguide_port(
     nu_port = u_hi - u_lo
     nv_port = v_hi - v_lo
 
-    u_coords = np.linspace(0.5 * dx, port.a - 0.5 * dx, nu_port)
-    v_coords = np.linspace(0.5 * dx, port.b - 0.5 * dx, nv_port)
+    # --- Per-axis cell widths covering the transverse aperture ---
+    # The mapping (u,v) → (x,y,z) depends on normal_axis and is the same
+    # one used by `_plane_indexer`.
+    if grid_obj is not None:
+        dx_arr_np = np.asarray(grid_obj.dx_arr)
+        dy_arr_np = np.asarray(grid_obj.dy_arr)
+        dz_arr_np = np.asarray(grid_obj.dz)
+        if normal_axis == "x":
+            u_widths_np = dy_arr_np[u_lo:u_hi]
+            v_widths_np = dz_arr_np[v_lo:v_hi]
+        elif normal_axis == "y":
+            u_widths_np = dx_arr_np[u_lo:u_hi]
+            v_widths_np = dz_arr_np[v_lo:v_hi]
+        else:  # z-normal
+            u_widths_np = dx_arr_np[u_lo:u_hi]
+            v_widths_np = dy_arr_np[u_lo:u_hi] if False else dy_arr_np[v_lo:v_hi]
+    else:
+        u_widths_np = np.full(nu_port, float(dx))
+        v_widths_np = np.full(nv_port, float(dx))
+
+    # Cell-centre coordinates (cumulative-sum midpoints). For uniform
+    # widths this collapses to the original `np.linspace(0.5*dx, ...)`.
+    u_coords = np.cumsum(u_widths_np) - 0.5 * u_widths_np
+    v_coords = np.cumsum(v_widths_np) - 0.5 * v_widths_np
 
     if port.mode_type == "TE":
-        ey, ez, hy, hz = _te_mode_profiles(port.a, port.b, m, n, u_coords, v_coords)
+        ey, ez, hy, hz = _te_mode_profiles(
+            port.a, port.b, m, n, u_coords, v_coords,
+            u_widths=u_widths_np, v_widths=v_widths_np,
+        )
     else:
-        ey, ez, hy, hz = _tm_mode_profiles(port.a, port.b, m, n, u_coords, v_coords)
+        ey, ez, hy, hz = _tm_mode_profiles(
+            port.a, port.b, m, n, u_coords, v_coords,
+            u_widths=u_widths_np, v_widths=v_widths_np,
+        )
 
     f_c = cutoff_frequency(port.a, port.b, m, n)
 
@@ -282,8 +340,29 @@ def init_waveguide_port(
     ref_x = port.x_index + step_sign * ref_offset
     probe_x = port.x_index + step_sign * probe_offset
     source_x_m = float(port.x_position) if port.x_position is not None else float(port.x_index * dx)
-    reference_x_m = source_x_m + step_sign * ref_offset * dx
-    probe_x_m = source_x_m + step_sign * probe_offset * dx
+    # For NU grids, integrate the actual per-cell spacing along the port-normal
+    # axis from the source plane to the reference / probe planes. For the
+    # uniform path this reduces to offset * dx bit-identically.
+    if grid_obj is not None:
+        if normal_axis == "x":
+            d_axis = np.asarray(grid_obj.dx_arr)
+        elif normal_axis == "y":
+            d_axis = np.asarray(grid_obj.dy_arr)
+        else:
+            d_axis = np.asarray(grid_obj.dz)
+
+        def _cum_offset(from_idx: int, to_idx: int) -> float:
+            if to_idx == from_idx:
+                return 0.0
+            lo = min(from_idx, to_idx)
+            hi = max(from_idx, to_idx)
+            return float(np.sum(d_axis[lo:hi])) * (1.0 if to_idx > from_idx else -1.0)
+
+        reference_x_m = source_x_m + _cum_offset(port.x_index, ref_x)
+        probe_x_m = source_x_m + _cum_offset(port.x_index, probe_x)
+    else:
+        reference_x_m = source_x_m + step_sign * ref_offset * dx
+        probe_x_m = source_x_m + step_sign * probe_offset * dx
 
     if normal_axis == "x":
         e_u_component, e_v_component = "ey", "ez"
@@ -335,6 +414,8 @@ def init_waveguide_port(
         f_cutoff=float(f_c),
         a=port.a, b=port.b,
         dx=float(dx),
+        u_widths=jnp.asarray(u_widths_np, dtype=jnp.float32),
+        v_widths=jnp.asarray(v_widths_np, dtype=jnp.float32),
         source_x_m=float(source_x_m),
         reference_x_m=float(reference_x_m),
         probe_x_m=float(probe_x_m),
@@ -395,12 +476,18 @@ def inject_waveguide_port(state, cfg: WaveguidePortConfig,
     return state._replace(**{cfg.e_u_component: field_u, cfg.e_v_component: field_v})
 
 
+def _aperture_dA(cfg: WaveguidePortConfig) -> jnp.ndarray:
+    """Per-cell area element (nu, nv) on the port aperture."""
+    return cfg.u_widths[:, None] * cfg.v_widths[None, :]
+
+
 def modal_voltage(state, cfg: WaveguidePortConfig, x_idx: int,
                   dx: float) -> jnp.ndarray:
     """Modal voltage: V = integral E_t . e_mode dA."""
     e_u_sim = _plane_field(getattr(state, cfg.e_u_component), cfg, x_idx)
     e_v_sim = _plane_field(getattr(state, cfg.e_v_component), cfg, x_idx)
-    return jnp.sum(e_u_sim * cfg.ey_profile + e_v_sim * cfg.ez_profile) * dx * dx
+    dA = _aperture_dA(cfg)
+    return jnp.sum((e_u_sim * cfg.ey_profile + e_v_sim * cfg.ez_profile) * dA)
 
 
 def modal_current(state, cfg: WaveguidePortConfig, x_idx: int,
@@ -412,7 +499,8 @@ def modal_current(state, cfg: WaveguidePortConfig, x_idx: int,
     """
     h_u_sim = _plane_h_field(getattr(state, cfg.h_u_component), cfg, x_idx)
     h_v_sim = _plane_h_field(getattr(state, cfg.h_v_component), cfg, x_idx)
-    return jnp.sum(h_u_sim * cfg.hy_profile + h_v_sim * cfg.hz_profile) * dx * dx
+    dA = _aperture_dA(cfg)
+    return jnp.sum((h_u_sim * cfg.hy_profile + h_v_sim * cfg.hz_profile) * dA)
 
 
 def mode_self_overlap(cfg: WaveguidePortConfig, dx: float) -> float:
@@ -423,7 +511,8 @@ def mode_self_overlap(cfg: WaveguidePortConfig, dx: float) -> float:
     """
     cross = (cfg.ey_profile * cfg.hz_profile
              - cfg.ez_profile * cfg.hy_profile)
-    return float(jnp.sum(cross) * dx * dx)
+    dA = _aperture_dA(cfg)
+    return float(jnp.sum(cross * dA))
 
 
 def overlap_modal_amplitude(
@@ -448,10 +537,11 @@ def overlap_modal_amplitude(
     h_u_sim = _plane_h_field(getattr(state, cfg.h_u_component), cfg, x_idx)
     h_v_sim = _plane_h_field(getattr(state, cfg.h_v_component), cfg, x_idx)
 
+    dA = _aperture_dA(cfg)
     # P1 = ∫ (E_sim × H_mode) · n̂ dA
-    p1 = jnp.sum(e_u_sim * cfg.hz_profile - e_v_sim * cfg.hy_profile) * dx * dx
+    p1 = jnp.sum((e_u_sim * cfg.hz_profile - e_v_sim * cfg.hy_profile) * dA)
     # P2 = ∫ (E_mode × H_sim) · n̂ dA
-    p2 = jnp.sum(cfg.ey_profile * h_v_sim - cfg.ez_profile * h_u_sim) * dx * dx
+    p2 = jnp.sum((cfg.ey_profile * h_v_sim - cfg.ez_profile * h_u_sim) * dA)
 
     c_mode = mode_self_overlap(cfg, dx)
     safe_c = max(abs(c_mode), 1e-30)
@@ -1270,16 +1360,16 @@ def _overlap_cross_products(
 
     Returns (P1, P2) as scalars.
     """
-    dA = dx * dx
+    dA = _aperture_dA(cfg)
     e_u_sim = _plane_field(getattr(state, cfg.e_u_component), cfg, x_idx)
     e_v_sim = _plane_field(getattr(state, cfg.e_v_component), cfg, x_idx)
     h_u_sim = _plane_h_field(getattr(state, cfg.h_u_component), cfg, x_idx)
     h_v_sim = _plane_h_field(getattr(state, cfg.h_v_component), cfg, x_idx)
 
     # P1 = ∫(eu_sim * hv_mode - ev_sim * hu_mode) dA
-    p1 = jnp.sum(e_u_sim * cfg.hz_profile - e_v_sim * cfg.hy_profile) * dA
+    p1 = jnp.sum((e_u_sim * cfg.hz_profile - e_v_sim * cfg.hy_profile) * dA)
     # P2 = ∫(eu_mode * hv_sim - ev_mode * hu_sim) dA
-    p2 = jnp.sum(cfg.ey_profile * h_v_sim - cfg.ez_profile * h_u_sim) * dA
+    p2 = jnp.sum((cfg.ey_profile * h_v_sim - cfg.ez_profile * h_u_sim) * dA)
 
     return p1, p2
 

@@ -76,6 +76,115 @@ def pos_to_nu_index(grid: NonUniformGrid, pos) -> tuple[int, int, int]:
     return position_to_index(grid, pos)
 
 
+def _build_waveguide_port_config_nu(sim, entry, grid: NonUniformGrid,
+                                     freqs: jnp.ndarray, n_steps: int):
+    """NU-aware waveguide port config builder.
+
+    Mirrors the uniform-path ``Simulation._build_waveguide_port_config``
+    but resolves indices and per-axis aperture spans against the
+    NonUniformGrid (cumulative-sum cell edges).
+    """
+    from rfx.sources.waveguide_port import (
+        WaveguidePort,
+        init_waveguide_port,
+        init_multimode_waveguide_port,
+    )
+
+    normal_axis = entry.direction[1]
+    axis_idx = {"x": 0, "y": 1, "z": 2}[normal_axis]
+    pos_vec = [0.0, 0.0, 0.0]
+    pos_vec[axis_idx] = entry.x_position
+    x_index = pos_to_nu_index(grid, tuple(pos_vec))[axis_idx]
+
+    cpml = grid.cpml_layers
+    # axis-pad mirrors Grid.axis_pads convention: 0 if no CPML on that axis,
+    # else cpml. NU runner uses CPML on all axes when boundary='cpml'/'upml'.
+    axis_pads_nu = (cpml, cpml, cpml)
+
+    def _range_to_slice_nu(value_range, d_arr_jnp, n_axis, pad):
+        d_np = np.asarray(d_arr_jnp)
+        # Cell-edge positions in physical coords (interior only, edge=0 at first
+        # interior face). Length = n_interior + 1.
+        interior = d_np[pad : n_axis - pad]
+        edges = np.insert(np.cumsum(interior), 0, 0.0)
+        if value_range is None:
+            return (pad, n_axis - pad), float(edges[-1])
+        lo, hi = value_range
+        lo_local = int(np.argmin(np.abs(edges - float(lo))))
+        hi_local = int(np.argmin(np.abs(edges - float(hi))))
+        if hi_local <= lo_local:
+            raise ValueError(
+                f"range {value_range!r} does not resolve to a valid aperture on the NU grid"
+            )
+        lo_idx = lo_local + pad
+        hi_idx = hi_local + pad + 1
+        actual_span = float(edges[hi_local] - edges[lo_local])
+        if actual_span <= 0.0:
+            raise ValueError(
+                f"range {value_range!r} resolves to invalid aperture span {actual_span}"
+            )
+        return (lo_idx, hi_idx), actual_span
+
+    if normal_axis == "x":
+        u_slice, a_span = _range_to_slice_nu(entry.y_range, grid.dy_arr, grid.ny, axis_pads_nu[1])
+        v_slice, b_span = _range_to_slice_nu(entry.z_range, grid.dz, grid.nz, axis_pads_nu[2])
+    elif normal_axis == "y":
+        u_slice, a_span = _range_to_slice_nu(entry.x_range, grid.dx_arr, grid.nx, axis_pads_nu[0])
+        v_slice, b_span = _range_to_slice_nu(entry.z_range, grid.dz, grid.nz, axis_pads_nu[2])
+    else:
+        u_slice, a_span = _range_to_slice_nu(entry.x_range, grid.dx_arr, grid.nx, axis_pads_nu[0])
+        v_slice, b_span = _range_to_slice_nu(entry.y_range, grid.dy_arr, grid.ny, axis_pads_nu[1])
+
+    # Snapped source-plane physical coordinate (for waveguide_plane_positions).
+    # Use the cumulative cell-edge position corresponding to the snapped cell
+    # index along the port-normal axis.
+    if normal_axis == "x":
+        d_axis_np = np.asarray(grid.dx_arr)
+    elif normal_axis == "y":
+        d_axis_np = np.asarray(grid.dy_arr)
+    else:
+        d_axis_np = np.asarray(grid.dz)
+    _interior = d_axis_np[cpml : len(d_axis_np) - cpml]
+    _edges_axis = np.insert(np.cumsum(_interior), 0, 0.0)
+    _local_axis = max(0, min(x_index - cpml, len(_edges_axis) - 1))
+    snapped_source_plane = float(_edges_axis[_local_axis])
+
+    port = WaveguidePort(
+        x_index=x_index,
+        y_slice=None,
+        z_slice=None,
+        a=a_span,
+        b=b_span,
+        mode=entry.mode,
+        mode_type=entry.mode_type,
+        direction=entry.direction,
+        x_position=snapped_source_plane,
+        normal_axis=normal_axis,
+        u_slice=u_slice,
+        v_slice=v_slice,
+    )
+    if entry.n_modes > 1:
+        return init_multimode_waveguide_port(
+            port, grid, freqs,
+            n_modes=entry.n_modes,
+            f0=entry.f0 if entry.f0 is not None else sim._freq_max / 2,
+            bandwidth=entry.bandwidth,
+            amplitude=entry.amplitude,
+            probe_offset=entry.probe_offset,
+            ref_offset=entry.ref_offset,
+            dft_total_steps=n_steps,
+        )
+    return init_waveguide_port(
+        port, grid, freqs,
+        f0=entry.f0 if entry.f0 is not None else sim._freq_max / 2,
+        bandwidth=entry.bandwidth,
+        amplitude=entry.amplitude,
+        probe_offset=entry.probe_offset,
+        ref_offset=entry.ref_offset,
+        dft_total_steps=n_steps,
+    )
+
+
 def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=None):
     """Run simulation on non-uniform grid with graded dz.
 
@@ -297,6 +406,26 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
         )
         rlc_states_init = tuple(init_rlc_state() for _ in sim._lumped_rlc)
 
+    # Waveguide ports: build per-port config via NU-aware
+    # init_waveguide_port (duck-types on grid for per-axis widths).
+    waveguide_port_cfgs = []
+    if sim._waveguide_ports:
+        wg_freqs = None
+        for pe in sim._waveguide_ports:
+            if pe.freqs is not None:
+                wg_freqs = jnp.asarray(pe.freqs, dtype=jnp.float32)
+                break
+        if wg_freqs is None:
+            wg_freqs = jnp.linspace(
+                sim._freq_max * 0.5, sim._freq_max, 20, dtype=jnp.float32
+            )
+        for pe in sim._waveguide_ports:
+            waveguide_port_cfgs.append(
+                _build_waveguide_port_config_nu(
+                    sim, pe, grid, wg_freqs, n_steps,
+                )
+            )
+
     # NTFF box: build once (indices are Python-static) + zero-init
     # DFT accumulators that will be threaded through the scan carry.
     # NonUniformGrid is a NamedTuple without ``position_to_index``, so
@@ -332,10 +461,68 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
         rlc_states=rlc_states_init,
         ntff_box=ntff_box,
         ntff_data=ntff_data_init,
+        waveguide_ports=waveguide_port_cfgs if waveguide_port_cfgs else None,
     )
 
     s_params = r.get("s_params")
     freqs_out = r.get("s_param_freqs")
+
+    # Waveguide-port output: dict[name -> cfg], optional sparams dict.
+    waveguide_ports_result = None
+    waveguide_sparams_result = None
+    if sim._waveguide_ports and "waveguide_ports" in r:
+        from rfx.sources.waveguide_port import (
+            extract_waveguide_sparams,
+            waveguide_plane_positions,
+        )
+        from rfx.api import WaveguideSParamResult
+        final_cfgs = r["waveguide_ports"]
+        waveguide_ports_result = {
+            entry.name: cfg
+            for entry, cfg in zip(sim._waveguide_ports, final_cfgs)
+        }
+        waveguide_sparams_result = {}
+        for entry, cfg in zip(sim._waveguide_ports, final_cfgs):
+            plane_positions = waveguide_plane_positions(cfg)
+            source_plane = plane_positions["source"]
+            measured_reference_plane = plane_positions["reference"]
+            measured_probe_plane = plane_positions["probe"]
+            if entry.calibration_preset == "source_to_probe":
+                reference_plane = source_plane
+                probe_plane = measured_probe_plane
+                calibration_preset = "source_to_probe"
+            elif entry.reference_plane is not None or entry.probe_plane is not None:
+                reference_plane = (
+                    entry.reference_plane
+                    if entry.reference_plane is not None
+                    else measured_reference_plane
+                )
+                probe_plane = (
+                    entry.probe_plane
+                    if entry.probe_plane is not None
+                    else measured_probe_plane
+                )
+                calibration_preset = "explicit"
+            else:
+                reference_plane = measured_reference_plane
+                probe_plane = measured_probe_plane
+                calibration_preset = "measured"
+            s11, s21 = extract_waveguide_sparams(
+                cfg,
+                ref_shift=reference_plane - measured_reference_plane,
+                probe_shift=probe_plane - measured_probe_plane,
+            )
+            waveguide_sparams_result[entry.name] = WaveguideSParamResult(
+                freqs=np.array(cfg.freqs),
+                s11=np.array(s11),
+                s21=np.array(s21),
+                calibration_preset=calibration_preset,
+                source_plane=float(source_plane),
+                measured_reference_plane=measured_reference_plane,
+                measured_probe_plane=measured_probe_plane,
+                reference_plane=reference_plane,
+                probe_plane=probe_plane,
+            )
 
     # Repack DFT planes into {name: DFTPlaneProbe} dict to match
     # the uniform path's Result schema.
@@ -354,6 +541,8 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
         ntff_data=r.get("ntff_data"),
         ntff_box=ntff_box,
         dft_planes=dft_planes_dict,
+        waveguide_ports=waveguide_ports_result,
+        waveguide_sparams=waveguide_sparams_result,
         grid=grid,
         dt=grid.dt,
         freq_range=(sim._freq_max / 10, sim._freq_max, sim._boundary),

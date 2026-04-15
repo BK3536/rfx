@@ -489,6 +489,7 @@ def run_nonuniform(
     rlc_states: tuple = (),
     ntff_box=None,
     ntff_data=None,
+    waveguide_ports: list | None = None,
 ) -> dict:
     """Run non-uniform FDTD via jax.lax.scan.
 
@@ -510,6 +511,7 @@ def run_nonuniform(
     probes = probes or []
     wire_ports = wire_ports or []
     dft_planes = dft_planes or []
+    waveguide_ports = waveguide_ports or []
     dt = grid.dt
     use_wire_ports = len(wire_ports) > 0
     use_debye = debye is not None
@@ -517,6 +519,7 @@ def run_nonuniform(
     use_dft_planes = len(dft_planes) > 0
     use_lumped_rlc = len(rlc_metas) > 0
     use_ntff = ntff_box is not None and ntff_data is not None
+    use_waveguide_ports = len(waveguide_ports) > 0
 
     # CPML: only initialize when cpml_layers > 0 (skip for PEC boundary)
     use_cpml = grid.cpml_layers > 0
@@ -609,6 +612,22 @@ def run_nonuniform(
     if use_ntff:
         carry_init["ntff"] = ntff_data
 
+    # Waveguide-port DFT accumulators (mirrors uniform path)
+    if use_waveguide_ports:
+        carry_init["waveguide_port_accs"] = tuple(
+            (
+                cfg.v_probe_dft,
+                cfg.v_ref_dft,
+                cfg.i_probe_dft,
+                cfg.i_ref_dft,
+                cfg.v_inc_dft,
+            )
+            for cfg in waveguide_ports
+        )
+        waveguide_meta = tuple(waveguide_ports)
+    else:
+        waveguide_meta = ()
+
     def step_fn(carry, xs):
         step_idx, src_vals = xs
         st = carry["fdtd"]
@@ -656,6 +675,38 @@ def run_nonuniform(
             field = getattr(st, sc)
             field = field.at[si, sj, sk].add(src_vals[idx_s])
             st = st._replace(**{sc: field})
+
+        # Waveguide-port injection + DFT probe accumulation. The dx
+        # arg is unused by the per-cell-weighted integrals (cfg already
+        # stores u_widths/v_widths), but kept in the function signature
+        # for back-compat.
+        new_waveguide_port_accs = None
+        if use_waveguide_ports:
+            from rfx.sources.waveguide_port import (
+                inject_waveguide_port,
+                update_waveguide_port_probe,
+            )
+            t_wg = step_idx.astype(jnp.float32) * dt
+            new_waveguide_port_accs = []
+            for accs, cfg_meta in zip(
+                carry["waveguide_port_accs"], waveguide_meta
+            ):
+                cfg = cfg_meta._replace(
+                    v_probe_dft=accs[0],
+                    v_ref_dft=accs[1],
+                    i_probe_dft=accs[2],
+                    i_ref_dft=accs[3],
+                    v_inc_dft=accs[4],
+                )
+                st = inject_waveguide_port(st, cfg_meta, t_wg, dt, grid.dx)
+                cfg_updated = update_waveguide_port_probe(cfg, st, dt, grid.dx)
+                new_waveguide_port_accs.append((
+                    cfg_updated.v_probe_dft,
+                    cfg_updated.v_ref_dft,
+                    cfg_updated.i_probe_dft,
+                    cfg_updated.i_ref_dft,
+                    cfg_updated.v_inc_dft,
+                ))
 
         # Wire port V/I DFT accumulation
         t = step_idx.astype(jnp.float32) * dt
@@ -733,6 +784,8 @@ def run_nonuniform(
             new_carry["rlc_states"] = tuple(new_rlc_states)
         if use_ntff and new_ntff is not None:
             new_carry["ntff"] = new_ntff
+        if use_waveguide_ports and new_waveguide_port_accs is not None:
+            new_carry["waveguide_port_accs"] = tuple(new_waveguide_port_accs)
         return new_carry, probe_out
 
     xs = (jnp.arange(n_steps, dtype=jnp.int32), src_waveforms)
@@ -758,6 +811,21 @@ def run_nonuniform(
     # Surface final NTFF DFT accumulators
     if use_ntff:
         result["ntff_data"] = final["ntff"]
+
+    # Surface final waveguide-port configs (with accumulated DFTs)
+    if use_waveguide_ports:
+        result["waveguide_ports"] = tuple(
+            cfg_meta._replace(
+                v_probe_dft=accs[0],
+                v_ref_dft=accs[1],
+                i_probe_dft=accs[2],
+                i_ref_dft=accs[3],
+                v_inc_dft=accs[4],
+            )
+            for cfg_meta, accs in zip(
+                waveguide_meta, final["waveguide_port_accs"]
+            )
+        )
 
     # ---- Extract full S-matrix column from wire port DFTs ----
     #

@@ -2566,13 +2566,6 @@ class Simulation:
                     "mesh. Use the uniform reference lane."
                 )
 
-            # P2.4: Waveguide ports unsupported on non-uniform path
-            if self._waveguide_ports:
-                raise ValueError(
-                    "Waveguide ports are not supported on non-uniform z mesh. "
-                    "Use the uniform reference lane for waveguide workflows."
-                )
-
             # P2.6: CPML z-thickness on non-uniform mesh
             if self._boundary == "cpml" and self._cpml_layers > 0:
                 cpml_z_thick = sum(float(d) for d in self._dz_profile[:self._cpml_layers])

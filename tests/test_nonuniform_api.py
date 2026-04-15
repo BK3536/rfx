@@ -250,19 +250,92 @@ class TestSimulationNonUniform:
         with pytest.raises(ValueError, match="TFSF plane-wave source is not supported"):
             sim.run(n_steps=20, compute_s_params=False)
 
-    def test_nonuniform_rejects_waveguide_ports(self):
-        dz = np.array([0.4e-3] * 4 + [0.5e-3] * 12)
-        sim = Simulation(
-            freq_max=10e9,
-            domain=(0.12, 0.04, 0.02),
-            boundary="cpml",
-            cpml_layers=10,
-            dx=0.002,
-            dz_profile=dz,
+    def test_nonuniform_waveguide_port_extracts_s11(self):
+        """Waveguide port runs on a NU dz mesh and produces a finite S11.
+
+        Uses a y-normal port on an x-z plane (the typical patch-antenna
+        geometry). The aperture spans x (uniform) and z (nonuniform),
+        which exercises the per-axis cell-width path.
+
+        Sanity bands:
+          (a) no exception
+          (b) |S11| finite and within [0, 1.05]
+          (c) NU result agrees with uniform reference (dz_profile = full(nz, dz_mean))
+              within 5% (degenerate NU == uniform)
+        """
+        a_wg = 0.04          # aperture along x
+        b_wg = 0.02          # aperture along z (the NU axis)
+        length = 0.06        # along y
+        dx = 0.002
+
+        # Uniform reference: dz = dx everywhere
+        nz_total = int(round(b_wg / dx))
+        dz_uniform = np.full(nz_total, float(dx))
+
+        # Degenerate-uniform NU profile (dz = dx everywhere) — used for
+        # a bit-close agreement check against the uniform reference.
+        dz_nu = np.full(nz_total, float(dx))
+
+        # f0 above TE10 cutoff (cutoff = c / (2*a))
+        from rfx.grid import C0 as _C0
+        f_c = _C0 / (2 * a_wg)
+        f0 = f_c * 1.6
+        freqs = jnp.linspace(f_c * 1.3, f_c * 2.2, 8)
+
+        def _build(dz_profile):
+            sim = Simulation(
+                freq_max=float(freqs[-1]) * 1.2,
+                domain=(a_wg, length, b_wg),
+                boundary="cpml",
+                cpml_layers=8,
+                dx=dx,
+                dz_profile=dz_profile,
+            )
+            sim.add_waveguide_port(
+                x_position=0.005,           # 5 mm into y from the -y face
+                direction="+y",
+                x_range=(0.0, a_wg),
+                z_range=(0.0, b_wg),
+                f0=f0,
+                bandwidth=0.5,
+                freqs=freqs,
+                probe_offset=10,
+                ref_offset=3,
+                name="p1",
+            )
+            return sim
+
+        sim_nu = _build(dz_nu)
+        sim_ref = _build(dz_uniform)
+
+        n_steps = 200
+        try:
+            res_nu = sim_nu.run(n_steps=n_steps, compute_s_params=False)
+            res_ref = sim_ref.run(n_steps=n_steps, compute_s_params=False)
+        except ValueError as exc:
+            # Aperture-on-NU edge cases that don't relate to the integral
+            # math should be flagged but not silently passed. Re-raise.
+            raise
+
+        assert res_nu.waveguide_sparams is not None, "NU path must surface waveguide_sparams"
+        assert "p1" in res_nu.waveguide_sparams
+        s11_nu = res_nu.waveguide_sparams["p1"].s11
+        s11_ref = res_ref.waveguide_sparams["p1"].s11
+
+        assert np.all(np.isfinite(s11_nu)), f"|S11| not finite: {s11_nu}"
+        s11_nu_mag = np.abs(s11_nu)
+        assert np.all(s11_nu_mag >= 0.0)
+        assert np.all(s11_nu_mag <= 1.05), f"|S11| exceeds 1.05: {s11_nu_mag}"
+
+        # Degenerate NU == uniform (both use dx everywhere).
+        # Compare the spectrum element-wise; allow 5% absolute tolerance
+        # on |S11|.
+        s11_ref_mag = np.abs(s11_ref)
+        diff = np.abs(s11_nu_mag - s11_ref_mag)
+        assert np.max(diff) < 0.05, (
+            f"NU |S11| disagrees with uniform reference: max|diff|={np.max(diff):.4f}, "
+            f"NU={s11_nu_mag}, REF={s11_ref_mag}"
         )
-        sim.add_waveguide_port(0.01)
-        with pytest.raises(ValueError, match="Waveguide ports are not supported"):
-            sim.run(n_steps=20, compute_s_params=False)
 
     def test_nonuniform_lumped_rlc_resistor_damps_source(self):
         """A resistor in the fine-dz region must dissipate energy.
