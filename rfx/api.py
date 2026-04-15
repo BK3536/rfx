@@ -78,6 +78,20 @@ MATERIAL_LIBRARY: dict[str, dict] = {
 # Result container
 # ---------------------------------------------------------------------------
 
+class AD_MemoryEstimate(NamedTuple):
+    """Reverse-mode AD memory estimate (issue #30 CHECK 4).
+
+    All sizes are in gigabytes. ``warning`` is populated when the
+    checkpointed estimate exceeds 85% of ``available_gb``.
+    """
+    forward_gb: float
+    ad_checkpointed_gb: float
+    ad_full_gb: float
+    ntff_dft_gb: float
+    available_gb: float | None
+    warning: str | None
+
+
 class Result(NamedTuple):
     """Structured simulation result.
 
@@ -443,11 +457,6 @@ class Simulation:
                 domain = (domain[0], domain[1], dz_total)
         elif any(d <= 0 for d in domain):
             raise ValueError(f"domain dimensions must be positive, got {domain}")
-
-        if boundary == "upml" and dz_profile is not None:
-            raise ValueError("boundary='upml' does not support nonuniform dz_profile")
-        if boundary == "upml" and (dx_profile is not None or dy_profile is not None):
-            raise ValueError("boundary='upml' does not support nonuniform dx/dy profile")
 
         # P2: Warn on abrupt grading in user-supplied dz_profile
         if dz_profile is not None and len(dz_profile) > 1:
@@ -2311,15 +2320,23 @@ class Simulation:
                         + hint,
                         stacklevel=3,
                     )
-                elif dim < 3 * cell:
-                    axis_name = "xyz"[axis]
-                    cells = dim / cell
-                    _w.warn(
-                        f"'{mat_name}' {axis_name}-extent {dim*1e3:.2f}mm = "
-                        f"{cells:.1f} cells — under-resolved (< 3 cells). "
-                        f"Consider finer mesh for accurate results.",
-                        stacklevel=3,
-                    )
+                else:
+                    # Tightened thresholds (issue #30 CHECK 1):
+                    # - PEC features carrying current need ≥5 cells
+                    # - Dielectric features need ≥10 cells for accurate fields
+                    mat = self._resolve_material(mat_name)
+                    is_pec = mat.sigma >= self._PEC_SIGMA_THRESHOLD
+                    thresh = 5 if is_pec else 10
+                    if dim < thresh * cell:
+                        axis_name = "xyz"[axis]
+                        cells = dim / cell
+                        kind = "PEC" if is_pec else "dielectric"
+                        _w.warn(
+                            f"'{mat_name}' {axis_name}-extent {dim*1e3:.2f}mm = "
+                            f"{cells:.1f} cells — under-resolved ({kind} needs "
+                            f"≥{thresh} cells). Consider finer mesh.",
+                            stacklevel=3,
+                        )
 
         # Check gaps between PEC structures
         pec_entries = [e for e in self._geometry if e.material_name == "pec"]
@@ -2344,7 +2361,16 @@ class Simulation:
                     except (NotImplementedError, TypeError, AttributeError):
                         continue
 
-    def preflight(self, *, strict: bool = False) -> list[str]:
+    def preflight(
+        self,
+        *,
+        strict: bool = False,
+        check_ntff: bool = True,
+        check_resolution: bool = True,
+        check_ad_memory: bool = False,
+        n_steps_for_memory: int | None = None,
+        available_memory_gb: float | None = None,
+    ) -> list[str]:
         """Run all pre-simulation checks and return warnings.
 
         Parameters
@@ -2352,6 +2378,20 @@ class Simulation:
         strict : bool
             If True, raise ValueError on the first issue instead of
             collecting warnings.
+        check_ntff : bool
+            Run inverse-design NTFF checks (PEC overlap hard-error,
+            λ/4 near-field gap warning). Default True.
+        check_resolution : bool
+            Run the tightened resolution check (existing _validate_mesh_quality
+            uses per-material thresholds already — this flag kept for
+            symmetry and future tightening). Default True.
+        check_ad_memory : bool
+            Run AD memory estimate and warn if > 85% of available VRAM.
+            Requires n_steps_for_memory. Default False (diagnostic only).
+        n_steps_for_memory : int or None
+            Step count for AD memory sizing. Required when check_ad_memory.
+        available_memory_gb : float or None
+            Override VRAM detection. If None, best-effort via JAX devices.
 
         Returns
         -------
@@ -2364,8 +2404,11 @@ class Simulation:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             try:
-                self._validate_mesh_quality()
+                if check_resolution:
+                    self._validate_mesh_quality()
                 self._validate_simulation_config()
+                if check_ntff:
+                    self._validate_ntff_inverse_design()
             except ValueError as e:
                 if strict:
                     raise
@@ -2377,6 +2420,19 @@ class Simulation:
                 raise ValueError(msg)
             issues.append(msg)
 
+        if check_ad_memory:
+            if n_steps_for_memory is None:
+                raise ValueError("check_ad_memory=True requires n_steps_for_memory")
+            est = self.estimate_ad_memory(
+                n_steps_for_memory,
+                available_memory_gb=available_memory_gb,
+            )
+            if est.warning:
+                msg = est.warning
+                if strict:
+                    raise ValueError(msg)
+                issues.append(msg)
+
         if issues:
             for iss in issues:
                 print(f"  [PREFLIGHT] {iss}")
@@ -2384,6 +2440,203 @@ class Simulation:
             print("  [PREFLIGHT] All checks passed.")
 
         return issues
+
+    # ---- Inverse-design preflight extensions (issue #30) ----
+
+    def _validate_ntff_inverse_design(self) -> None:
+        """NTFF inverse-design checks: PEC overlap (error) and λ/4 gap (warn).
+
+        CHECK 2: NTFF face plane strictly intersecting a PEC bbox.
+        CHECK 3: NTFF face closer than λ/4 to any geometry/source/probe.
+        """
+        import warnings as _w
+
+        if self._ntff is None:
+            return
+
+        corner_lo, corner_hi, freqs = self._ntff
+        # face = (axis, sign, coord, tangential bbox: [(lo_a, hi_a), (lo_b, hi_b)])
+        faces = []
+        for axis in range(3):
+            other = [a for a in range(3) if a != axis]
+            tang = ((corner_lo[other[0]], corner_hi[other[0]]),
+                    (corner_lo[other[1]], corner_hi[other[1]]))
+            faces.append(("lo", axis, corner_lo[axis], tang))
+            faces.append(("hi", axis, corner_hi[axis], tang))
+
+        # CHECK 2: strict PEC intersection
+        pec_entries = [e for e in self._geometry if e.material_name == "pec"]
+        for side, axis, coord, tang in faces:
+            for entry in pec_entries:
+                try:
+                    c1, c2 = entry.shape.bounding_box()
+                except (NotImplementedError, TypeError, AttributeError):
+                    continue
+                # Strict interior along normal axis
+                if not (c1[axis] < coord < c2[axis]):
+                    continue
+                # Tangential overlap along the other two axes
+                other = [a for a in range(3) if a != axis]
+                overlap = True
+                for idx, (tlo, thi) in zip(other, tang):
+                    if c2[idx] <= tlo or c1[idx] >= thi:
+                        overlap = False
+                        break
+                if overlap:
+                    raise ValueError(
+                        f"NTFF face {'xyz'[axis]}_{side} at {coord*1e3:.2f}mm "
+                        f"intersects PEC geometry '{entry.material_name}' "
+                        f"(bbox {c1}–{c2}). NTFF box must enclose all radiators "
+                        f"with no PEC crossing any face. Shrink or move the NTFF box."
+                    )
+
+        # CHECK 3: λ/4 near-field gap to any geometry/source/probe
+        if freqs is None:
+            return
+        try:
+            f_max = float(jnp.max(jnp.asarray(freqs)))
+        except Exception:
+            f_max = float(self._freq_max)
+        lam_min = C0 / max(f_max, 1.0)
+        gap_thresh = lam_min / 4.0
+
+        # Collect candidate bboxes and point positions
+        bboxes: list[tuple[str, tuple, tuple]] = []
+        for entry in self._geometry:
+            try:
+                c1, c2 = entry.shape.bounding_box()
+                bboxes.append((entry.material_name, c1, c2))
+            except (NotImplementedError, TypeError, AttributeError):
+                continue
+        points: list[tuple[str, tuple]] = []
+        for pe in self._ports:
+            points.append(("port/source", tuple(pe.position)))
+        for pe in self._probes:
+            points.append(("probe", tuple(pe.position)))
+
+        for side, axis, coord, tang in faces:
+            other = [a for a in range(3) if a != axis]
+            min_gap = float("inf")
+            culprit = None
+            # bbox distances
+            for name, c1, c2 in bboxes:
+                # tangential overlap check — only meaningful gap if the face
+                # is "above" the feature in the normal direction
+                overlap = True
+                for idx, (tlo, thi) in zip(other, tang):
+                    if c2[idx] <= tlo or c1[idx] >= thi:
+                        overlap = False
+                        break
+                if not overlap:
+                    continue
+                if coord <= c1[axis]:
+                    d = c1[axis] - coord
+                elif coord >= c2[axis]:
+                    d = coord - c2[axis]
+                else:
+                    d = 0.0  # already handled by CHECK 2 for PEC; skip
+                    continue
+                if d < min_gap:
+                    min_gap, culprit = d, f"geometry '{name}'"
+            # points
+            for name, pos in points:
+                # require tangential in-box for relevance
+                in_tang = all(
+                    tang[i][0] <= pos[other[i]] <= tang[i][1] for i in range(2)
+                )
+                if not in_tang:
+                    continue
+                d = abs(coord - pos[axis])
+                if d < min_gap:
+                    min_gap, culprit = d, f"{name} at {pos}"
+
+            if culprit is not None and min_gap < gap_thresh:
+                _w.warn(
+                    f"NTFF face {'xyz'[axis]}_{side} is {min_gap*1e3:.2f}mm "
+                    f"from {culprit} — below λ/4 = {gap_thresh*1e3:.2f}mm at "
+                    f"f_max={f_max/1e9:.2f}GHz. Evanescent near-field may "
+                    f"contaminate the far-field pattern. Move NTFF box further "
+                    f"from radiating/scattering structures.",
+                    stacklevel=3,
+                )
+
+    # ---- AD memory estimation (issue #30 CHECK 4) ----
+
+    def estimate_ad_memory(
+        self,
+        n_steps: int,
+        *,
+        available_memory_gb: float | None = None,
+    ) -> "AD_MemoryEstimate":
+        """Estimate reverse-mode AD memory for this simulation.
+
+        Returns an AD_MemoryEstimate with forward, checkpointed-AD, and
+        non-checkpointed-AD sizes in GB, plus a best-effort warning if
+        estimated AD memory exceeds 85% of available VRAM.
+        """
+        dx = self._dx or (C0 / self._freq_max / 20.0)
+
+        def _nx(extent: float, prof) -> int:
+            if prof is not None:
+                return len(prof) + 1 + 2 * self._cpml_layers
+            return int(math.ceil(extent / dx)) + 1 + 2 * self._cpml_layers
+
+        nx = _nx(self._domain[0], self._dx_profile)
+        ny = _nx(self._domain[1], self._dy_profile)
+        nz = _nx(self._domain[2], self._dz_profile)
+        cells = nx * ny * nz
+
+        # Forward working set: 6 field + ~6 material + ~4 CPML psi (~15%)
+        bytes_per_cell = 4  # float32
+        field_bytes = cells * 6 * bytes_per_cell
+        mat_bytes = cells * 6 * bytes_per_cell
+        cpml_bytes = int(cells * 0.15 * 24 * bytes_per_cell) if self._cpml_layers > 0 else 0
+        forward_bytes = field_bytes + mat_bytes + cpml_bytes
+
+        # NTFF DFT state: 6 faces × n_freqs × face_cells × 4 (3 E + 3 H) × complex64 (8B)
+        ntff_bytes = 0
+        if self._ntff is not None:
+            _, _, freqs = self._ntff
+            n_freqs = int(len(freqs)) if freqs is not None else 10
+            # Approx face cells from domain extents / dx
+            face_est = 2 * ((nx * ny) + (ny * nz) + (nx * nz))
+            ntff_bytes = face_est * n_freqs * 6 * 8
+
+        # Checkpointed AD: remat recomputes most of scan — ~4x forward is realistic
+        # Non-checkpointed AD: O(n_steps) tape — 6 field arrays per step
+        ad_ckpt_bytes = 4 * forward_bytes + ntff_bytes
+        ad_full_bytes = n_steps * field_bytes + ntff_bytes + forward_bytes
+
+        # VRAM detection (best effort)
+        avail_gb = available_memory_gb
+        if avail_gb is None:
+            try:
+                devs = jax.local_devices()
+                for d in devs:
+                    if d.platform == "gpu":
+                        stats = d.memory_stats() if hasattr(d, "memory_stats") else None
+                        if stats and "bytes_limit" in stats:
+                            avail_gb = stats["bytes_limit"] / 1e9
+                            break
+            except Exception:
+                avail_gb = None
+
+        to_gb = 1.0 / 1e9
+        warning = None
+        if avail_gb is not None and ad_ckpt_bytes * to_gb > avail_gb * 0.85:
+            warning = (
+                f"AD memory estimate {ad_ckpt_bytes*to_gb:.2f}GB (checkpointed) "
+                f"exceeds 85% of {avail_gb:.2f}GB available VRAM. "
+                f"Reduce grid size or n_steps, or increase domain decomposition."
+            )
+        return AD_MemoryEstimate(
+            forward_gb=forward_bytes * to_gb,
+            ad_checkpointed_gb=ad_ckpt_bytes * to_gb,
+            ad_full_gb=ad_full_bytes * to_gb,
+            ntff_dft_gb=ntff_bytes * to_gb,
+            available_gb=avail_gb,
+            warning=warning,
+        )
 
     def _validate_simulation_config(self) -> None:
         """Comprehensive pre-simulation configuration validation.
@@ -2564,40 +2817,23 @@ class Simulation:
         # P2: Non-uniform mesh shadow-lane limitations
         # ================================================================
         if self._dz_profile is not None:
-            # P2.1: NTFF unsupported on non-uniform path
-            if self._ntff is not None:
-                raise ValueError(
-                    "NTFF far-field is not supported on non-uniform z mesh. "
-                    "Use the uniform reference lane for far-field computation."
-                )
-
-            # P2.2: DFT plane probes unsupported on non-uniform path
-            if self._dft_planes:
-                raise ValueError(
-                    "DFT plane probes are not supported on non-uniform z mesh. "
-                    "Use the uniform reference lane for DFT-plane workflows."
-                )
-
-            # P2.3: TFSF unsupported on non-uniform path
+            # P2.3: TFSF on nonuniform mesh — narrowed scope.
+            # Axis-aligned ±x incidence with angle_deg=0 runs the 1D
+            # auxiliary along the uniform x axis and is supported. The
+            # z-directed and oblique cases would need a z-nonuniform 1D
+            # aux (resp. nonuniform 2D aux) and are deferred.
             if self._tfsf is not None:
-                raise ValueError(
-                    "TFSF plane-wave source is not supported on non-uniform z "
-                    "mesh. Use the uniform reference lane."
-                )
-
-            # P2.4: Waveguide ports unsupported on non-uniform path
-            if self._waveguide_ports:
-                raise ValueError(
-                    "Waveguide ports are not supported on non-uniform z mesh. "
-                    "Use the uniform reference lane for waveguide workflows."
-                )
-
-            # P2.5: Lumped RLC unsupported on non-uniform path
-            if self._lumped_rlc:
-                raise ValueError(
-                    "Lumped RLC elements are not supported on non-uniform z "
-                    "mesh. Use the uniform reference lane for RLC workflows."
-                )
+                if self._tfsf.direction in ("+z", "-z"):
+                    raise ValueError(
+                        "TFSF z-directed incidence is not yet supported on "
+                        "nonuniform z mesh. Axis-aligned incidence along x "
+                        "(direction='+x' or '-x') is supported."
+                    )
+                if abs(self._tfsf.angle_deg) > 0.01:
+                    raise ValueError(
+                        "TFSF oblique incidence is not yet supported on "
+                        "nonuniform z mesh. Use angle_deg=0."
+                    )
 
             # P2.6: CPML z-thickness on non-uniform mesh
             if self._boundary == "cpml" and self._cpml_layers > 0:
@@ -2993,11 +3229,23 @@ class Simulation:
 
         periodic_bool = periodic if periodic is not None else (False, False, False)
 
+        # Forward cpml_axes from the grid — when waveguide ports are
+        # present the grid restricts CPML to the non-propagation axes.
+        # The default _run cpml_axes="xyz" builds CPML state for axes
+        # that have no padding, producing shape-broadcast errors like
+        # (8,1,1) vs (nx,ny,nz) during the scan (issue #29). The run()
+        # path forwards these explicitly at api.py:2012, so does the
+        # waveguide compute path at :2077 / :2092.
+        cpml_axes_run = grid.cpml_axes
+        pec_axes_run = "".join(a for a in "xyz" if a not in cpml_axes_run)
+
         result = _run(
             grid,
             materials,
             n_steps,
             boundary=self._boundary,
+            cpml_axes=cpml_axes_run,
+            pec_axes=pec_axes_run,
             periodic=periodic_bool,
             debye=debye,
             lorentz=lorentz,
@@ -3009,6 +3257,45 @@ class Simulation:
             pec_mask=pec_mask_local,
             pec_occupancy=pec_occupancy_local,
             return_state=False,
+        )
+        return ForwardResult(
+            time_series=result.time_series,
+            ntff_data=result.ntff_data,
+            ntff_box=result.ntff_box,
+            grid=result.grid,
+            s_params=getattr(result, "s_params", None),
+            freqs=getattr(result, "freqs", None),
+        )
+
+    def _forward_nonuniform_from_materials(
+        self,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        sigma_override: jnp.ndarray | None = None,
+        pec_mask_override: jnp.ndarray | None = None,
+        n_steps: int,
+        checkpoint: bool = True,
+    ) -> ForwardResult:
+        """Differentiable forward on the non-uniform mesh path.
+
+        Routes through ``run_nonuniform_path`` with optimisation overrides
+        applied after material assembly, then repackages the returned
+        ``Result`` into the minimal ``ForwardResult`` schema.
+
+        ``checkpoint`` is accepted for API symmetry with the uniform
+        forward but is not currently plumbed into ``run_nonuniform`` —
+        the NU scan body does not yet expose a checkpoint toggle.
+        Memory cost scales with n_steps for reverse-mode AD on this path.
+        """
+        del checkpoint  # Reserved for future NU-scan checkpoint support.
+        from rfx.runners.nonuniform import run_nonuniform_path
+
+        result = run_nonuniform_path(
+            self,
+            n_steps=n_steps,
+            eps_override=eps_override,
+            sigma_override=sigma_override,
+            pec_mask_override=pec_mask_override,
         )
         return ForwardResult(
             time_series=result.time_series,
@@ -3061,13 +3348,30 @@ class Simulation:
         ForwardResult
             Minimal differentiable observables (time series and optional NTFF).
         """
-        if (self._dz_profile is not None
-                or self._dx_profile is not None
-                or self._dy_profile is not None):
-            raise ValueError(
-                "forward() does not support non-uniform mesh profiles "
-                "(dx_profile / dy_profile / dz_profile). Use run() instead, "
-                "or remove the profiles for a uniform-mesh differentiable sim."
+        is_nonuniform = (
+            self._dz_profile is not None
+            or self._dx_profile is not None
+            or self._dy_profile is not None
+        )
+        if is_nonuniform:
+            if pec_occupancy_override is not None:
+                raise ValueError(
+                    "pec_occupancy_override is not yet supported on the "
+                    "non-uniform forward path (run_nonuniform has no soft-PEC "
+                    "occupancy field). Use pec_mask_override for hard PEC."
+                )
+            # Let the NU runner build grid/materials so it can apply the
+            # NU-aware pec_mask and port/source setup against per-axis widths.
+            if n_steps is None:
+                grid_probe = self._build_nonuniform_grid()
+                period = 1.0 / float(self._freq_max)
+                n_steps = int(np.ceil(num_periods * period / float(grid_probe.dt)))
+            return self._forward_nonuniform_from_materials(
+                eps_override=eps_override,
+                sigma_override=sigma_override,
+                pec_mask_override=pec_mask_override,
+                n_steps=n_steps,
+                checkpoint=checkpoint,
             )
         grid = self._build_grid()
         materials, debye_spec, lorentz_spec, pec_mask, _, _ = self._assemble_materials(grid)
@@ -3185,11 +3489,70 @@ class Simulation:
         if self._boundary == "upml" and devices is not None and len(devices) > 1:
             raise ValueError("boundary='upml' does not support distributed execution")
 
+        # ---- Distributed + nonuniform (Phase B guardrail).
+        # Phase B permits the combination for PEC boundary with grading
+        # ratio <= 5 and no TFSF. The distributed_v2 runner dispatches to
+        # the NU kernels in distributed_nu.py; dispersion and CPML on the
+        # distributed NU path are Phase C items and still raise below.
+        _nu_profile = (
+            self._dz_profile is not None
+            or self._dx_profile is not None
+            or self._dy_profile is not None
+        )
+        if (devices is not None and len(devices) > 1 and _nu_profile):
+            import warnings as _wmod
+            # Grading ratio check (shared single dt) across provided profiles.
+            _max_ratio = 1.0
+            for _prof in (
+                self._dx_profile, self._dy_profile, self._dz_profile
+            ):
+                if _prof is not None and len(_prof) > 0:
+                    _pa = np.asarray(_prof, dtype=np.float64)
+                    if float(_pa.min()) > 0.0:
+                        _max_ratio = max(
+                            _max_ratio,
+                            float(_pa.max()) / float(_pa.min()),
+                        )
+            if _max_ratio > 5.0:
+                raise ValueError(
+                    "Distributed + non-uniform requires grading ratio "
+                    "<= 5:1 for shared-dt stability; got "
+                    f"{_max_ratio:.2f}:1."
+                )
+            if self._tfsf is not None:
+                raise ValueError(
+                    "Distributed + non-uniform does not support TFSF "
+                    "plane-wave sources (Phase B scope)."
+                )
+            if self._solver == "adi":
+                raise ValueError(
+                    "Distributed + non-uniform does not support solver='adi'."
+                )
+            if _max_ratio > 3.0:
+                _wmod.warn(
+                    f"Distributed + non-uniform grading ratio {_max_ratio:.2f}"
+                    ":1 exceeds the 3:1 stability caution threshold. "
+                    "Monitor for numerical dispersion / late-time drift.",
+                    stacklevel=2,
+                )
+
         # ---- Distributed multi-device path ----
         if devices is not None and len(devices) > 1:
             if n_steps is None:
-                grid = self._build_grid()
-                n_steps = grid.num_timesteps(num_periods=num_periods)
+                if _nu_profile:
+                    # Synthesise missing dz profile so _build_nonuniform_grid
+                    # has all three axes available.
+                    if self._dz_profile is None:
+                        nz_phys = max(
+                            1, int(round(self._domain[2] / self._dx)))
+                        self._dz_profile = np.full(
+                            nz_phys, float(self._dx))
+                    _ngrid = self._build_nonuniform_grid()
+                    n_steps = int(np.ceil(
+                        num_periods / (self._freq_max * _ngrid.dt)))
+                else:
+                    grid = self._build_grid()
+                    n_steps = grid.num_timesteps(num_periods=num_periods)
             from rfx.runners.distributed_v2 import run_distributed
             return run_distributed(
                 self, n_steps=n_steps, devices=devices,
