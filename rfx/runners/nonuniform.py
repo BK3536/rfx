@@ -245,6 +245,34 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
         idx = pos_to_nu_index(grid, pe.position)
         probes.append((*idx, pe.component))
 
+    # DFT plane probes — mirror the uniform-path setup in
+    # runners/uniform.py, but use pos_to_nu_index so the plane
+    # coordinate resolves on a possibly-graded mesh.
+    dft_plane_probes = []
+    if sim._dft_planes:
+        from rfx.probes.probes import init_dft_plane_probe
+        axis_to_index = {"x": 0, "y": 1, "z": 2}
+        for pe in sim._dft_planes:
+            axis_idx = axis_to_index[pe.axis]
+            plane_pos = [0.0, 0.0, 0.0]
+            plane_pos[axis_idx] = pe.coordinate
+            grid_index = pos_to_nu_index(grid, tuple(plane_pos))[axis_idx]
+            freqs_arr = (
+                pe.freqs
+                if pe.freqs is not None
+                else jnp.linspace(sim._freq_max / 10, sim._freq_max, pe.n_freqs)
+            )
+            dft_plane_probes.append(
+                init_dft_plane_probe(
+                    axis=axis_idx,
+                    index=grid_index,
+                    component=pe.component,
+                    freqs=freqs_arr,
+                    grid_shape=(grid.nx, grid.ny, grid.nz),
+                    dft_total_steps=n_steps,
+                )
+            )
+
     sp_freqs = None
     if wire_port_specs and (compute_s_params is None or compute_s_params):
         sp_freqs = s_param_freqs
@@ -262,16 +290,27 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
         debye=debye,
         lorentz=lorentz,
         pec_faces=getattr(sim, '_pec_faces', None),
+        dft_planes=dft_plane_probes if dft_plane_probes else None,
     )
 
     s_params = r.get("s_params")
     freqs_out = r.get("s_param_freqs")
+
+    # Repack DFT planes into {name: DFTPlaneProbe} dict to match
+    # the uniform path's Result schema.
+    dft_planes_dict = None
+    if sim._dft_planes and "dft_planes" in r:
+        dft_planes_dict = {
+            entry.name: probe
+            for entry, probe in zip(sim._dft_planes, r["dft_planes"])
+        }
 
     return Result(
         state=r["state"],
         time_series=r["time_series"],
         s_params=s_params,
         freqs=freqs_out,
+        dft_planes=dft_planes_dict,
         grid=grid,
         dt=grid.dt,
         freq_range=(sim._freq_max / 10, sim._freq_max, sim._boundary),

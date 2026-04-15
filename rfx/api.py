@@ -2566,13 +2566,6 @@ class Simulation:
                     "Use the uniform reference lane for far-field computation."
                 )
 
-            # P2.2: DFT plane probes unsupported on non-uniform path
-            if self._dft_planes:
-                raise ValueError(
-                    "DFT plane probes are not supported on non-uniform z mesh. "
-                    "Use the uniform reference lane for DFT-plane workflows."
-                )
-
             # P2.3: TFSF unsupported on non-uniform path
             if self._tfsf is not None:
                 raise ValueError(

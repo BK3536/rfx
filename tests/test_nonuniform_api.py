@@ -156,19 +156,47 @@ class TestSimulationNonUniform:
         with pytest.raises(ValueError, match="NTFF far-field is not supported"):
             sim.run(n_steps=20)
 
-    def test_nonuniform_rejects_dft_plane_probe(self):
+    def test_nonuniform_dft_plane_probe_accumulates(self):
+        """DFT plane probe runs on NU mesh and accumulates with step count.
+
+        Accumulation is monotonic for a finite-bandwidth source, so the
+        |DFT| magnitude at 200 steps must exceed the magnitude at 100
+        steps. Also asserts the plane is finite and non-zero.
+        """
         dz = np.array([0.4e-3] * 4 + [0.5e-3] * 5)
-        sim = Simulation(
-            freq_max=5e9,
-            domain=(0.02, 0.02, 0.01),
-            dx=0.5e-3,
-            dz_profile=dz,
-            boundary="cpml",
-        )
-        sim.add_source((0.01, 0.01, 0.001), "ez")
-        sim.add_dft_plane_probe(axis="x", coordinate=0.01)
-        with pytest.raises(ValueError, match="DFT plane probes are not supported"):
-            sim.run(n_steps=20)
+
+        def _run(n_steps: int):
+            sim = Simulation(
+                freq_max=5e9,
+                domain=(0.02, 0.02, 0.01),
+                dx=0.5e-3,
+                dz_profile=dz,
+                boundary="upml",
+            )
+            sim.add_source((0.01, 0.01, 0.005), "ez")
+            sim.add_dft_plane_probe(
+                axis="z", coordinate=0.005, component="ez",
+                freqs=jnp.asarray([2.4e9]),
+                name="mid_xy",
+            )
+            return sim.run(n_steps=n_steps)
+
+        r100 = _run(100)
+        r200 = _run(200)
+
+        # (a) dft_planes is present and non-empty
+        assert r200.dft_planes is not None
+        assert "mid_xy" in r200.dft_planes
+
+        acc200 = np.asarray(r200.dft_planes["mid_xy"].accumulator)
+        acc100 = np.asarray(r100.dft_planes["mid_xy"].accumulator)
+
+        # (b) finite and non-zero
+        assert np.all(np.isfinite(acc200))
+        assert np.max(np.abs(acc200)) > 0.0
+
+        # (c) longer run → larger |accumulator|
+        assert np.max(np.abs(acc200)) > np.max(np.abs(acc100))
 
     def test_nonuniform_rejects_tfsf(self):
         dz = np.array([0.4e-3] * 4 + [0.5e-3] * 5)

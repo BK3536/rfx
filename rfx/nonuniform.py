@@ -484,6 +484,7 @@ def run_nonuniform(
     debye: tuple | None = None,
     lorentz: tuple | None = None,
     pec_faces: set[str] | None = None,
+    dft_planes: list | None = None,
 ) -> dict:
     """Run non-uniform FDTD via jax.lax.scan.
 
@@ -496,14 +497,20 @@ def run_nonuniform(
     s_param_freqs : (n_freqs,) array for S-param DFT
     debye : (DebyeCoeffs, DebyeState) or None
     lorentz : (LorentzCoeffs, LorentzState) or None
+    dft_planes : list of DFTPlaneProbe or None
+        Frequency-domain plane accumulators. The accumulation is
+        identical to the uniform path (acc += field * exp(-j2pi f t) * dt);
+        dt is scalar on both paths so no per-axis weighting is required.
     """
     sources = sources or []
     probes = probes or []
     wire_ports = wire_ports or []
+    dft_planes = dft_planes or []
     dt = grid.dt
     use_wire_ports = len(wire_ports) > 0
     use_debye = debye is not None
     use_lorentz = lorentz is not None
+    use_dft_planes = len(dft_planes) > 0
 
     # CPML: only initialize when cpml_layers > 0 (skip for PEC boundary)
     use_cpml = grid.cpml_layers > 0
@@ -577,6 +584,16 @@ def run_nonuniform(
     else:
         use_wire_ports = False
 
+    # DFT plane probe carry + static metadata
+    if use_dft_planes:
+        carry_init["dft_planes"] = tuple(probe.accumulator for probe in dft_planes)
+        dft_meta = tuple(
+            (probe.component, probe.axis, probe.index, probe.freqs)
+            for probe in dft_planes
+        )
+    else:
+        dft_meta = ()
+
     def step_fn(carry, xs):
         step_idx, src_vals = xs
         st = carry["fdtd"]
@@ -647,6 +664,26 @@ def run_nonuniform(
                     vinc_dft,
                 ))
 
+        # DFT plane probe accumulation (identical math to uniform path)
+        new_dft_planes = None
+        if use_dft_planes:
+            t_plane = step_idx.astype(jnp.float32) * dt
+            new_dft_planes = []
+            for acc, (component, axis, index, freqs) in zip(
+                carry["dft_planes"], dft_meta
+            ):
+                field = getattr(st, component)
+                if axis == 0:
+                    plane = field[index, :, :]
+                elif axis == 1:
+                    plane = field[:, index, :]
+                else:
+                    plane = field[:, :, index]
+                phase = jnp.exp(-1j * 2.0 * jnp.pi * freqs * t_plane)
+                new_dft_planes.append(
+                    acc + plane[None, :, :] * phase[:, None, None] * dt
+                )
+
         # Probes
         samples = [getattr(st, pc)[pi, pj, pk] for pi, pj, pk, pc in prb_meta]
         probe_out = jnp.stack(samples) if samples else jnp.zeros(0)
@@ -660,6 +697,8 @@ def run_nonuniform(
             new_carry["lorentz"] = lorentz_new
         if use_wire_ports and new_wire_sp is not None:
             new_carry["wire_sparams"] = tuple(new_wire_sp)
+        if use_dft_planes and new_dft_planes is not None:
+            new_carry["dft_planes"] = tuple(new_dft_planes)
         return new_carry, probe_out
 
     xs = (jnp.arange(n_steps, dtype=jnp.int32), src_waveforms)
@@ -670,6 +709,13 @@ def run_nonuniform(
         "time_series": time_series,
         "dt": dt,
     }
+
+    # Repack DFT plane probes with their final accumulators.
+    if use_dft_planes:
+        result["dft_planes"] = tuple(
+            probe._replace(accumulator=acc)
+            for probe, acc in zip(dft_planes, final["dft_planes"])
+        )
 
     # ---- Extract full S-matrix column from wire port DFTs ----
     #
