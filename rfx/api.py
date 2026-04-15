@@ -3282,12 +3282,10 @@ class Simulation:
         applied after material assembly, then repackages the returned
         ``Result`` into the minimal ``ForwardResult`` schema.
 
-        ``checkpoint`` is accepted for API symmetry with the uniform
-        forward but is not currently plumbed into ``run_nonuniform`` —
-        the NU scan body does not yet expose a checkpoint toggle.
-        Memory cost scales with n_steps for reverse-mode AD on this path.
+        When ``checkpoint`` is True (the default), the NU scan body is
+        wrapped in ``jax.checkpoint`` so reverse-mode AD memory scales
+        with ``sqrt(n_steps)`` instead of ``n_steps``.
         """
-        del checkpoint  # Reserved for future NU-scan checkpoint support.
         from rfx.runners.nonuniform import run_nonuniform_path
 
         result = run_nonuniform_path(
@@ -3296,6 +3294,7 @@ class Simulation:
             eps_override=eps_override,
             sigma_override=sigma_override,
             pec_mask_override=pec_mask_override,
+            checkpoint=checkpoint,
         )
         return ForwardResult(
             time_series=result.time_series,

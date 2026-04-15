@@ -491,6 +491,7 @@ def run_nonuniform(
     ntff_data=None,
     waveguide_ports: list | None = None,
     tfsf: tuple | None = None,
+    checkpoint: bool = False,
 ) -> dict:
     """Run non-uniform FDTD via jax.lax.scan.
 
@@ -831,7 +832,8 @@ def run_nonuniform(
         return new_carry, probe_out
 
     xs = (jnp.arange(n_steps, dtype=jnp.int32), src_waveforms)
-    final, time_series = jax.lax.scan(step_fn, carry_init, xs)
+    body = jax.checkpoint(step_fn) if checkpoint else step_fn
+    final, time_series = jax.lax.scan(body, carry_init, xs)
 
     result = {
         "state": final["fdtd"],

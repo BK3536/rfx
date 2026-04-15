@@ -3,6 +3,7 @@
 ## Read first
 
 - `public-site-sync-checklist.md`
+- `nu_known_limits.md` — non-uniform mesh path: soft-PEC and mesh-as-design-variable gradient sentinels
 
 ## Session Handover (2026-04-12)
 
