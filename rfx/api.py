@@ -2559,13 +2559,6 @@ class Simulation:
         # P2: Non-uniform mesh shadow-lane limitations
         # ================================================================
         if self._dz_profile is not None:
-            # P2.1: NTFF unsupported on non-uniform path
-            if self._ntff is not None:
-                raise ValueError(
-                    "NTFF far-field is not supported on non-uniform z mesh. "
-                    "Use the uniform reference lane for far-field computation."
-                )
-
             # P2.3: TFSF unsupported on non-uniform path
             if self._tfsf is not None:
                 raise ValueError(

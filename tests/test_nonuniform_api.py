@@ -138,23 +138,61 @@ class TestSimulationNonUniform:
             f"early peak {peak:.3e} — UPML sourcing energy"
         )
 
-    def test_nonuniform_rejects_ntff(self):
+    def test_nonuniform_ntff_box_accumulates(self):
+        """NTFF box accumulates on NU mesh and yields finite far-field.
+
+        Runs an ez dipole inside the box on a graded-dz UPML domain
+        for 150 steps. Asserts: (a) result exposes ntff_data/ntff_box,
+        (b) all 6 face accumulators are finite and at least one has
+        non-zero magnitude, (c) compute_far_field returns a finite
+        far-field at a small angular sample without raising.
+        """
+        from rfx.farfield import compute_far_field
+
         dz = np.array([0.4e-3] * 4 + [0.5e-3] * 5)
         sim = Simulation(
             freq_max=5e9,
             domain=(0.02, 0.02, 0.01),
             dx=0.5e-3,
             dz_profile=dz,
-            boundary="cpml",
+            boundary="upml",
         )
-        sim.add_source((0.01, 0.01, 0.001), "ez")
+        sim.add_source((0.01, 0.01, 0.004), "ez")
         sim.add_ntff_box(
-            corner_lo=(0.002, 0.002, 0.001),
-            corner_hi=(0.018, 0.018, 0.004),
+            corner_lo=(0.004, 0.004, 0.002),
+            corner_hi=(0.016, 0.016, 0.006),
             freqs=[2.4e9],
         )
-        with pytest.raises(ValueError, match="NTFF far-field is not supported"):
-            sim.run(n_steps=20)
+        result = sim.run(n_steps=150, compute_s_params=False)
+
+        # (a) both NTFF attributes are populated on NU path
+        assert result.ntff_data is not None
+        assert result.ntff_box is not None
+
+        face_arrays = [
+            np.asarray(result.ntff_data.x_lo),
+            np.asarray(result.ntff_data.x_hi),
+            np.asarray(result.ntff_data.y_lo),
+            np.asarray(result.ntff_data.y_hi),
+            np.asarray(result.ntff_data.z_lo),
+            np.asarray(result.ntff_data.z_hi),
+        ]
+
+        # (b) every face accumulator is finite; at least one is non-zero
+        assert all(np.all(np.isfinite(f)) for f in face_arrays)
+        assert any(np.max(np.abs(f)) > 0 for f in face_arrays), (
+            "all 6 NTFF face accumulators stayed zero — scan never wrote"
+        )
+
+        # (c) far-field post-processing must run cleanly on NU grid
+        theta = np.array([np.pi / 2])
+        phi = np.array([0.0, np.pi / 2])
+        ff = compute_far_field(
+            result.ntff_data, result.ntff_box, result.grid, theta, phi,
+        )
+        assert np.all(np.isfinite(ff.E_theta))
+        assert np.all(np.isfinite(ff.E_phi))
+        assert (np.max(np.abs(ff.E_theta)) + np.max(np.abs(ff.E_phi))) > 0
 
     def test_nonuniform_dft_plane_probe_accumulates(self):
         """DFT plane probe runs on NU mesh and accumulates with step count.

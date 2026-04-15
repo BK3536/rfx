@@ -487,6 +487,8 @@ def run_nonuniform(
     dft_planes: list | None = None,
     rlc_metas: tuple = (),
     rlc_states: tuple = (),
+    ntff_box=None,
+    ntff_data=None,
 ) -> dict:
     """Run non-uniform FDTD via jax.lax.scan.
 
@@ -514,6 +516,7 @@ def run_nonuniform(
     use_lorentz = lorentz is not None
     use_dft_planes = len(dft_planes) > 0
     use_lumped_rlc = len(rlc_metas) > 0
+    use_ntff = ntff_box is not None and ntff_data is not None
 
     # CPML: only initialize when cpml_layers > 0 (skip for PEC boundary)
     use_cpml = grid.cpml_layers > 0
@@ -600,6 +603,11 @@ def run_nonuniform(
     # Lumped RLC ADE state (one per element) — metas are Python-static
     if use_lumped_rlc:
         carry_init["rlc_states"] = tuple(rlc_states)
+
+    # NTFF accumulators — seeded from caller, updated per step via
+    # accumulate_ntff. Box indices and freqs are Python-static.
+    if use_ntff:
+        carry_init["ntff"] = ntff_data
 
     def step_fn(carry, xs):
         step_idx, src_vals = xs
@@ -700,6 +708,12 @@ def run_nonuniform(
                     acc + plane[None, :, :] * phase[:, None, None] * dt
                 )
 
+        # NTFF: accumulate tangential E/H DFT on 6 box faces
+        new_ntff = None
+        if use_ntff:
+            from rfx.farfield import accumulate_ntff
+            new_ntff = accumulate_ntff(carry["ntff"], st, ntff_box, dt, step_idx)
+
         # Probes
         samples = [getattr(st, pc)[pi, pj, pk] for pi, pj, pk, pc in prb_meta]
         probe_out = jnp.stack(samples) if samples else jnp.zeros(0)
@@ -717,6 +731,8 @@ def run_nonuniform(
             new_carry["dft_planes"] = tuple(new_dft_planes)
         if use_lumped_rlc and new_rlc_states is not None:
             new_carry["rlc_states"] = tuple(new_rlc_states)
+        if use_ntff and new_ntff is not None:
+            new_carry["ntff"] = new_ntff
         return new_carry, probe_out
 
     xs = (jnp.arange(n_steps, dtype=jnp.int32), src_waveforms)
@@ -738,6 +754,10 @@ def run_nonuniform(
             probe._replace(accumulator=acc)
             for probe, acc in zip(dft_planes, final["dft_planes"])
         )
+
+    # Surface final NTFF DFT accumulators
+    if use_ntff:
+        result["ntff_data"] = final["ntff"]
 
     # ---- Extract full S-matrix column from wire port DFTs ----
     #

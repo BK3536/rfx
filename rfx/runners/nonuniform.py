@@ -297,6 +297,26 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
         )
         rlc_states_init = tuple(init_rlc_state() for _ in sim._lumped_rlc)
 
+    # NTFF box: build once (indices are Python-static) + zero-init
+    # DFT accumulators that will be threaded through the scan carry.
+    # NonUniformGrid is a NamedTuple without ``position_to_index``, so
+    # we build the box directly via ``pos_to_nu_index`` (which uses
+    # the cumulative dx_arr/dy_arr/dz lookup) and skip make_ntff_box.
+    ntff_box = None
+    ntff_data_init = None
+    if sim._ntff is not None:
+        from rfx.farfield import NTFFBox, init_ntff_data
+        corner_lo, corner_hi, ntff_freqs = sim._ntff
+        lo_idx = pos_to_nu_index(grid, corner_lo)
+        hi_idx = pos_to_nu_index(grid, corner_hi)
+        ntff_box = NTFFBox(
+            i_lo=lo_idx[0], i_hi=hi_idx[0],
+            j_lo=lo_idx[1], j_hi=hi_idx[1],
+            k_lo=lo_idx[2], k_hi=hi_idx[2],
+            freqs=jnp.asarray(ntff_freqs, dtype=jnp.float32),
+        )
+        ntff_data_init = init_ntff_data(ntff_box)
+
     r = run_nonuniform(
         grid, materials, n_steps,
         pec_mask=pec_mask,
@@ -310,6 +330,8 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
         dft_planes=dft_plane_probes if dft_plane_probes else None,
         rlc_metas=rlc_metas,
         rlc_states=rlc_states_init,
+        ntff_box=ntff_box,
+        ntff_data=ntff_data_init,
     )
 
     s_params = r.get("s_params")
@@ -329,6 +351,8 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
         time_series=r["time_series"],
         s_params=s_params,
         freqs=freqs_out,
+        ntff_data=r.get("ntff_data"),
+        ntff_box=ntff_box,
         dft_planes=dft_planes_dict,
         grid=grid,
         dt=grid.dt,
