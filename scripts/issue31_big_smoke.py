@@ -133,10 +133,11 @@ def main():
     # boundary — see docs/agent-memory/nu_known_limits.md). Do NOT wrap
     # loss_from_alpha in jax.jit; lax.scan inside run_nonuniform is
     # already JIT-compiled, so wall-clock impact is small.
-    grad_fn = jax.grad(loss_from_alpha)
-    g0 = float(grad_fn(alpha))  # first call = compile + run
+    vg_fn = jax.value_and_grad(loss_from_alpha)
+    loss0, g0 = vg_fn(alpha)
+    loss0, g0 = float(loss0), float(g0)
     t1 = time.time()
-    print(f"[run] first grad call OK  value={g0:.4e}  "
+    print(f"[run] first grad call OK  loss={loss0:.4e}  grad={g0:.4e}  "
           f"elapsed={t1 - t0:.1f}s  peak={_peak_gb()} GB")
 
     # Do a few iterations of plain gradient descent (no Adam) to exercise
@@ -144,11 +145,13 @@ def main():
     lr = 0.05
     for it in range(1, args.n_iters):
         t0 = time.time()
-        g_ = float(grad_fn(alpha))
+        l_, g_ = vg_fn(alpha)
+        l_, g_ = float(l_), float(g_)
         alpha = alpha - lr * g_
         t1 = time.time()
-        print(f"[iter {it}] alpha={float(alpha):+.4f}  grad={g_:+.4e}  "
-              f"dt={t1 - t0:.1f}s  peak={_peak_gb()} GB", flush=True)
+        print(f"[iter {it}] alpha={float(alpha):+.4f}  loss={l_:+.4e}  "
+              f"grad={g_:+.4e}  dt={t1 - t0:.1f}s  peak={_peak_gb()} GB",
+              flush=True)
 
     peak = _peak_gb()
     print(f"\n[result] PASS  peak_GB={peak}  cells={cells:,}  n_steps={args.n_steps}")
