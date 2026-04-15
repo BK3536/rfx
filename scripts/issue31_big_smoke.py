@@ -78,6 +78,8 @@ def main():
                     help="1=Phase A (remat), 0=no remat (expected to OOM)")
     ap.add_argument("--emit-ts", type=int, default=0,
                     help="1=keep time series, 0=Phase C skip")
+    ap.add_argument("--checkpoint-every", type=int, default=0,
+                    help="Segment size for scan-of-scan remat (0=off)")
     args = ap.parse_args()
 
     sim, _dz = build_sim(ext_mm=args.ext_mm, dx_mm=args.dx_mm)
@@ -85,8 +87,10 @@ def main():
     cells = int(g.nx * g.ny * g.nz)
     print(f"[cfg] nx,ny,nz = {g.nx},{g.ny},{g.nz}  cells = {cells:,}")
     print(f"[cfg] n_steps = {args.n_steps}  iters = {args.n_iters}")
+    ckpt_every = args.checkpoint_every if args.checkpoint_every > 0 else None
     print(f"[cfg] checkpoint = {bool(args.checkpoint)}  "
-          f"emit_time_series = {bool(args.emit_ts)}")
+          f"emit_time_series = {bool(args.emit_ts)}  "
+          f"checkpoint_every = {ckpt_every}")
 
     dev = jax.local_devices()[0]
     print(f"[cfg] device = {dev} (platform={dev.platform})")
@@ -108,7 +112,8 @@ def main():
         if args.emit_ts:
             fr = sim.forward(eps_override=eps, n_steps=args.n_steps,
                              checkpoint=bool(args.checkpoint),
-                             emit_time_series=True)
+                             emit_time_series=True,
+                             checkpoint_every=ckpt_every)
             return minimize_reflected_energy(port_probe_idx=0)(fr)
         # emit_time_series=False path: use a proxy loss on the (empty)
         # forward. Without NTFF this has no signal, so fold alpha back
@@ -116,7 +121,8 @@ def main():
         # the scan + backward pass end-to-end.
         _ = sim.forward(eps_override=eps, n_steps=args.n_steps,
                         checkpoint=bool(args.checkpoint),
-                        emit_time_series=False)
+                        emit_time_series=False,
+                        checkpoint_every=ckpt_every)
         return (alpha - 1.5) ** 2
 
     # 1 compile + 1 grad pass (dry run) to measure peak.

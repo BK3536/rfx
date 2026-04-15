@@ -3276,6 +3276,7 @@ class Simulation:
         n_steps: int,
         checkpoint: bool = True,
         emit_time_series: bool = True,
+        checkpoint_every: int | None = None,
     ) -> ForwardResult:
         """Differentiable forward on the non-uniform mesh path.
 
@@ -3297,6 +3298,7 @@ class Simulation:
             pec_mask_override=pec_mask_override,
             checkpoint=checkpoint,
             emit_time_series=emit_time_series,
+            checkpoint_every=checkpoint_every,
         )
         return ForwardResult(
             time_series=result.time_series,
@@ -3320,6 +3322,7 @@ class Simulation:
         num_periods: float = 20.0,
         checkpoint: bool = True,
         emit_time_series: bool = True,
+        checkpoint_every: int | None = None,
     ) -> ForwardResult:
         """Run a minimal differentiable forward simulation.
 
@@ -3375,12 +3378,18 @@ class Simulation:
                 n_steps=n_steps,
                 checkpoint=checkpoint,
                 emit_time_series=emit_time_series,
+                checkpoint_every=checkpoint_every,
             )
         if not emit_time_series:
             raise NotImplementedError(
                 "emit_time_series=False is currently only supported on the "
                 "non-uniform forward path. Frequency-domain objectives "
                 "(NTFF, S-params) on uniform meshes still emit time series."
+            )
+        if checkpoint_every is not None:
+            raise NotImplementedError(
+                "checkpoint_every (segmented remat) is currently only "
+                "supported on the non-uniform forward path."
             )
         grid = self._build_grid()
         materials, debye_spec, lorentz_spec, pec_mask, _, _ = self._assemble_materials(grid)
