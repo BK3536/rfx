@@ -484,6 +484,13 @@ def run_nonuniform(
     debye: tuple | None = None,
     lorentz: tuple | None = None,
     pec_faces: set[str] | None = None,
+    dft_planes: list | None = None,
+    rlc_metas: tuple = (),
+    rlc_states: tuple = (),
+    ntff_box=None,
+    ntff_data=None,
+    waveguide_ports: list | None = None,
+    tfsf: tuple | None = None,
 ) -> dict:
     """Run non-uniform FDTD via jax.lax.scan.
 
@@ -496,14 +503,25 @@ def run_nonuniform(
     s_param_freqs : (n_freqs,) array for S-param DFT
     debye : (DebyeCoeffs, DebyeState) or None
     lorentz : (LorentzCoeffs, LorentzState) or None
+    dft_planes : list of DFTPlaneProbe or None
+        Frequency-domain plane accumulators. The accumulation is
+        identical to the uniform path (acc += field * exp(-j2pi f t) * dt);
+        dt is scalar on both paths so no per-axis weighting is required.
     """
     sources = sources or []
     probes = probes or []
     wire_ports = wire_ports or []
+    dft_planes = dft_planes or []
+    waveguide_ports = waveguide_ports or []
     dt = grid.dt
     use_wire_ports = len(wire_ports) > 0
     use_debye = debye is not None
     use_lorentz = lorentz is not None
+    use_dft_planes = len(dft_planes) > 0
+    use_lumped_rlc = len(rlc_metas) > 0
+    use_ntff = ntff_box is not None and ntff_data is not None
+    use_waveguide_ports = len(waveguide_ports) > 0
+    use_tfsf = tfsf is not None
 
     # CPML: only initialize when cpml_layers > 0 (skip for PEC boundary)
     use_cpml = grid.cpml_layers > 0
@@ -577,17 +595,79 @@ def run_nonuniform(
     else:
         use_wire_ports = False
 
+    # DFT plane probe carry + static metadata
+    if use_dft_planes:
+        carry_init["dft_planes"] = tuple(probe.accumulator for probe in dft_planes)
+        dft_meta = tuple(
+            (probe.component, probe.axis, probe.index, probe.freqs)
+            for probe in dft_planes
+        )
+    else:
+        dft_meta = ()
+
+    # Lumped RLC ADE state (one per element) — metas are Python-static
+    if use_lumped_rlc:
+        carry_init["rlc_states"] = tuple(rlc_states)
+
+    # NTFF accumulators — seeded from caller, updated per step via
+    # accumulate_ntff. Box indices and freqs are Python-static.
+    if use_ntff:
+        carry_init["ntff"] = ntff_data
+
+    # Waveguide-port DFT accumulators (mirrors uniform path)
+    if use_waveguide_ports:
+        carry_init["waveguide_port_accs"] = tuple(
+            (
+                cfg.v_probe_dft,
+                cfg.v_ref_dft,
+                cfg.i_probe_dft,
+                cfg.i_ref_dft,
+                cfg.v_inc_dft,
+            )
+            for cfg in waveguide_ports
+        )
+        waveguide_meta = tuple(waveguide_ports)
+    else:
+        waveguide_meta = ()
+
+    # TFSF 1D auxiliary state carry. Injection axis is x (uniform on
+    # NU paths we support — dz-only nonuniformity), so the 1D aux runs
+    # with grid.dx spacing and the E/H corrections use scalar
+    # coeff = dt / (EPS_0 * dx) etc. Oblique / +z,-z cases are
+    # rejected upstream (see rfx/runners/nonuniform.py and rfx/api.py).
+    if use_tfsf:
+        from rfx.sources.tfsf import is_tfsf_2d as _is_tfsf_2d
+        tfsf_cfg, tfsf_state = tfsf
+        if _is_tfsf_2d(tfsf_cfg):
+            raise ValueError(
+                "TFSF oblique incidence (2D auxiliary grid) is not yet "
+                "supported on nonuniform z mesh. Use angle_deg=0 along x."
+            )
+        if tfsf_cfg.direction not in ("+x", "-x"):
+            raise ValueError(
+                "TFSF on nonuniform mesh supports only direction='+x' or "
+                f"'-x' (injection along uniform x axis); got {tfsf_cfg.direction!r}."
+            )
+        carry_init["tfsf"] = tfsf_state
+
     def step_fn(carry, xs):
         step_idx, src_vals = xs
         st = carry["fdtd"]
 
         # H update (non-uniform)
         st = update_h_nu(st, materials, dt, inv_dx_h, inv_dy_h, inv_dz_h)
+        tfsf_h_state = None
+        if use_tfsf:
+            from rfx.sources.tfsf import apply_tfsf_h
+            st = apply_tfsf_h(st, tfsf_cfg, carry["tfsf"], grid.dx, dt)
         if use_cpml:
             st, cpml_new = apply_cpml_h(st, cpml_params, carry["cpml"],
                                          cpml_grid, "xyz")
         else:
             cpml_new = None
+        if use_tfsf:
+            from rfx.sources.tfsf import update_tfsf_1d_h
+            tfsf_h_state = update_tfsf_1d_h(tfsf_cfg, carry["tfsf"], grid.dx, dt)
 
         # E update: use ADE-aware path when dispersive materials are present
         debye_new = None
@@ -601,6 +681,9 @@ def run_nonuniform(
         else:
             st = update_e_nu(st, materials, dt, inv_dx, inv_dy, inv_dz)
 
+        if use_tfsf:
+            from rfx.sources.tfsf import apply_tfsf_e
+            st = apply_tfsf_e(st, tfsf_cfg, tfsf_h_state, grid.dx, dt)
         if use_cpml:
             st, cpml_new = apply_cpml_e(st, cpml_params, cpml_new,
                                          cpml_grid, "xyz")
@@ -610,11 +693,52 @@ def run_nonuniform(
         if use_pec_mask:
             st = apply_pec_mask(st, pec_mask)
 
+        # Lumped RLC ADE update (after E update + boundaries, before sources)
+        new_rlc_states = None
+        if use_lumped_rlc:
+            from rfx.lumped import update_rlc_element
+            new_rlc_states = []
+            for rlc_st, meta in zip(carry["rlc_states"], rlc_metas):
+                st, rlc_st_new = update_rlc_element(st, rlc_st, meta)
+                new_rlc_states.append(rlc_st_new)
+
         # Sources (point sources + wire port excitation)
         for idx_s, (si, sj, sk, sc) in enumerate(src_meta):
             field = getattr(st, sc)
             field = field.at[si, sj, sk].add(src_vals[idx_s])
             st = st._replace(**{sc: field})
+
+        # Waveguide-port injection + DFT probe accumulation. The dx
+        # arg is unused by the per-cell-weighted integrals (cfg already
+        # stores u_widths/v_widths), but kept in the function signature
+        # for back-compat.
+        new_waveguide_port_accs = None
+        if use_waveguide_ports:
+            from rfx.sources.waveguide_port import (
+                inject_waveguide_port,
+                update_waveguide_port_probe,
+            )
+            t_wg = step_idx.astype(jnp.float32) * dt
+            new_waveguide_port_accs = []
+            for accs, cfg_meta in zip(
+                carry["waveguide_port_accs"], waveguide_meta
+            ):
+                cfg = cfg_meta._replace(
+                    v_probe_dft=accs[0],
+                    v_ref_dft=accs[1],
+                    i_probe_dft=accs[2],
+                    i_ref_dft=accs[3],
+                    v_inc_dft=accs[4],
+                )
+                st = inject_waveguide_port(st, cfg_meta, t_wg, dt, grid.dx)
+                cfg_updated = update_waveguide_port_probe(cfg, st, dt, grid.dx)
+                new_waveguide_port_accs.append((
+                    cfg_updated.v_probe_dft,
+                    cfg_updated.v_ref_dft,
+                    cfg_updated.i_probe_dft,
+                    cfg_updated.i_ref_dft,
+                    cfg_updated.v_inc_dft,
+                ))
 
         # Wire port V/I DFT accumulation
         t = step_idx.astype(jnp.float32) * dt
@@ -647,6 +771,40 @@ def run_nonuniform(
                     vinc_dft,
                 ))
 
+        # DFT plane probe accumulation (identical math to uniform path)
+        new_dft_planes = None
+        if use_dft_planes:
+            t_plane = step_idx.astype(jnp.float32) * dt
+            new_dft_planes = []
+            for acc, (component, axis, index, freqs) in zip(
+                carry["dft_planes"], dft_meta
+            ):
+                field = getattr(st, component)
+                if axis == 0:
+                    plane = field[index, :, :]
+                elif axis == 1:
+                    plane = field[:, index, :]
+                else:
+                    plane = field[:, :, index]
+                phase = jnp.exp(-1j * 2.0 * jnp.pi * freqs * t_plane)
+                new_dft_planes.append(
+                    acc + plane[None, :, :] * phase[:, None, None] * dt
+                )
+
+        # NTFF: accumulate tangential E/H DFT on 6 box faces
+        new_ntff = None
+        if use_ntff:
+            from rfx.farfield import accumulate_ntff
+            new_ntff = accumulate_ntff(carry["ntff"], st, ntff_box, dt, step_idx)
+
+        # TFSF 1D auxiliary E-field update (mirrors uniform scan body:
+        # called AFTER sources, closes the leapfrog step).
+        tfsf_new = None
+        if use_tfsf:
+            from rfx.sources.tfsf import update_tfsf_1d_e
+            t_tfsf = step_idx.astype(jnp.float32) * dt
+            tfsf_new = update_tfsf_1d_e(tfsf_cfg, tfsf_h_state, grid.dx, dt, t_tfsf)
+
         # Probes
         samples = [getattr(st, pc)[pi, pj, pk] for pi, pj, pk, pc in prb_meta]
         probe_out = jnp.stack(samples) if samples else jnp.zeros(0)
@@ -660,6 +818,16 @@ def run_nonuniform(
             new_carry["lorentz"] = lorentz_new
         if use_wire_ports and new_wire_sp is not None:
             new_carry["wire_sparams"] = tuple(new_wire_sp)
+        if use_dft_planes and new_dft_planes is not None:
+            new_carry["dft_planes"] = tuple(new_dft_planes)
+        if use_lumped_rlc and new_rlc_states is not None:
+            new_carry["rlc_states"] = tuple(new_rlc_states)
+        if use_ntff and new_ntff is not None:
+            new_carry["ntff"] = new_ntff
+        if use_waveguide_ports and new_waveguide_port_accs is not None:
+            new_carry["waveguide_port_accs"] = tuple(new_waveguide_port_accs)
+        if use_tfsf and tfsf_new is not None:
+            new_carry["tfsf"] = tfsf_new
         return new_carry, probe_out
 
     xs = (jnp.arange(n_steps, dtype=jnp.int32), src_waveforms)
@@ -670,6 +838,36 @@ def run_nonuniform(
         "time_series": time_series,
         "dt": dt,
     }
+
+    # Surface final RLC ADE states (per element).
+    if use_lumped_rlc:
+        result["rlc_states"] = tuple(final["rlc_states"])
+
+    # Repack DFT plane probes with their final accumulators.
+    if use_dft_planes:
+        result["dft_planes"] = tuple(
+            probe._replace(accumulator=acc)
+            for probe, acc in zip(dft_planes, final["dft_planes"])
+        )
+
+    # Surface final NTFF DFT accumulators
+    if use_ntff:
+        result["ntff_data"] = final["ntff"]
+
+    # Surface final waveguide-port configs (with accumulated DFTs)
+    if use_waveguide_ports:
+        result["waveguide_ports"] = tuple(
+            cfg_meta._replace(
+                v_probe_dft=accs[0],
+                v_ref_dft=accs[1],
+                i_probe_dft=accs[2],
+                i_ref_dft=accs[3],
+                v_inc_dft=accs[4],
+            )
+            for cfg_meta, accs in zip(
+                waveguide_meta, final["waveguide_port_accs"]
+            )
+        )
 
     # ---- Extract full S-matrix column from wire port DFTs ----
     #
