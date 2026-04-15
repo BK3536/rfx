@@ -57,11 +57,43 @@ def _geometry(dx_mm):
     n_cpml = 8
     n_sub = 6
     dz_sub = h_sub / n_sub
-    n_below = int(math.ceil(air_below / dx))
-    n_above = int(math.ceil(air_above / dx))
-    dz_raw = np.concatenate([np.full(n_below, dx), np.full(n_sub, dz_sub),
-                             np.full(n_above, dx)])
-    dz_profile = np.asarray(smooth_grading(dz_raw), dtype=np.float64)
+
+    # Meep/OpenEMS convention (issue #48): metal surfaces must sit on
+    # cell edges with symmetric neighbouring cells. Build dz EXPLICITLY
+    # so that substrate cells align with z=air_below..(air_below+h_sub).
+    #
+    # Transition cells (coarse dx → fine dz_sub) consume from the
+    # adjacent coarse region so the fine block lies at the expected
+    # physical z. Ratio ~= (dz_sub/dx)^(1/ntrans) per step.
+    n_trans = 5
+    trans_down = np.geomspace(dx, dz_sub, n_trans + 2, dtype=np.float64)[1:-1]
+    trans_up = trans_down[::-1]
+    trans_sum = float(trans_down.sum())
+    # Use coarse cells for the bulk of air_below, ending with transitions
+    # that land exactly at z = air_below. Same for air_above (starts
+    # with transitions).
+    n_coarse_below = max(0, int(round((air_below - trans_sum) / dx)))
+    n_coarse_above = max(0, int(round((air_above - trans_sum) / dx)))
+    # Fine block spans (1 ground) + (n_sub substrate) + (1 patch) cells
+    # all at dz_sub so the metal planes sit on cell edges with
+    # symmetric neighbours (Meep/OpenEMS convention).
+    n_fine_total = n_sub + 2
+    dz_profile = np.concatenate([
+        np.full(n_coarse_below, dx), trans_down,
+        np.full(n_fine_total, dz_sub),
+        trans_up, np.full(n_coarse_above, dx),
+    ]).astype(np.float64)
+    z_edges = np.concatenate([[0.0], np.cumsum(dz_profile)])
+    k_ground = n_coarse_below + n_trans             # ground cell index
+    k_sub_lo = k_ground + 1                         # first substrate cell
+    k_sub_hi = k_sub_lo + n_sub                     # one past last substrate cell
+    k_patch = k_sub_hi                              # patch cell index
+    z_gnd_lo = float(z_edges[k_ground])
+    z_sub_lo = float(z_edges[k_sub_lo])
+    z_sub_hi = float(z_edges[k_sub_hi])
+    z_patch_lo = z_sub_hi
+    z_patch_hi = float(z_edges[k_patch + 1])
+    src_z = z_sub_lo + dz_sub * 2.5
 
     dom_x = gx + 20e-3
     dom_y = gy + 20e-3
@@ -69,12 +101,12 @@ def _geometry(dx_mm):
         dom_x=dom_x, dom_y=dom_y, dx_mm=dx_mm, dz_profile=dz_profile,
         n_cpml=n_cpml, dz_sub=dz_sub, f_design=f_design,
         gx_lo=(dom_x - gx) / 2, gy_lo=(dom_y - gy) / 2, gx=gx, gy=gy,
-        z_gnd_lo=air_below - dz_sub, z_sub_lo=air_below,
-        z_sub_hi=air_below + h_sub, z_patch_lo=air_below + h_sub,
-        z_patch_hi=air_below + h_sub + dz_sub,
+        z_gnd_lo=z_gnd_lo, z_sub_lo=z_sub_lo,
+        z_sub_hi=z_sub_hi, z_patch_lo=z_patch_lo,
+        z_patch_hi=z_patch_hi,
         px_lo=dom_x / 2 - L / 2, py_lo=dom_y / 2 - W / 2, L=L, W=W,
         feed_x=(dom_x / 2 - L / 2) + probe_inset, feed_y=dom_y / 2,
-        src_z=air_below + dz_sub * 2.5, eps_r_fr4=eps_r_fr4,
+        src_z=src_z, eps_r_fr4=eps_r_fr4,
     )
     # Analytic Balanis f_res
     eps_eff = (eps_r_fr4 + 1) / 2 + (eps_r_fr4 - 1) / 2 * (
