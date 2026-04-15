@@ -2971,11 +2971,23 @@ class Simulation:
 
         periodic_bool = periodic if periodic is not None else (False, False, False)
 
+        # Forward cpml_axes from the grid — when waveguide ports are
+        # present the grid restricts CPML to the non-propagation axes.
+        # The default _run cpml_axes="xyz" builds CPML state for axes
+        # that have no padding, producing shape-broadcast errors like
+        # (8,1,1) vs (nx,ny,nz) during the scan (issue #29). The run()
+        # path forwards these explicitly at api.py:2012, so does the
+        # waveguide compute path at :2077 / :2092.
+        cpml_axes_run = grid.cpml_axes
+        pec_axes_run = "".join(a for a in "xyz" if a not in cpml_axes_run)
+
         result = _run(
             grid,
             materials,
             n_steps,
             boundary=self._boundary,
+            cpml_axes=cpml_axes_run,
+            pec_axes=pec_axes_run,
             periodic=periodic_bool,
             debye=debye,
             lorentz=lorentz,
