@@ -37,7 +37,16 @@ from rfx.antenna import (
     plot_antenna_summary,
 )
 from rfx.gpu import device_info, benchmark
-from rfx.optimize import DesignRegion, OptimizeResult, optimize, GradientCheckResult, gradient_check
+from rfx.optimize import (
+    DesignRegion,
+    OptimizeResult,
+    optimize,
+    GradientCheckResult,
+    gradient_check,
+    ProgressiveStage,
+    ProgressiveOptimizeResult,
+    progressive_optimize,
+)
 from rfx.topology import (
     TopologyDesignRegion, TopologyResult,
     topology_optimize, apply_density_filter, apply_projection, density_to_eps,

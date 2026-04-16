@@ -337,3 +337,197 @@ def gradient_check(
         fd_grad=fd_grad,
         relative_error=rel_err,
     )
+
+
+# ---------------------------------------------------------------------------
+# Progressive multi-resolution orchestrator (issue #42)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProgressiveStage:
+    """One resolution stage in a progressive_optimize schedule.
+
+    Attributes
+    ----------
+    dx : float
+        Target cell size for this stage (metres). Passed to ``sim_factory``.
+    n_iters : int
+        Number of Adam iterations at this resolution.
+    lr : float
+        Learning rate for this stage (defaults to 0.01).
+    num_periods : float
+        Periods at freq_max for auto n_steps computation (default 20).
+    n_steps : int or None
+        Explicit step count override. None -> auto from ``num_periods``.
+    """
+    dx: float
+    n_iters: int
+    lr: float = 0.01
+    num_periods: float = 20.0
+    n_steps: int | None = None
+
+
+@dataclass
+class ProgressiveOptimizeResult:
+    """Result of a progressive_optimize run.
+
+    Attributes
+    ----------
+    stages : list of OptimizeResult
+        Per-stage optimize() output, in schedule order.
+    final_eps_design : jnp.ndarray
+        Optimized permittivity at the finest stage's design-region shape.
+    final_latent : jnp.ndarray
+        Final latent at the finest stage's shape.
+    loss_history : list of float
+        Concatenated loss across all stages.
+    stage_boundaries : list of int
+        Iteration index where each stage starts (cumulative sum of
+        ``n_iters``). Useful for plotting.
+    """
+    stages: list[OptimizeResult]
+    final_eps_design: jnp.ndarray
+    final_latent: jnp.ndarray
+    loss_history: list[float]
+    stage_boundaries: list[int]
+
+
+def _resize_latent(latent: jnp.ndarray, new_shape: tuple[int, int, int],
+                   method: str = "linear") -> jnp.ndarray:
+    """Resize a 3D latent tensor to ``new_shape`` via ``jax.image.resize``."""
+    if tuple(latent.shape) == tuple(new_shape):
+        return latent
+    return jax.image.resize(latent, shape=tuple(new_shape), method=method)
+
+
+def progressive_optimize(
+    sim_factory: Callable[[float], object],
+    region: DesignRegion,
+    objective: Callable,
+    schedule: list[ProgressiveStage],
+    *,
+    init_latent: jnp.ndarray | None = None,
+    interp_method: str = "linear",
+    verbose: bool = True,
+    skip_preflight: bool = False,
+    checkpoint_every: int | None = None,
+    emit_time_series: bool = True,
+    n_warmup: int = 0,
+) -> ProgressiveOptimizeResult:
+    """Progressive multi-resolution inverse design (issue #42).
+
+    Runs ``optimize()`` at each stage in ``schedule``, upsampling the
+    latent between stages. Coarse stages produce a fast loss-landscape
+    scan; finer stages refine on top.
+
+    Parameters
+    ----------
+    sim_factory : callable(dx) -> Simulation
+        Builds a Simulation at the given dx. Called once per stage.
+    region : DesignRegion
+        Design region in physical coordinates (resolution-independent).
+    objective : callable(Result) -> scalar
+        JAX-differentiable loss.
+    schedule : list of ProgressiveStage
+        Must be non-empty. Stages usually go coarse -> fine.
+    init_latent : jnp.ndarray or None
+        Initial latent at the FIRST stage's design-region shape.
+        If None, optimize() initialises to zeros.
+    interp_method : str
+        Latent-upsample interpolation ("linear", "nearest", "cubic").
+    verbose : bool
+        Print per-stage progress banner.
+
+    Returns
+    -------
+    ProgressiveOptimizeResult
+
+    Notes
+    -----
+    The design variable basis is the per-stage latent (not a stage-
+    independent per-wavelength grid). ``jax.image.resize`` bridges
+    stages, which is adequate when the mesh refinement is modest.
+    For dramatic resolution jumps, consider a dedicated per-wavelength
+    basis.
+    """
+    if not schedule:
+        raise ValueError("progressive_optimize: schedule must be non-empty")
+
+    stage_results: list[OptimizeResult] = []
+    loss_history: list[float] = []
+    stage_boundaries: list[int] = [0]
+    current_latent = init_latent
+
+    for stage_idx, stage in enumerate(schedule):
+        if verbose:
+            print(f"\n=== stage {stage_idx + 1}/{len(schedule)}: "
+                  f"dx={stage.dx * 1e3:.3f}mm, n_iters={stage.n_iters}, "
+                  f"lr={stage.lr} ===")
+
+        sim = sim_factory(stage.dx)
+
+        is_nonuniform = (
+            sim._dz_profile is not None
+            or sim._dx_profile is not None
+            or sim._dy_profile is not None
+        )
+        grid = (sim._build_nonuniform_grid()
+                if is_nonuniform else sim._build_grid())
+
+        # Compute this stage's design-region shape using the same logic
+        # as optimize() so upsample target is exact.
+        if is_nonuniform:
+            from rfx.nonuniform import position_to_index as _nu_pos_to_idx
+            lo_idx = list(_nu_pos_to_idx(grid, region.corner_lo))
+            hi_idx = list(_nu_pos_to_idx(grid, region.corner_hi))
+            pads = (grid.cpml_layers,) * 3
+        else:
+            lo_idx = list(grid.position_to_index(region.corner_lo))
+            hi_idx = list(grid.position_to_index(region.corner_hi))
+            pads = (grid.pad_x, grid.pad_y, grid.pad_z)
+
+        dims = (grid.nx, grid.ny, grid.nz)
+        for d in range(3):
+            lo_idx[d] = max(lo_idx[d], pads[d])
+            hi_idx[d] = min(hi_idx[d], dims[d] - 1 - pads[d])
+        stage_shape = tuple(hi_idx[d] - lo_idx[d] + 1 for d in range(3))
+        if any(s <= 0 for s in stage_shape):
+            raise ValueError(
+                f"progressive_optimize stage {stage_idx}: design region "
+                f"collapses after CPML clamping at dx={stage.dx}"
+            )
+
+        if current_latent is None:
+            stage_init = None
+        else:
+            stage_init = _resize_latent(
+                current_latent, stage_shape, method=interp_method,
+            ).astype(jnp.float32)
+
+        stage_result = optimize(
+            sim, region, objective,
+            n_iters=stage.n_iters,
+            lr=stage.lr,
+            init_latent=stage_init,
+            n_steps=stage.n_steps,
+            num_periods=stage.num_periods,
+            verbose=verbose,
+            skip_preflight=skip_preflight,
+            checkpoint_every=checkpoint_every,
+            emit_time_series=emit_time_series,
+            n_warmup=n_warmup,
+        )
+
+        stage_results.append(stage_result)
+        loss_history.extend(stage_result.loss_history)
+        stage_boundaries.append(stage_boundaries[-1] + len(stage_result.loss_history))
+        current_latent = stage_result.latent
+
+    return ProgressiveOptimizeResult(
+        stages=stage_results,
+        final_eps_design=stage_results[-1].eps_design,
+        final_latent=stage_results[-1].latent,
+        loss_history=loss_history,
+        stage_boundaries=stage_boundaries,
+    )
