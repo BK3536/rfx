@@ -206,3 +206,203 @@ def test_update_h_nu_local_matches_global_interior():
         slab_slice, glob_slice, atol=1e-5,
         err_msg="device-0 H-z slab should match global interior H-z",
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A: build_sharded_nu_grid metadata tests
+# ---------------------------------------------------------------------------
+
+from rfx.runners.distributed_nu import build_sharded_nu_grid, ShardedNUGrid
+
+
+def _make_test_grid(nx_physical=16, ny_physical=8, nz_physical=8,
+                    dx0=1e-3, ratio=1.3, cpml_layers=0):
+    """Build a small graded NonUniformGrid for metadata tests."""
+    dx_profile = _graded_profile(nx_physical, dx0, ratio=ratio)
+    dz_profile = np.full(nz_physical, dx0)
+    return make_nonuniform_grid(
+        (nx_physical * dx0, ny_physical * dx0), dz_profile, dx0,
+        cpml_layers=cpml_layers,
+        dx_profile=dx_profile,
+    )
+
+
+def test_build_sharded_nu_grid_metadata_shapes():
+    """Local x sizes sum to global nx; y/z unchanged; cpml_layers replicated."""
+    grid = _make_test_grid(nx_physical=16, ny_physical=8, nz_physical=6, cpml_layers=0)
+    n_devices = 2
+    sg = build_sharded_nu_grid(grid, n_devices=n_devices, exchange_interval=1)
+
+    assert isinstance(sg, ShardedNUGrid)
+
+    # x sizes sum correctly
+    assert sg.nx == grid.nx
+    assert sg.nx_padded % n_devices == 0
+    assert sg.nx_per_rank * n_devices == sg.nx_padded
+    assert sg.nx_padded >= sg.nx
+    assert sg.pad_x == sg.nx_padded - sg.nx
+
+    # nx_local includes ghosts
+    assert sg.nx_local == sg.nx_per_rank + 2 * sg.ghost_width
+    assert sg.ghost_width == 1
+
+    # y/z unchanged
+    assert sg.ny == grid.ny
+    assert sg.nz == grid.nz
+
+    # cpml_layers replicated
+    assert sg.cpml_layers == grid.cpml_layers
+
+    # inv spacing array shapes
+    assert sg.inv_dx_global.shape == (sg.nx_padded,)
+    assert sg.inv_dx_h_global.shape == (sg.nx_padded,)
+    assert sg.dx_padded.shape == (sg.nx_padded,)
+    assert sg.inv_dy.shape == (grid.ny,)
+    assert sg.inv_dy_h.shape == (grid.ny,)
+    assert sg.inv_dz.shape == (grid.nz,)
+    assert sg.inv_dz_h.shape == (grid.nz,)
+
+    # x_starts / x_stops bookkeeping
+    assert len(sg.x_starts) == n_devices
+    assert len(sg.x_stops) == n_devices
+    assert sg.x_starts[0] == 0
+    assert sg.x_stops[-1] == sg.nx  # capped at unpadded nx
+
+
+def test_build_sharded_nu_grid_inv_dx_seam_continuity():
+    """inv_dx_h at the slab seam matches the un-sharded global reference."""
+    from rfx.runners.distributed_nu import split_1d_with_ghost
+
+    grid = _make_test_grid(nx_physical=32, ny_physical=8, nz_physical=8,
+                           dx0=1e-3, ratio=1.5)
+    n_devices = 2
+    sg = build_sharded_nu_grid(grid, n_devices=n_devices)
+
+    nx_per = sg.nx_per_rank
+    ghost = sg.ghost_width
+    nx_local = sg.nx_local
+
+    # Build the slabs using the canonical helper
+    slabs = split_1d_with_ghost(
+        sg.inv_dx_h_global, n_devices, nx_per, nx_local, ghost, pad_value=0.0
+    )
+
+    # For device 0: last real cell in slab = global index nx_per - 1
+    seam_slab = float(slabs[0, ghost + nx_per - 1])
+    seam_global = float(sg.inv_dx_h_global[nx_per - 1])
+    assert np.isclose(seam_slab, seam_global, atol=1e-6), (
+        f"Seam slab value {seam_slab} != global reference {seam_global}"
+    )
+
+    # Cross-check analytically: 2 / (dx[seam-1] + dx[seam])
+    dx_arr = sg.dx_padded
+    analytic = float(2.0 / (dx_arr[nx_per - 1] + dx_arr[nx_per]))
+    assert np.isclose(seam_slab, analytic, atol=1e-5), (
+        f"Seam inv_dx_h {seam_slab} != analytic {analytic}"
+    )
+
+
+def test_build_sharded_nu_grid_pad_trim_for_nondivisible_nx():
+    """nx=17, n_devices=2 — high-x rank gets the pad; metadata flags are correct."""
+    # nx=17 is odd; with n_devices=2 we need pad_x=1 to reach 18
+    dx0 = 1e-3
+    nx_physical = 17
+    ny_physical = 8
+    nz_physical = 8
+    dx_profile = _graded_profile(nx_physical, dx0, ratio=1.2)
+    dz_profile = np.full(nz_physical, dx0)
+    grid = make_nonuniform_grid(
+        (nx_physical * dx0, ny_physical * dx0), dz_profile, dx0,
+        cpml_layers=0,
+        dx_profile=dx_profile,
+    )
+    assert grid.nx == nx_physical  # sanity
+
+    n_devices = 2
+    sg = build_sharded_nu_grid(grid, n_devices=n_devices)
+
+    # Padding arithmetic
+    assert sg.pad_x == 1, f"Expected pad_x=1, got {sg.pad_x}"
+    assert sg.nx_padded == 18
+    assert sg.nx_per_rank == 9
+    assert sg.nx_trim == 1
+
+    # High-x rank index
+    assert sg.rank_has_high_x_pad == n_devices - 1  # rank 1
+
+    # The padded cell in inv_dx_global should equal 1/dx_arr[-1]
+    expected_last_inv = float(1.0 / np.asarray(grid.dx_arr)[-1])
+    got_last_inv = float(sg.inv_dx_global[-1])
+    assert np.isclose(got_last_inv, expected_last_inv, rtol=1e-5), (
+        f"Padded inv_dx last cell {got_last_inv} != 1/dx[-1] {expected_last_inv}"
+    )
+
+
+def test_build_sharded_nu_grid_replicates_dt():
+    """dt is identical (same Python float) across all conceptual ranks."""
+    grid = _make_test_grid(nx_physical=16, cpml_layers=0)
+    n_devices = 4
+    sg = build_sharded_nu_grid(grid, n_devices=n_devices)
+
+    # dt must equal the grid's dt exactly (no recomputation)
+    assert sg.dt == float(grid.dt), (
+        f"ShardedNUGrid dt {sg.dt} != grid.dt {float(grid.dt)}"
+    )
+    # dt is a plain Python float (not a JAX array) so it's trivially
+    # identical across all ranks — assert it is not a JAX array
+    assert isinstance(sg.dt, float), (
+        f"Expected plain float for dt, got {type(sg.dt)}"
+    )
+
+
+def test_build_sharded_nu_grid_position_to_index_deterministic():
+    """Known physical coord maps to expected (rank, local_i) deterministically."""
+    from rfx.nonuniform import position_to_index
+
+    dx0 = 1e-3
+    nx_physical = 16
+    ny_physical = 8
+    nz_physical = 8
+    dx_profile = np.full(nx_physical, dx0)   # uniform so we can predict the index
+    dz_profile = np.full(nz_physical, dx0)
+    grid = make_nonuniform_grid(
+        (nx_physical * dx0, ny_physical * dx0), dz_profile, dx0,
+        cpml_layers=0,
+        dx_profile=dx_profile,
+    )
+
+    n_devices = 2
+    sg = build_sharded_nu_grid(grid, n_devices=n_devices)
+
+    # Place a physical position in the middle of the domain
+    # For a uniform profile with cpml=0, index = round(pos / dx0)
+    # Use a position in the second half so it lands on rank 1.
+    # nx_physical=16, nx_per_rank=8; cell 10 → rank 1, local 10-8=2 (+ghost=1 → local_i=3)
+    target_global_i = 10
+    pos_x = (float(np.asarray(grid.dx_arr[:target_global_i]).sum())
+              + 0.5 * float(np.asarray(grid.dx_arr)[target_global_i]))
+    pos_y = 0.5 * dx0
+    pos_z = 0.5 * dx0
+    i_global, j_global, k_global = position_to_index(grid, (pos_x, pos_y, pos_z))
+    assert i_global == target_global_i, (
+        f"position_to_index returned i={i_global}, expected {target_global_i}"
+    )
+
+    # Apply Phase 2A mapping convention
+    expected_rank = target_global_i // sg.nx_per_rank          # 10 // 8 = 1
+    expected_local_i = (target_global_i % sg.nx_per_rank) + sg.ghost_width  # 2 + 1 = 3
+
+    got_rank = i_global // sg.nx_per_rank
+    got_local_i = (i_global % sg.nx_per_rank) + sg.ghost_width
+
+    assert got_rank == expected_rank, (
+        f"rank={got_rank}, expected {expected_rank}"
+    )
+    assert got_local_i == expected_local_i, (
+        f"local_i={got_local_i}, expected {expected_local_i}"
+    )
+
+    # Calling the mapping a second time must give the same result (deterministic)
+    i2, _, _ = position_to_index(grid, (pos_x, pos_y, pos_z))
+    assert i2 // sg.nx_per_rank == got_rank
+    assert (i2 % sg.nx_per_rank) + sg.ghost_width == got_local_i

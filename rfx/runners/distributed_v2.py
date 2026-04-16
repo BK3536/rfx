@@ -634,6 +634,7 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
             _build_sharded_inv_dx_arrays,
             _update_h_local_nu,
             _update_e_local_nu,
+            split_1d_with_ghost as _split_1d_with_ghost_helper,
         )
         inv_dx_global, inv_dx_h_global, _dx_padded = (
             _build_sharded_inv_dx_arrays(grid, n_devices, pad_x=pad_x)
@@ -751,31 +752,10 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
         # boundary carry the neighbour-cell value to avoid divide-by-zero
         # in update kernels); inv_dx_h uses mean-spacing values which
         # straddle adjacent cells.
-        def _split_1d_with_ghost(arr, pad_value):
-            nx_arr = arr.shape[0]
-            assert nx_arr == nx_padded, (
-                f"NU inv-array length {nx_arr} != nx_padded={nx_padded}"
-            )
-            per = nx_per
-            slabs = np.zeros((n_devices, nx_local), dtype=arr.dtype)
-            for d in range(n_devices):
-                lo = d * per
-                hi = lo + per
-                slabs[d, ghost:ghost + per] = arr[lo:hi]
-                # left ghost
-                if d > 0:
-                    slabs[d, 0] = arr[lo - 1]
-                else:
-                    slabs[d, 0] = pad_value
-                # right ghost
-                if d < n_devices - 1:
-                    slabs[d, -1] = arr[hi]
-                else:
-                    slabs[d, -1] = pad_value
-            return slabs
-
-        _inv_dx_slabs = _split_1d_with_ghost(inv_dx_global, pad_value=1.0)
-        _inv_dx_h_slabs = _split_1d_with_ghost(inv_dx_h_global, pad_value=0.0)
+        _inv_dx_slabs = _split_1d_with_ghost_helper(
+            inv_dx_global, n_devices, nx_per, nx_local, ghost, pad_value=1.0)
+        _inv_dx_h_slabs = _split_1d_with_ghost_helper(
+            inv_dx_h_global, n_devices, nx_per, nx_local, ghost, pad_value=0.0)
         # Shard to (n_devices * nx_local,) along P("x")
         inv_dx_sharded = jax.device_put(
             _inv_dx_slabs.reshape(n_devices * nx_local), shd)

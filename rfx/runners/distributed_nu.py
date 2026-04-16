@@ -172,3 +172,259 @@ def _update_e_local_nu(state, materials, dt,
     ez = ca * state.ez + cb * curl_z
 
     return state._replace(ex=ex, ey=ey, ez=ez, step=state.step + 1)
+
+
+# ---------------------------------------------------------------------------
+# Sharded NU grid metadata — Phase 2A
+# ---------------------------------------------------------------------------
+
+from typing import NamedTuple as _NamedTuple
+
+
+class ShardedNUGrid(_NamedTuple):
+    """Metadata describing a non-uniform grid that has been sliced into
+    x-axis slabs for the shard_map distributed runner.
+
+    **Coordinate mapping convention** (used by Phase 3 probe/source routing):
+
+    Physical positions are always resolved on the *full-domain*
+    ``NonUniformGrid`` first via ``position_to_index(grid, pos)`` which
+    returns a global triple ``(i_global, j, k)``.  The x-index is then
+    mapped to a rank and a local index:
+
+        rank      = i_global // nx_per_rank
+        local_i   = (i_global % nx_per_rank) + ghost_width
+
+    where ``nx_per_rank = nx_local_real`` (the per-rank real cell count,
+    *not* the padded/ghost count) and ``ghost_width`` is the ghost cell
+    offset stored in this object.  No per-rank physical coordinate system
+    is introduced — the global cumulative x-positions are the only
+    reference frame.
+
+    Fields
+    ------
+    nx : int
+        Original (unpadded) global x cell count.
+    ny : int
+        Global y cell count (unchanged by sharding).
+    nz : int
+        Global z cell count (unchanged by sharding).
+    n_devices : int
+        Number of ranks / devices.
+    nx_padded : int
+        Global x count after PEC padding so ``nx_padded % n_devices == 0``.
+    pad_x : int
+        Number of PEC cells appended at the high-x end
+        (``nx_padded - nx``).
+    nx_per_rank : int
+        Real cells per rank (``nx_padded // n_devices``).
+    nx_local : int
+        Per-rank cell count including ghost cells
+        (``nx_per_rank + 2 * ghost_width``).
+    ghost_width : int
+        Number of ghost cells on each side of a rank's slab (always 1).
+    cpml_layers : int
+        CPML layer count from the source grid (replicated, same on every rank).
+    dt : float
+        Global shared timestep (same on every rank; not recomputed).
+    inv_dx_global : np.ndarray  shape (nx_padded,)
+        Cell-local inverse x-spacings for the padded full domain.
+    inv_dx_h_global : np.ndarray  shape (nx_padded,)
+        Mean-spacing inverse x-spacings (seam-aware) for the padded full domain.
+    dx_padded : np.ndarray  shape (nx_padded,)
+        Padded cell-size profile (float32); useful for diagnostics.
+    inv_dy : np.ndarray  shape (ny,)
+        Replicated y inverse spacings (every rank receives the full array).
+    inv_dy_h : np.ndarray  shape (ny,)
+        Replicated y mean-spacing inverse spacings.
+    inv_dz : np.ndarray  shape (nz,)
+        Replicated z inverse spacings.
+    inv_dz_h : np.ndarray  shape (nz,)
+        Replicated z mean-spacing inverse spacings.
+    rank_has_high_x_pad : int
+        Index of the rank that owns the high-x PEC padding cells
+        (always ``n_devices - 1``; stored for Phase 3 trim logic).
+    nx_trim : int
+        Number of padded cells that must be trimmed from the high-x rank's
+        slab when assembling the full-domain result (equals ``pad_x``).
+    x_starts : tuple[int, ...]
+        Global x start index (inclusive) of the real cells for each rank.
+    x_stops : tuple[int, ...]
+        Global x stop index (exclusive) of the real cells for each rank.
+    """
+
+    nx: int
+    ny: int
+    nz: int
+    n_devices: int
+    nx_padded: int
+    pad_x: int
+    nx_per_rank: int
+    nx_local: int
+    ghost_width: int
+    cpml_layers: int
+    dt: float
+    inv_dx_global: object   # np.ndarray (nx_padded,) float32
+    inv_dx_h_global: object  # np.ndarray (nx_padded,) float32
+    dx_padded: object        # np.ndarray (nx_padded,) float32
+    inv_dy: object           # np.ndarray (ny,) float32
+    inv_dy_h: object         # np.ndarray (ny,) float32
+    inv_dz: object           # np.ndarray (nz,) float32
+    inv_dz_h: object         # np.ndarray (nz,) float32
+    rank_has_high_x_pad: int
+    nx_trim: int
+    x_starts: tuple
+    x_stops: tuple
+
+
+def split_1d_with_ghost(arr: "np.ndarray", n_devices: int, nx_per: int,
+                        nx_local: int, ghost: int,
+                        pad_value: float) -> "np.ndarray":
+    """Split a 1-D inverse-spacing array into per-device slabs with ghost cells.
+
+    This is the canonical split helper shared between the NU metadata builder
+    and the distributed_v2 runner.  It produces a ``(n_devices, nx_local)``
+    NumPy array where each row is one rank's slab including ``ghost`` cells on
+    each side.
+
+    Parameters
+    ----------
+    arr : np.ndarray  shape (n_devices * nx_per,)
+        Padded global inverse-spacing array (output of
+        ``_build_sharded_inv_dx_arrays``).
+    n_devices : int
+    nx_per : int
+        Real cells per device (``arr.shape[0] // n_devices``).
+    nx_local : int
+        ``nx_per + 2 * ghost``.
+    ghost : int
+        Ghost width (typically 1).
+    pad_value : float
+        Value to fill boundary ghost cells (1.0 for inv_dx, 0.0 for inv_dx_h).
+
+    Returns
+    -------
+    slabs : np.ndarray  shape (n_devices, nx_local)
+    """
+    slabs = np.zeros((n_devices, nx_local), dtype=arr.dtype)
+    for d in range(n_devices):
+        lo = d * nx_per
+        hi = lo + nx_per
+        slabs[d, ghost:ghost + nx_per] = arr[lo:hi]
+        # left ghost
+        if d > 0:
+            slabs[d, 0] = arr[lo - 1]
+        else:
+            slabs[d, 0] = pad_value
+        # right ghost
+        if d < n_devices - 1:
+            slabs[d, -1] = arr[hi]
+        else:
+            slabs[d, -1] = pad_value
+    return slabs
+
+
+def build_sharded_nu_grid(
+    grid,
+    n_devices: int,
+    exchange_interval: int = 1,
+) -> ShardedNUGrid:
+    """Build a :class:`ShardedNUGrid` from a full-domain :class:`NonUniformGrid`.
+
+    This is the Phase 2A metadata-only helper.  It does **not** touch
+    JAX device placement or shard_map; callers (e.g. the Phase 2B scan
+    body) are responsible for calling ``jax.device_put`` on the returned
+    arrays.
+
+    Parameters
+    ----------
+    grid : NonUniformGrid
+        Full-domain non-uniform grid produced by ``make_nonuniform_grid``.
+    n_devices : int
+        Number of ranks / devices for the x-slab decomposition.
+    exchange_interval : int
+        Ghost exchange interval.  Currently only ``exchange_interval == 1``
+        is supported (one exchange per FDTD step).  The parameter is
+        accepted for forward-compatibility with Phase 2E batched exchange.
+        Ghost width is always ``1 * exchange_interval`` cells, so passing
+        a larger value will increase ``ghost_width`` accordingly if support
+        is added in a later phase.
+
+    Returns
+    -------
+    ShardedNUGrid
+        Immutable metadata object.  All numpy arrays are float32 and live
+        on the host (CPU) at this stage.
+
+    Notes
+    -----
+    **Coordinate mapping convention** (important for Phase 3):
+
+    Probe and source physical positions must be converted to
+    ``(i_global, j, k)`` using ``position_to_index(grid, pos)`` on the
+    *full-domain* grid **before** sharding.  The resulting global ``i``
+    is then mapped to a (rank, local_i) pair as::
+
+        rank    = i_global // sharded.nx_per_rank
+        local_i = (i_global % sharded.nx_per_rank) + sharded.ghost_width
+
+    No per-rank physical coordinate system should be created.
+    """
+    if exchange_interval != 1:
+        raise NotImplementedError(
+            "exchange_interval > 1 is reserved for Phase 2E; "
+            "only exchange_interval=1 is supported in Phase 2A."
+        )
+
+    ghost = exchange_interval  # ghost_width = exchange_interval cells
+
+    nx, ny, nz = grid.nx, grid.ny, grid.nz
+
+    # Pad nx to nearest multiple of n_devices (PEC cells on high-x end)
+    pad_x = 0
+    if nx % n_devices != 0:
+        pad_x = n_devices - (nx % n_devices)
+    nx_padded = nx + pad_x
+
+    nx_per = nx_padded // n_devices
+    nx_local = nx_per + 2 * ghost
+
+    # Build padded inverse-spacing arrays (reuses existing Phase B helper)
+    inv_dx_global, inv_dx_h_global, dx_padded = _build_sharded_inv_dx_arrays(
+        grid, n_devices, pad_x=pad_x
+    )
+
+    # Replicate y/z inverse spacings (unchanged by x-sharding)
+    inv_dy = np.asarray(grid.inv_dy, dtype=np.float32)
+    inv_dy_h = np.asarray(grid.inv_dy_h, dtype=np.float32)
+    inv_dz = np.asarray(grid.inv_dz, dtype=np.float32)
+    inv_dz_h = np.asarray(grid.inv_dz_h, dtype=np.float32)
+
+    # Rank x-range bookkeeping
+    x_starts = tuple(d * nx_per for d in range(n_devices))
+    x_stops = tuple(min((d + 1) * nx_per, nx) for d in range(n_devices))
+
+    return ShardedNUGrid(
+        nx=nx,
+        ny=ny,
+        nz=nz,
+        n_devices=n_devices,
+        nx_padded=nx_padded,
+        pad_x=pad_x,
+        nx_per_rank=nx_per,
+        nx_local=nx_local,
+        ghost_width=ghost,
+        cpml_layers=grid.cpml_layers,
+        dt=float(grid.dt),
+        inv_dx_global=inv_dx_global,
+        inv_dx_h_global=inv_dx_h_global,
+        dx_padded=dx_padded,
+        inv_dy=inv_dy,
+        inv_dy_h=inv_dy_h,
+        inv_dz=inv_dz,
+        inv_dz_h=inv_dz_h,
+        rank_has_high_x_pad=n_devices - 1,
+        nx_trim=pad_x,
+        x_starts=x_starts,
+        x_stops=x_stops,
+    )
