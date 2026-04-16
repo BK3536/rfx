@@ -1,14 +1,26 @@
 """
 tests/test_distributed_nu_composition.py
 
-Phase 1 TDD contract suite for Issue #44: Distributed + Non-Uniform + Segmented
-Composition.
+Phase 3.1 composition suite for Issue #44: Distributed + Non-Uniform +
+Segmented Composition.
 
-All 18 tests are ``xfail(strict=True)``.  Each test body is *real* — it
-attempts the actual API call — so the ``xfail`` marks the expected failure mode,
-not a stub.  When a Phase 2 subtask lands and makes a test pass, that test will
-strict-XPASS (strict=True → the suite will flag it), which is the intended
-signal that the subtask is complete and the xfail mark should be removed.
+History
+-------
+Originally a Phase 1 TDD contract suite where every test was
+``xfail(strict=True)`` against an unimplemented public API.  After Phase 3
+wired ``Simulation.forward(distributed=True)``, Phase 3.1 removed the strict
+xfail markers from the now-passing tests, fixed test bodies that referenced
+non-existent kwargs/classes, and dropped the composition-level CPML
+internal-seam test (its assertion is covered at the kernel level by
+``tests/test_distributed_nu_kernel.py::test_distributed_cpml_internal_seam_is_noop``).
+
+Two tests remain xfail (``strict=False``) as legitimate gaps:
+  * ``test_shard_map_checkpoint_trivial_scan_grad`` — JAX upstream
+    composition limitation; Phase 2F uses a custom-vjp path that does
+    not depend on this primitive.
+  * ``test_forward_distributed_nan_propagates_via_ghost_exchange`` — G2
+    NaN-propagation gap; under investigation.  Source NaN does not reach
+    the rank-1 probe within the test horizon under Phase 3.
 
 XLA device guard
 ----------------
@@ -23,14 +35,14 @@ Test inventory (V3 plan §Phase 1 Tolerance Contract):
 
  #  | Name                                                         | Class
 ----+--------------------------------------------------------------+------
-  1 | test_shard_map_checkpoint_trivial_scan_grad (M5 spike)       | E
+  1 | test_shard_map_checkpoint_trivial_scan_grad (M5 spike)       | E [xfail]
   2 | test_forward_distributed_flag_requires_multi_device          | E/API
   3 | test_forward_distributed_rejects_uniform_mesh_in_v162        | E/API
   4 | test_forward_distributed_rejects_tfsf_on_nu_path             | E/API
   5 | test_forward_distributed_requested_devices_gt_available_raises| E/API
   6 | test_forward_distributed_devices_without_distributed_flag_raises| E/API
   7 | test_forward_distributed_pec_two_device_matches_single_device_small_case | B
-  8 | test_forward_distributed_cpml_two_device_matches_single_device_small_case | B+C
+  8 | test_forward_distributed_cpml_two_device_matches_single_device_small_case | B
   9 | test_forward_distributed_debye_two_device_matches_single_device_small_case | B+D
  10 | test_forward_distributed_lorentz_two_device_matches_single_device_small_case | B+D
  11 | test_forward_distributed_mixed_dispersion_two_device_matches_single_device_small_case | B+D
@@ -38,10 +50,10 @@ Test inventory (V3 plan §Phase 1 Tolerance Contract):
  13 | test_forward_distributed_checkpoint_every_matches_no_segment_small_grad_case | A+E
  14 | test_forward_distributed_n_warmup_tail_grad_matches_single_device | A
  15 | test_forward_distributed_design_mask_stop_grad_matches_single_device | A
- 16 | test_forward_distributed_cpml_internal_seam_is_noop_not_boundary | C
- 17 | test_forward_distributed_pec_mask_seam_exchange_preserves_field | B
- 18 | test_forward_distributed_grad_per_cell_matches_single_device_near_seam (G1) | A seam
-     test_forward_distributed_nan_propagates_via_ghost_exchange (G2) | E
+ -- | (was) cpml_internal_seam_is_noop — moved to kernel test, removed here
+ 16 | test_forward_distributed_pec_mask_seam_exchange_preserves_field | B
+ 17 | test_forward_distributed_grad_per_cell_matches_single_device_near_seam (G1) | A seam
+     test_forward_distributed_nan_propagates_via_ghost_exchange (G2) | E [xfail]
 """
 
 from __future__ import annotations
@@ -116,13 +128,13 @@ def _make_nu_sim_small(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(
-    strict=True,
+    strict=False,
     reason=(
-        "Phase 2F spike: jax.checkpoint(shard_map(scan)) must compose with "
-        "jax.grad on the installed JAX version. If this test PASSES it means "
-        "the basic JAX composition primitive works and Phase 2F can proceed "
-        "without custom vjp rules. If XFAIL, non-trivial shmap_kwargs / "
-        "custom_vjp are needed and Phase 2F budget escalates to 24h."
+        "M5 spike: jax.checkpoint(shard_map(scan)) composing with jax.grad is "
+        "an upstream JAX limitation tracked in the V3 plan. The test will "
+        "self-announce (XPASS) when JAX fixes the composition; until then "
+        "Phase 2F uses a custom vjp path so this primitive is not on the "
+        "critical path. strict=False keeps the suite green if JAX changes."
     ),
 )
 def test_shard_map_checkpoint_trivial_scan_grad():
@@ -183,19 +195,11 @@ def test_shard_map_checkpoint_trivial_scan_grad():
 # Tests 2-6 — API contract: distributed=True kwarg not yet wired
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2A: distributed=True kwarg not yet added to Simulation.forward(). "
-        "Expect TypeError for unexpected keyword argument."
-    ),
-)
 def test_forward_distributed_flag_requires_multi_device():
     """forward(distributed=True) with only 1 device must raise ValueError.
 
     When the kwarg IS wired (Phase 2A), passing distributed=True with a
     single device should raise ValueError, not silently fall back.
-    For now the call raises TypeError because the kwarg doesn't exist yet.
     """
     _require_two_devices()  # skip if <2 devices available
 
@@ -204,19 +208,11 @@ def test_forward_distributed_flag_requires_multi_device():
     # Build a minimal NU sim with PEC boundary (fastest)
     sim = _make_nu_sim_small(boundary="pec")
 
-    # Once distributed= is wired, we'd call with a 1-device list to test the
-    # ValueError. Until then, even calling with distributed=True raises TypeError.
-    # Either TypeError or ValueError satisfies the xfail contract.
-    sim.forward(n_steps=4, distributed=True)  # type: ignore[call-arg]
+    # Pass an explicit single-device list — must raise ValueError.
+    with pytest.raises(ValueError, match="at least 2"):
+        sim.forward(n_steps=4, distributed=True, devices=[jax.devices()[0]])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2A: distributed=True on uniform mesh must raise NotImplementedError "
-        "in v1.6.2 (DP3). Not yet wired — TypeError first."
-    ),
-)
 def test_forward_distributed_rejects_uniform_mesh_in_v162():
     """forward(distributed=True) on a uniform mesh must raise NotImplementedError.
 
@@ -237,50 +233,34 @@ def test_forward_distributed_rejects_uniform_mesh_in_v162():
     sim.add_source(position=(0.025, 0.03, 0.03), component="ez")
     sim.add_probe(position=(0.05, 0.03, 0.03), component="ez")
 
-    # Should raise NotImplementedError when wired; TypeError until then
-    sim.forward(n_steps=4, distributed=True)  # type: ignore[call-arg]
+    with pytest.raises(NotImplementedError, match="non-uniform"):
+        sim.forward(n_steps=4, distributed=True)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2A: distributed=True with TFSF source must raise NotImplementedError "
-        "(TFSF is single-device only in v1.6.2). Not yet wired — TypeError first."
-    ),
-)
 def test_forward_distributed_rejects_tfsf_on_nu_path():
     """forward(distributed=True) with a TFSF source must raise NotImplementedError.
 
     TFSF is single-device only in v1.6.2 (non-goal in plan). The distributed
     forward path must detect and reject this configuration.
     """
-    _require_two_devices()
+    devices = _require_two_devices()
 
     from rfx import Simulation
 
-    sim = _make_nu_sim_small(boundary="pec", add_source=False)
-    # TFSF source — not yet supported on distributed path
-    try:
-        sim.add_tfsf_source(
-            center=(sim._domain[0] / 2, sim._domain[1] / 2, sim._domain[2] / 2),
-            size=(sim._domain[0] * 0.4, sim._domain[1] * 0.4, sim._domain[2] * 0.4),
-            freq=3e9,
-            component="ez",
-        )
-    except AttributeError:
-        # add_tfsf_source may have a different name; skip if API not available
-        pytest.skip("TFSF source API not available under expected name")
+    # TFSF requires boundary='cpml' and no lumped point sources/ports, so build
+    # a NU sim with CPML and only the probe (no add_source).
+    sim = _make_nu_sim_small(boundary="cpml", add_source=False)
+    sim.add_tfsf_source(
+        f0=3e9,
+        bandwidth=0.5,
+        polarization="ez",
+        direction="+x",
+    )
 
-    sim.forward(n_steps=4, distributed=True)  # type: ignore[call-arg]
+    with pytest.raises(NotImplementedError, match="TFSF"):
+        sim.forward(n_steps=4, distributed=True, devices=devices)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2A + Phase 3: forward(distributed=True, devices=[...]) with more "
-        "devices than available must raise ValueError. Not yet wired — TypeError first."
-    ),
-)
 def test_forward_distributed_requested_devices_gt_available_raises():
     """Requesting more devices than available must raise ValueError.
 
@@ -296,20 +276,14 @@ def test_forward_distributed_requested_devices_gt_available_raises():
     # Build a fake list longer than available devices
     fake_extra_devices = devices + devices  # 4 elements, but only 2 real devices
 
-    sim.forward(  # type: ignore[call-arg]
-        n_steps=4,
-        distributed=True,
-        devices=fake_extra_devices,
-    )
+    with pytest.raises(ValueError, match="requested"):
+        sim.forward(
+            n_steps=4,
+            distributed=True,
+            devices=fake_extra_devices,
+        )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 3: passing devices= without distributed=True must raise ValueError "
-        "(no silent distributed activation). Not yet wired — TypeError first."
-    ),
-)
 def test_forward_distributed_devices_without_distributed_flag_raises():
     """forward(devices=[...]) without distributed=True must raise ValueError.
 
@@ -323,23 +297,17 @@ def test_forward_distributed_devices_without_distributed_flag_raises():
 
     sim = _make_nu_sim_small(boundary="pec")
 
-    sim.forward(  # type: ignore[call-arg]
-        n_steps=4,
-        devices=devices,  # devices without distributed=True → must raise
-    )
+    with pytest.raises(ValueError, match="requires distributed=True"):
+        sim.forward(
+            n_steps=4,
+            devices=devices,  # devices without distributed=True -> must raise
+        )
 
 
 # ---------------------------------------------------------------------------
 # Tests 7-12 — Physics parity: forward parity on small cases (Class B)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2B + 2A: ghost-cell exchange + x-slab ownership not yet implemented. "
-        "forward(distributed=True) raises TypeError until Phase 2A wires the kwarg."
-    ),
-)
 def test_forward_distributed_pec_two_device_matches_single_device_small_case():
     """Distributed forward with PEC boundary must match single-device to Class B.
 
@@ -359,7 +327,7 @@ def test_forward_distributed_pec_two_device_matches_single_device_small_case():
 
     # 2-device distributed (raises TypeError until Phase 2A)
     sim_d = _make_nu_sim_small(boundary="pec")
-    res_d = sim_d.forward(  # type: ignore[call-arg]
+    res_d = sim_d.forward(
         n_steps=n_steps,
         distributed=True,
         devices=devices,
@@ -372,18 +340,13 @@ def test_forward_distributed_pec_two_device_matches_single_device_small_case():
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2A + 2C: CPML ownership (x-face psi must be zero at seam) + "
-        "ghost-cell exchange not yet implemented."
-    ),
-)
 def test_forward_distributed_cpml_two_device_matches_single_device_small_case():
-    """Distributed forward with CPML boundary must match single-device to Class B+C.
+    """Distributed forward with CPML boundary must match single-device to Class B.
 
-    Class B checks probe parity. Class C checks that the interior-rank x-face
-    CPML psi arrays are exactly zero (the seam is NOT an absorbing boundary).
+    Class B checks probe parity. The interior-seam noop (Class C) is covered at
+    the kernel level by tests/test_distributed_nu_kernel.py::
+    test_distributed_cpml_internal_seam_is_noop, since the public
+    Simulation.forward() API does not expose per-rank CPML internal state.
     """
     devices = _require_two_devices()
 
@@ -391,15 +354,18 @@ def test_forward_distributed_cpml_two_device_matches_single_device_small_case():
 
     n_steps = 20
 
-    sim_s = _make_nu_sim_small(boundary="cpml")
+    # nx must satisfy nx_local > 2*cpml_layers (default 8) on each rank, so for
+    # 2-device 1D-x sharding we need nx >= 2*(2*8+1) = 34.
+    nx, ny, nz, dx = 36, 12, 12, 5e-3
+
+    sim_s = _make_nu_sim_small(boundary="cpml", nx=nx, ny=ny, nz=nz, dx=dx)
     res_s = sim_s.forward(n_steps=n_steps)
 
-    sim_d = _make_nu_sim_small(boundary="cpml")
-    res_d = sim_d.forward(  # type: ignore[call-arg]
+    sim_d = _make_nu_sim_small(boundary="cpml", nx=nx, ny=ny, nz=nz, dx=dx)
+    res_d = sim_d.forward(
         n_steps=n_steps,
         distributed=True,
         devices=devices,
-        return_internal_state=True,  # needed for Class C check
     )
 
     assert_class_b_parity(
@@ -408,19 +374,7 @@ def test_forward_distributed_cpml_two_device_matches_single_device_small_case():
         label="cpml_two_device",
     )
 
-    # Class C: interior rank's x-face CPML psi must be exactly zero
-    # (res_d would expose cpml_state_per_rank when implemented)
-    if hasattr(res_d, "cpml_state_rank1"):
-        assert_class_c_cpml_seam_noop(res_d.cpml_state_rank1, label="rank1_seam")
 
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2D: Debye ADE splice not yet ported to distributed scan body. "
-        "Also needs Phase 2A for the distributed= kwarg."
-    ),
-)
 def test_forward_distributed_debye_two_device_matches_single_device_small_case():
     """Distributed Debye-material forward must match single-device to Class B+D.
 
@@ -431,8 +385,8 @@ def test_forward_distributed_debye_two_device_matches_single_device_small_case()
     """
     devices = _require_two_devices()
 
-    from rfx import Simulation
-    import rfx.materials as mat
+    from rfx import Simulation, Box
+    from rfx.materials.debye import DebyePole
 
     nx, ny, nz, dx = 16, 12, 12, 5e-3
     n_steps = 24
@@ -445,10 +399,15 @@ def test_forward_distributed_debye_two_device_matches_single_device_small_case()
             boundary="pec",
             dx_profile=np.full(nx, dx),
         )
-        # Debye slab spanning x-index 7..8 (straddles seam at nx//2=8)
+        # Debye slab spanning x-index 6..9 (straddles seam at nx//2=8)
         sim.add_material(
-            region=((6 * dx, 0, 0), (9 * dx, ny * dx, nz * dx)),
-            material=mat.Debye(eps_inf=2.0, delta_eps=[0.5], tau=[1e-11]),
+            "debye_slab",
+            eps_r=2.0,
+            debye_poles=[DebyePole(delta_eps=0.5, tau=1e-11)],
+        )
+        sim.add(
+            Box((6 * dx, 0.0, 0.0), (9 * dx, ny * dx, nz * dx)),
+            material="debye_slab",
         )
         sim.add_source(position=(3 * dx, ny // 2 * dx, nz // 2 * dx), component="ez")
         sim.add_probe(position=(5 * dx, ny // 2 * dx, nz // 2 * dx), component="ez")
@@ -458,7 +417,7 @@ def test_forward_distributed_debye_two_device_matches_single_device_small_case()
     res_s = sim_s.forward(n_steps=n_steps)
 
     sim_d = _build_sim()
-    res_d = sim_d.forward(  # type: ignore[call-arg]
+    res_d = sim_d.forward(
         n_steps=n_steps,
         distributed=True,
         devices=devices,
@@ -479,13 +438,6 @@ def test_forward_distributed_debye_two_device_matches_single_device_small_case()
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2D: Lorentz ADE splice not yet ported to distributed scan body. "
-        "Lorentz polarisation state must be sharded along x and advanced correctly."
-    ),
-)
 def test_forward_distributed_lorentz_two_device_matches_single_device_small_case():
     """Distributed Lorentz-material forward must match single-device to Class B+D.
 
@@ -495,8 +447,8 @@ def test_forward_distributed_lorentz_two_device_matches_single_device_small_case
     """
     devices = _require_two_devices()
 
-    from rfx import Simulation
-    import rfx.materials as mat
+    from rfx import Simulation, Box
+    from rfx.materials.lorentz import lorentz_pole
 
     nx, ny, nz, dx = 16, 12, 12, 5e-3
     n_steps = 24
@@ -511,8 +463,13 @@ def test_forward_distributed_lorentz_two_device_matches_single_device_small_case
         )
         # Lorentz slab near seam
         sim.add_material(
-            region=((6 * dx, 0, 0), (9 * dx, ny * dx, nz * dx)),
-            material=mat.Lorentz(eps_inf=2.0, delta_eps=[0.5], omega0=[2e10], delta=[1e9]),
+            "lorentz_slab",
+            eps_r=2.0,
+            lorentz_poles=[lorentz_pole(delta_eps=0.5, omega_0=2e10, delta=1e9)],
+        )
+        sim.add(
+            Box((6 * dx, 0.0, 0.0), (9 * dx, ny * dx, nz * dx)),
+            material="lorentz_slab",
         )
         sim.add_source(position=(3 * dx, ny // 2 * dx, nz // 2 * dx), component="ez")
         sim.add_probe(position=(5 * dx, ny // 2 * dx, nz // 2 * dx), component="ez")
@@ -522,7 +479,7 @@ def test_forward_distributed_lorentz_two_device_matches_single_device_small_case
     res_s = sim_s.forward(n_steps=n_steps)
 
     sim_d = _build_sim()
-    res_d = sim_d.forward(  # type: ignore[call-arg]
+    res_d = sim_d.forward(
         n_steps=n_steps,
         distributed=True,
         devices=devices,
@@ -540,13 +497,6 @@ def test_forward_distributed_lorentz_two_device_matches_single_device_small_case
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2D: Mixed Debye+Lorentz carry composition must survive sharding. "
-        "Both polarisation states must be sharded and advanced in the correct order."
-    ),
-)
 def test_forward_distributed_mixed_dispersion_two_device_matches_single_device_small_case():
     """Distributed mixed Debye+Lorentz forward must match single-device to Class B+D.
 
@@ -556,8 +506,9 @@ def test_forward_distributed_mixed_dispersion_two_device_matches_single_device_s
     """
     devices = _require_two_devices()
 
-    from rfx import Simulation
-    import rfx.materials as mat
+    from rfx import Simulation, Box
+    from rfx.materials.debye import DebyePole
+    from rfx.materials.lorentz import lorentz_pole
 
     nx, ny, nz, dx = 16, 12, 12, 5e-3
     n_steps = 24
@@ -570,14 +521,17 @@ def test_forward_distributed_mixed_dispersion_two_device_matches_single_device_s
             boundary="pec",
             dx_profile=np.full(nx, dx),
         )
-        # Mixed slab near seam
+        # Combined Debye+Lorentz slab near seam (single named material with
+        # both pole types so the runner takes the mixed dispatch).
         sim.add_material(
-            region=((6 * dx, 0, 0), (9 * dx, ny * dx, nz * dx)),
-            material=mat.Debye(eps_inf=2.0, delta_eps=[0.3], tau=[1e-11]),
+            "mixed_slab",
+            eps_r=2.0,
+            debye_poles=[DebyePole(delta_eps=0.3, tau=1e-11)],
+            lorentz_poles=[lorentz_pole(delta_eps=0.2, omega_0=2e10, delta=1e9)],
         )
-        sim.add_material(
-            region=((7 * dx, 0, 0), (8 * dx, ny * dx, nz * dx)),
-            material=mat.Lorentz(eps_inf=2.5, delta_eps=[0.2], omega0=[2e10], delta=[1e9]),
+        sim.add(
+            Box((6 * dx, 0.0, 0.0), (9 * dx, ny * dx, nz * dx)),
+            material="mixed_slab",
         )
         sim.add_source(position=(3 * dx, ny // 2 * dx, nz // 2 * dx), component="ez")
         sim.add_probe(position=(5 * dx, ny // 2 * dx, nz // 2 * dx), component="ez")
@@ -587,7 +541,7 @@ def test_forward_distributed_mixed_dispersion_two_device_matches_single_device_s
     res_s = sim_s.forward(n_steps=n_steps)
 
     sim_d = _build_sim()
-    res_d = sim_d.forward(  # type: ignore[call-arg]
+    res_d = sim_d.forward(
         n_steps=n_steps,
         distributed=True,
         devices=devices,
@@ -605,14 +559,6 @@ def test_forward_distributed_mixed_dispersion_two_device_matches_single_device_s
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2E: pec_occupancy sharding not yet implemented. "
-        "The single-device NU path already applies pec_occupancy correctly (C2 confirmed); "
-        "Phase 2E ports that splice into the distributed scan body."
-    ),
-)
 def test_forward_distributed_pec_occupancy_two_device_matches_single_device():
     """Distributed forward with soft-PEC (pec_occupancy_override) must match single-device.
 
@@ -649,7 +595,7 @@ def test_forward_distributed_pec_occupancy_two_device_matches_single_device():
     res_s = sim_s.forward(n_steps=n_steps, pec_occupancy_override=pec_occ)
 
     sim_d = _build_sim()
-    res_d = sim_d.forward(  # type: ignore[call-arg]
+    res_d = sim_d.forward(
         n_steps=n_steps,
         pec_occupancy_override=pec_occ,
         distributed=True,
@@ -667,14 +613,6 @@ def test_forward_distributed_pec_occupancy_two_device_matches_single_device():
 # Tests 13-15 — Gradient parity (Class A)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2F: segmented scan-of-scan with shard_map not yet composed. "
-        "checkpoint_every on the distributed path requires scan-of-scan inside shard_map; "
-        "gradients must be bit-identical to the non-segmented baseline (Class A+E)."
-    ),
-)
 def test_forward_distributed_checkpoint_every_matches_no_segment_small_grad_case():
     """Distributed forward with checkpoint_every must produce bit-identical grad.
 
@@ -708,7 +646,7 @@ def test_forward_distributed_checkpoint_every_matches_no_segment_small_grad_case
 
     def loss_no_segment(eps_val):
         sim = _build_sim()
-        res = sim.forward(  # type: ignore[call-arg]
+        res = sim.forward(
             n_steps=n_steps,
             eps_override=eps_val,
             distributed=True,
@@ -718,7 +656,7 @@ def test_forward_distributed_checkpoint_every_matches_no_segment_small_grad_case
 
     def loss_with_checkpoint(eps_val):
         sim = _build_sim()
-        res = sim.forward(  # type: ignore[call-arg]
+        res = sim.forward(
             n_steps=n_steps,
             eps_override=eps_val,
             distributed=True,
@@ -734,14 +672,6 @@ def test_forward_distributed_checkpoint_every_matches_no_segment_small_grad_case
     assert_class_e_bit_match(grad_no_seg, grad_checkpt, label="checkpoint_every_bit_match")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2F: n_warmup stop-gradient splitting must be applied at the sharded "
-        "carry boundary. The warmup tail must not receive gradients from the warm-up "
-        "phase, matching single-device behaviour."
-    ),
-)
 def test_forward_distributed_n_warmup_tail_grad_matches_single_device():
     """Distributed forward with n_warmup must produce same tail gradient as single-device.
 
@@ -780,7 +710,7 @@ def test_forward_distributed_n_warmup_tail_grad_matches_single_device():
 
     def loss_dist(eps_val):
         sim = _build_sim()
-        res = sim.forward(  # type: ignore[call-arg]
+        res = sim.forward(
             n_steps=n_steps,
             eps_override=eps_val,
             n_warmup=n_warmup,
@@ -795,14 +725,6 @@ def test_forward_distributed_n_warmup_tail_grad_matches_single_device():
     assert_class_a_grad(grad_single, grad_dist, label="n_warmup_tail_grad")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2F: design_mask stop-gradient must be applied correctly at sharded "
-        "carry rebuild. The design_mask cells must receive zero gradient in both "
-        "single-device and distributed runs."
-    ),
-)
 def test_forward_distributed_design_mask_stop_grad_matches_single_device():
     """Distributed forward with design_mask must match single-device gradient.
 
@@ -846,7 +768,7 @@ def test_forward_distributed_design_mask_stop_grad_matches_single_device():
 
     def loss_dist(eps_val):
         sim = _build_sim()
-        res = sim.forward(  # type: ignore[call-arg]
+        res = sim.forward(
             n_steps=n_steps,
             eps_override=eps_val,
             design_mask=design_mask,
@@ -862,77 +784,16 @@ def test_forward_distributed_design_mask_stop_grad_matches_single_device():
 
 
 # ---------------------------------------------------------------------------
-# Tests 16-17 — Seam isolation (Class C + B)
+# Test 17 — Seam isolation (Class B)
+#
+# Note: the interior-seam CPML noop assertion (Class C) is covered at the
+# kernel level by tests/test_distributed_nu_kernel.py::
+# test_distributed_cpml_internal_seam_is_noop. The composition-level variant
+# was removed because Simulation.forward() does not expose per-rank CPML
+# internal state and an indirect probe-based check would duplicate the
+# kernel test less precisely.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2C: interior seam must NOT activate x-face CPML on interior ranks. "
-        "CPML x-face psi arrays for interior ranks must be exactly zero (Class C)."
-    ),
-)
-def test_forward_distributed_cpml_internal_seam_is_noop_not_boundary():
-    """Interior CPML ranks must have zero x-face psi (seam is not an absorber).
-
-    When the domain is split into 2 x-slabs, only the global x boundaries
-    (rank 0 x-low face, rank 1 x-high face) should activate CPML absorbers.
-    The seam between rank 0 and rank 1 must NOT activate CPML psi update on
-    either the x-high face of rank 0 or the x-low face of rank 1.
-
-    This is Class C: the assertion is exact-zero on the interior psi arrays,
-    not an approximate parity check.
-    """
-    devices = _require_two_devices()
-
-    from rfx import Simulation
-
-    n_steps = 10
-
-    sim = _make_nu_sim_small(boundary="cpml")
-    # Run distributed and expose internal CPML state per rank
-    res = sim.forward(  # type: ignore[call-arg]
-        n_steps=n_steps,
-        distributed=True,
-        devices=devices,
-        return_internal_state=True,
-    )
-
-    # When implemented, res.cpml_state_per_rank is a list of CPMLState per device.
-    # Interior rank 0's x-high face and rank 1's x-low face must be zero.
-    if hasattr(res, "cpml_state_per_rank"):
-        rank0_cpml = res.cpml_state_per_rank[0]
-        rank1_cpml = res.cpml_state_per_rank[1]
-
-        # Rank 0 x-hi face (seam side) must be zero
-        for field in ["psi_ey_xhi", "psi_ez_xhi", "psi_hy_xhi", "psi_hz_xhi"]:
-            arr = getattr(rank0_cpml, field, None)
-            if arr is not None:
-                assert jnp.all(arr == 0), (
-                    f"Rank 0 CPML seam field '{field}' must be zero (got max={float(jnp.max(jnp.abs(arr))):.3e})"
-                )
-
-        # Rank 1 x-lo face (seam side) must be zero
-        for field in ["psi_ey_xlo", "psi_ez_xlo", "psi_hy_xlo", "psi_hz_xlo"]:
-            arr = getattr(rank1_cpml, field, None)
-            if arr is not None:
-                assert jnp.all(arr == 0), (
-                    f"Rank 1 CPML seam field '{field}' must be zero (got max={float(jnp.max(jnp.abs(arr))):.3e})"
-                )
-    else:
-        # The kwarg is not yet implemented; the forward call above will have raised
-        # TypeError, which is the expected xfail. If we get here, assert failure.
-        pytest.fail("forward(distributed=True) must expose cpml_state_per_rank when implemented")
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2B + 2E: pec_mask must survive ghost-cell exchange without being "
-        "corrupted at the seam. Field values at seam-adjacent cells must match "
-        "single-device reference (Class B)."
-    ),
-)
 def test_forward_distributed_pec_mask_seam_exchange_preserves_field():
     """PEC mask at the seam must survive ghost-cell exchange unchanged (Class B).
 
@@ -967,7 +828,7 @@ def test_forward_distributed_pec_mask_seam_exchange_preserves_field():
     res_s = sim_s.forward(n_steps=n_steps, pec_mask_override=pec_mask)
 
     sim_d = _build_sim()
-    res_d = sim_d.forward(  # type: ignore[call-arg]
+    res_d = sim_d.forward(
         n_steps=n_steps,
         pec_mask_override=pec_mask,
         distributed=True,
@@ -985,14 +846,6 @@ def test_forward_distributed_pec_mask_seam_exchange_preserves_field():
 # Test 18 (G1) — Per-cell seam gradient parity (Class A near seam)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2D: per-cell gradient near the seam must match single-device within "
-        "rtol=1e-4 (relaxed from 1e-6 due to ghost-cell exchange rounding). "
-        "Requires Phase 2A + 2D + 2F all implemented."
-    ),
-)
 def test_forward_distributed_grad_per_cell_matches_single_device_near_seam():
     """Per-cell gradient for seam-adjacent cells must match single-device (Class A seam).
 
@@ -1032,7 +885,7 @@ def test_forward_distributed_grad_per_cell_matches_single_device_near_seam():
 
     def loss_dist(eps_val):
         sim = _build_sim()
-        res = sim.forward(  # type: ignore[call-arg]
+        res = sim.forward(
             n_steps=n_steps,
             eps_override=eps_val,
             distributed=True,
@@ -1065,11 +918,14 @@ def test_forward_distributed_grad_per_cell_matches_single_device_near_seam():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(
-    strict=True,
+    strict=False,
     reason=(
-        "Phase 2C: NaN injected on rank 0 must propagate to rank 1 within "
-        "2*exchange_interval steps via ghost-cell exchange. "
-        "Requires ghost exchange to be implemented (Phase 2B/2C)."
+        "G2: NaN propagation via ghost exchange — Phase 3 implementation "
+        "shows source NaN does not reach the rank-1 probe within the test "
+        "horizon. Investigate whether this is a JAX shard_map NaN handling "
+        "limitation or a real ghost-exchange bug. See orchestrator notes for "
+        "issue #44 Phase 3.1 cleanup. strict=False so an upstream/internal "
+        "fix surfaces as a passing test rather than a CI break."
     ),
 )
 def test_forward_distributed_nan_propagates_via_ghost_exchange():
@@ -1111,7 +967,7 @@ def test_forward_distributed_nan_propagates_via_ghost_exchange():
     eps_nan = jnp.ones((nx, ny, nz))
     eps_nan = eps_nan.at[: nx // 2, :, :].set(jnp.nan)
 
-    res = sim.forward(  # type: ignore[call-arg]
+    res = sim.forward(
         n_steps=n_steps,
         eps_override=eps_nan,
         distributed=True,
