@@ -2389,6 +2389,29 @@ class Simulation:
                     except (NotImplementedError, TypeError, AttributeError):
                         continue
 
+        # Cell aspect ratio on NU meshes — dispersion error grows with
+        # anisotropy. dx=0.5mm + dz_sub=0.25mm (2:1) worsened the patch
+        # antenna f_res from +9% to +13% instead of converging (session
+        # 2026-04-16 convergence grid evidence).
+        for axis_name, prof in (("x", self._dx_profile),
+                                ("y", self._dy_profile),
+                                ("z", self._dz_profile)):
+            if prof is not None:
+                min_d = float(np.min(prof))
+                max_d = float(np.max(prof))
+                dx_nominal = self._dx or (C0 / self._freq_max / 20.0)
+                ratio = max(dx_nominal / min_d, min_d / dx_nominal)
+                if ratio > 2.5:
+                    _w.warn(
+                        f"Cell aspect ratio {ratio:.1f}:1 between dx="
+                        f"{dx_nominal*1e3:.3f}mm and min({axis_name}_profile)="
+                        f"{min_d*1e3:.3f}mm. FDTD numerical dispersion "
+                        f"degrades at anisotropic cells; keep ratio "
+                        f"<= 2 for convergent results. Scale "
+                        f"{axis_name}_profile with dx or use isotropic cells.",
+                        stacklevel=3,
+                    )
+
         # Thin-metal-on-NU-mesh symmetry (Meep/OpenEMS convention — issue #48).
         self._validate_thin_metal_on_nu_mesh()
 
