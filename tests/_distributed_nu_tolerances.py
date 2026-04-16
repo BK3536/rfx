@@ -295,3 +295,38 @@ def assert_class_e_bit_match(
         f"Class E bit-match failed{tag}: arrays differ "
         f"(max_abs_diff={float(jnp.max(jnp.abs(jnp.asarray(arr_a, dtype=float) - jnp.asarray(arr_b, dtype=float)))):.3e})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Class F — absolute-physics validation (analytic / first-principles)
+# ---------------------------------------------------------------------------
+#
+# Class F is the "absolute" tier of the distributed-NU tolerance contract.
+# Where Classes A-E compare distributed against single-device (parity), Class
+# F compares distributed against an analytic/first-principles reference, so
+# it catches common-origin bugs that pure parity tests cannot see (e.g. a
+# numerical error reproduced by both single-device and distributed because
+# they share a helper, or a slab-boundary-specific construction that has no
+# single-device counterpart).
+#
+# Two sub-tolerances live here:
+#
+#   * ``RTOL_ANALYTIC_F`` — discretisation tolerance for an FDTD-vs-analytic
+#     resonance frequency check at ~10 cells per wavelength.  5% is the
+#     standard textbook bound for a Yee scheme at this resolution; tighter
+#     would require finer meshing or a larger run budget than the kernel
+#     test suite can afford on a CPU virtual cluster.
+#
+#   * ``RTOL_ENERGY_DRIFT_F`` — energy conservation tolerance for a closed
+#     PEC cavity over the test horizon (a few hundred steps after the
+#     source switches off).  Pure FDTD on a hard-PEC box is essentially
+#     lossless; well-formed runs sit comfortably under 1%.  5% is the
+#     generous bound that catches dissipative bugs in seam exchange or
+#     accidental double-application of PEC at a slab boundary.
+
+RTOL_ANALYTIC_F: float = 0.05
+"""Relative tolerance for FDTD-vs-analytic resonance frequency (Class F)."""
+
+RTOL_ENERGY_DRIFT_F: float = 0.05
+"""Relative tolerance for closed-PEC-cavity energy drift over a few
+hundred steps after the source has switched off (Class F)."""

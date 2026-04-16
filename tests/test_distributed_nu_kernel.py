@@ -2172,3 +2172,341 @@ def test_distributed_emit_time_series_false_skips_probe():
         f"emit=False grad must scale linearly with source amp "
         f"(quadratic loss): grad(2)/grad(1) = {ratio:.6f}, expected ~2.0"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 absolute-physics validation (Class F) — issue #44 follow-up
+# ---------------------------------------------------------------------------
+#
+# These two tests are *not* parity tests.  Phases 2A-2F shipped 26 parity
+# tests (single-device == distributed) which transitively inherit physical
+# correctness from the 730+ existing single-device tests.  The remaining
+# gap that pure parity cannot close:
+#
+#   1. Common-origin numerical bugs — a helper shared by both single-device
+#      and distributed paths could be wrong; both runs would agree, yet
+#      both would be wrong.
+#   2. Slab-boundary-specific physics — the seam-aware ghost exchange and
+#      rank-conditional PEC have no single-device counterpart, so a
+#      construction-specific bug there would not register against a
+#      single-device baseline.
+#
+# The two tests below close that gap by validating the distributed runner
+# against analytic / first-principles references (Class F tolerance, see
+# ``tests/_distributed_nu_tolerances.py``).
+
+from rfx.harminv import harminv_from_probe  # noqa: E402
+from rfx.core.yee import EPS_0 as _EPS_0_F, MU_0 as _MU_0_F  # noqa: E402
+from tests._distributed_nu_tolerances import (  # noqa: E402
+    RTOL_ANALYTIC_F,
+    RTOL_ENERGY_DRIFT_F,
+)
+
+
+def _phase2_uniform_pec_grid(n_cells: int, dx0: float = 1e-3):
+    """Build a uniform-spacing closed PEC cube (cpml_layers=0).
+
+    Uses ``make_nonuniform_grid`` with a constant ``dx_profile`` so the
+    NU plumbing is exercised, but the physics is a vanilla uniform Yee
+    cube with hard PEC on all 6 faces.  Returns a ``NonUniformGrid``
+    suitable for both ``run_nonuniform`` and the distributed runner.
+    """
+    dx_profile = np.full(n_cells, dx0)
+    dz_profile = np.full(n_cells, dx0)
+    return make_nonuniform_grid(
+        (n_cells * dx0, n_cells * dx0), dz_profile, dx0,
+        cpml_layers=0,
+        dx_profile=dx_profile,
+    )
+
+
+def _phase2_total_em_energy(state, materials, grid):
+    """Compute the total electromagnetic energy in a closed PEC cavity.
+
+    ``E_total = sum_cells dV * (0.5 * eps * |E|^2 + 0.5 * mu * |H|^2)``
+
+    The Yee staggering means each component is sampled at a different
+    location within the cell, but for a uniform-cell-size cube and a
+    cell-centred energy estimator this midpoint approximation is the
+    standard FDTD energy surrogate (the per-step drift is dominated by
+    op-ordering noise, not staggering bias).
+    """
+    eps = np.asarray(materials.eps_r, dtype=np.float64) * _EPS_0_F
+    mu = np.asarray(materials.mu_r, dtype=np.float64) * _MU_0_F
+    ex = np.asarray(state.ex, dtype=np.float64)
+    ey = np.asarray(state.ey, dtype=np.float64)
+    ez = np.asarray(state.ez, dtype=np.float64)
+    hx = np.asarray(state.hx, dtype=np.float64)
+    hy = np.asarray(state.hy, dtype=np.float64)
+    hz = np.asarray(state.hz, dtype=np.float64)
+
+    e_density = 0.5 * eps * (ex ** 2 + ey ** 2 + ez ** 2)
+    h_density = 0.5 * mu * (hx ** 2 + hy ** 2 + hz ** 2)
+
+    dx = np.asarray(grid.dx_arr, dtype=np.float64)
+    dy = np.asarray(grid.dy_arr, dtype=np.float64)
+    dz = np.asarray(grid.dz, dtype=np.float64)
+    dV = dx[:, None, None] * dy[None, :, None] * dz[None, None, :]
+
+    return float(np.sum((e_density + h_density) * dV))
+
+
+@_PHASE2B_REQUIRES_2DEV
+def test_distributed_pec_cavity_analytic_resonance():
+    """Class F absolute analytic: distributed runner reproduces the
+    analytic TM_110 resonance of a closed PEC cubic cavity to within
+    5%.
+
+    Setup
+    -----
+    Closed (hard PEC, no CPML) cubic cavity with side L = 24 mm,
+    dx = dy = dz = 1 mm, so the lowest-resonance has wavelength
+    34.0 mm (~34 cells per lambda — well-resolved Yee).
+
+    The lowest-frequency mode of a cubic cavity is the degenerate set
+    {TE_011, TE_101, TM_110} at::
+
+        f_110 = (c0 / (2 L)) * sqrt(1^2 + 1^2 + 0^2)
+              = c0 * sqrt(2) / (2 L)
+
+    With L = 24 mm this is ~8.838 GHz.  We excite the TM_110 member
+    (``E_z != 0``, ``E_z propto sin(pi x / L) sin(pi y / L)``) with a
+    z-polarised current source placed off all node planes, then pick
+    a probe location that also sits off the mode's node lines so the
+    resonance dominates the time-series.
+
+    Why this catches what parity cannot
+    ----------------------------------
+    A common-origin numerical bug (e.g. an incorrect inverse-spacing
+    helper used by both single-device and distributed paths) would
+    pass parity yet shift the extracted resonance away from the
+    analytic value.  Class F (rtol = 5%) catches such drifts: 5% is
+    the standard FDTD-vs-analytic bound at this resolution; a real
+    bug typically pushes the error well past 10%.
+    """
+    # Determinism: set numpy + jax PRNG seeds even though this test
+    # does not use randomness directly (the underlying scan body is
+    # deterministic in float32; this is belt-and-braces).
+    np.random.seed(0)
+
+    devices = jax.devices()[:2]
+    n_devices = 2
+
+    n_cells = 24
+    dx0 = 1e-3
+    L = n_cells * dx0  # 24 mm
+
+    # Analytic lowest-mode resonance (TM_110 / TE_011 / TE_101 degenerate)
+    c0 = 1.0 / np.sqrt(_EPS_0_F * _MU_0_F)
+    f_analytic = c0 * np.sqrt(2.0) / (2.0 * L)
+
+    grid = _phase2_uniform_pec_grid(n_cells, dx0=dx0)
+    materials = _phase2b_make_materials(grid)
+
+    # Source: narrowband modulated Gaussian centred on the analytic
+    # frequency.  A short un-modulated Gaussian has too much bandwidth
+    # and excites the TM_111 / TM_210 / TM_211 modes alongside TM_110,
+    # so harminv may pick a higher-amplitude neighbour even after a
+    # bandpass.  A sinusoid * Gaussian envelope concentrates the
+    # excitation in a ~+/- 1 GHz window around 8.84 GHz, well below
+    # the gap to the next-mode (10.82 GHz).
+    #
+    # Source/probe placement uses cavity-symmetry suppression: the
+    # source sits on the x=L/2, y=L/2 cell (which is the slab seam
+    # from rank 0's perspective and rank 1's first real cell), where
+    # TM_2,n,0 / TM_m,2,0 modes (sin(2 pi x/L)) all have a *node*.
+    # The probe lies on rank 0 at an asymmetric position so the
+    # TM_110 ring-down dominates the time series.
+    n_steps = 4000
+    src_idx = (n_cells // 2, n_cells // 2, 6)
+    prb_idx = (n_cells // 3, n_cells // 3, 17)
+
+    src_t0 = 250.0 * float(grid.dt)
+    src_tau = 100.0 * float(grid.dt)
+    src_omega = 2.0 * np.pi * float(f_analytic)
+
+    def _modulated_gauss(t, t0=src_t0, tau=src_tau, omega=src_omega):
+        envelope = jnp.exp(-((t - t0) ** 2) / (2.0 * tau ** 2))
+        return jnp.sin(omega * (t - t0)) * envelope
+
+    src_si, src_sj, src_sk, src_comp, src_wf = _phase2b_make_current_source(
+        grid, src_idx, "ez", _modulated_gauss, n_steps, materials,
+    )
+    src_spec = SourceSpec(
+        i=int(src_si), j=int(src_sj), k=int(src_sk),
+        component=src_comp, waveform=jnp.asarray(src_wf),
+    )
+    prb_spec = ProbeSpec(
+        i=int(prb_idx[0]), j=int(prb_idx[1]), k=int(prb_idx[2]),
+        component="ez",
+    )
+
+    sharded_grid = build_sharded_nu_grid(grid, n_devices=n_devices)
+    sharded_mat = _phase2b_shard_mat(materials, sharded_grid)
+    out = run_nonuniform_distributed_pec(
+        sharded_grid=sharded_grid,
+        sharded_materials=sharded_mat,
+        sharded_pec_mask=None,
+        n_steps=n_steps,
+        sources=[src_spec],
+        probes=[prb_spec],
+        n_devices=n_devices,
+        devices=devices,
+    )
+    ts = np.asarray(out["time_series"])[:, 0]
+
+    # Window past the source.  The modulated Gaussian envelope is
+    # centred at t0 = 250 dt with tau = 100 dt, ~vanishing at
+    # t = t0 + 5*tau = 750 dt.  Pass that to harminv so only the
+    # ring-down portion is fitted.
+    source_decay_time = (src_t0 + 5.0 * src_tau)
+
+    # Tight search range centred on f_analytic (the source spectrum is
+    # narrowband, so we also tighten the harminv window to reject any
+    # spurious DC / out-of-band leakage).
+    f_min = 0.85 * f_analytic
+    f_max = 1.15 * f_analytic
+
+    modes = harminv_from_probe(
+        ts, dt=float(grid.dt),
+        freq_range=(f_min, f_max),
+        source_decay_time=source_decay_time,
+    )
+    assert len(modes) > 0, (
+        "Class F resonance: harminv extracted no modes from the "
+        "distributed PEC cavity time-series in the search range "
+        f"[{f_min/1e9:.2f}, {f_max/1e9:.2f}] GHz."
+    )
+
+    # Strongest mode (sorted by amplitude in harminv_from_probe)
+    f_extracted = modes[0].freq
+    rel_err = abs(f_extracted - f_analytic) / f_analytic
+    assert rel_err < RTOL_ANALYTIC_F, (
+        f"Class F resonance: distributed PEC cavity TM_110 frequency "
+        f"deviates by {100*rel_err:.2f}% from analytic. "
+        f"f_analytic = {f_analytic/1e9:.4f} GHz, "
+        f"f_extracted = {f_extracted/1e9:.4f} GHz, "
+        f"rtol = {100*RTOL_ANALYTIC_F:.1f}%."
+    )
+
+
+@_PHASE2B_REQUIRES_2DEV
+def test_distributed_pec_cavity_energy_conservation():
+    """Class F absolute first-principles: distributed runner conserves
+    total electromagnetic energy in a closed lossless PEC cavity to
+    within 5% drift over a few hundred steps after the source switches
+    off.
+
+    Setup
+    -----
+    Same uniform PEC cube as the resonance test but smaller (16^3) for
+    speed.  A short Gaussian current pulse runs for ~50 dt then the
+    source waveform is identically zero for the remaining steps.  No
+    CPML, no dispersion (lossless vacuum).  Two distributed runs are
+    performed:
+
+      * ``n_steps = 100`` -> measure ``E_total`` at ``t_settle``
+        (well past source-off).
+      * ``n_steps = 500`` -> measure ``E_total`` at ``t_late``.
+
+    Both runs use the *same* source waveform (sliced/extended), so the
+    physics is identical up to the per-run scan length.  The drift
+    ``|E(t_late) - E(t_settle)| / E(t_settle)`` must be below 5%.
+
+    Why this catches what parity cannot
+    ----------------------------------
+    Parity tests prove distributed and single-device agree, but they
+    do not prove either is energy-conserving.  A dissipative bug in
+    the seam ghost exchange (e.g. forgetting to pull a neighbour
+    contribution that contains the mirror flux) would fail this
+    check while still passing the parity tests if the same
+    dissipation showed up in a hypothetical buggy single-device path.
+    Likewise an *injection* bug (an accidental double-application of
+    PEC at the seam) would *grow* the energy and trip the same bound.
+    """
+    np.random.seed(0)
+
+    devices = jax.devices()[:2]
+    n_devices = 2
+
+    n_cells = 16
+    dx0 = 1e-3
+
+    grid = _phase2_uniform_pec_grid(n_cells, dx0=dx0)
+    materials = _phase2b_make_materials(grid)
+
+    # Short current pulse: the Gaussian centred at 20 dt, tau = 6 dt,
+    # is ~exp(-(80/12)^2) ~ 1.5e-20 at t = 100 dt -> effectively
+    # source-off well before t_settle = 100 dt.
+    src_t0 = 20.0 * float(grid.dt)
+    src_tau = 6.0 * float(grid.dt)
+
+    def _gauss_pulse(t):
+        return jnp.exp(-((t - src_t0) ** 2) / (2.0 * src_tau ** 2))
+
+    # Single source/probe; probe value is unused for this test (we
+    # only inspect the gathered ``final_state``) but the runner
+    # contract requires a probe list to be non-empty for shape sanity.
+    src_idx = (3, 5, 7)
+    prb_idx = (5, 7, 11)
+
+    sharded_grid = build_sharded_nu_grid(grid, n_devices=n_devices)
+    sharded_mat = _phase2b_shard_mat(materials, sharded_grid)
+
+    def _run(n_steps):
+        src_si, src_sj, src_sk, src_comp, src_wf = (
+            _phase2b_make_current_source(
+                grid, src_idx, "ez", _gauss_pulse, n_steps, materials,
+            )
+        )
+        src_spec = SourceSpec(
+            i=int(src_si), j=int(src_sj), k=int(src_sk),
+            component=src_comp, waveform=jnp.asarray(src_wf),
+        )
+        prb_spec = ProbeSpec(
+            i=int(prb_idx[0]), j=int(prb_idx[1]), k=int(prb_idx[2]),
+            component="ez",
+        )
+        return run_nonuniform_distributed_pec(
+            sharded_grid=sharded_grid,
+            sharded_materials=sharded_mat,
+            sharded_pec_mask=None,
+            n_steps=n_steps,
+            sources=[src_spec],
+            probes=[prb_spec],
+            n_devices=n_devices,
+            devices=devices,
+        )
+
+    n_settle = 100
+    n_late = 500
+
+    out_settle = _run(n_settle)
+    out_late = _run(n_late)
+
+    e_settle = _phase2_total_em_energy(
+        out_settle["final_state"], materials, grid,
+    )
+    e_late = _phase2_total_em_energy(
+        out_late["final_state"], materials, grid,
+    )
+
+    # Sanity: there must be non-trivial energy in the cavity to compare
+    # against.  Absolute floor of 1e-30 J guards against an all-zero
+    # final-state slipping through.
+    assert e_settle > 1e-30, (
+        f"Class F energy conservation: settle-time total energy is "
+        f"~zero ({e_settle:.3e} J).  Either the source did not deposit "
+        f"energy or the gathered final_state is corrupt."
+    )
+
+    drift = abs(e_late - e_settle) / e_settle
+    assert drift < RTOL_ENERGY_DRIFT_F, (
+        f"Class F energy conservation: closed lossless PEC cavity "
+        f"total energy drifted by {100*drift:.3f}% between step "
+        f"{n_settle} and step {n_late}, exceeding the {100*RTOL_ENERGY_DRIFT_F:.1f}% "
+        f"bound.  E({n_settle}) = {e_settle:.6e} J, "
+        f"E({n_late}) = {e_late:.6e} J.  This points to a "
+        f"dissipative seam-exchange bug (drift < 0) or an accidental "
+        f"PEC double-application at the slab boundary (drift > 0)."
+    )
