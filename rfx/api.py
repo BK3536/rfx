@@ -2937,11 +2937,12 @@ class Simulation:
                 # Can't check n_steps here (not known yet), but store hint
                 self._ntff_min_steps_hint = min_steps_for_ntff
 
-        # P1.9: Dielectric material extending into CPML region
+        # P1.9: Geometry (dielectric OR PEC) extending into CPML region.
+        # CPML modifies field-update equations with absorbing coefficients;
+        # any structure placed there is effectively eaten by the absorber
+        # and produces physically meaningless results (issue #61).
         if cpml_thickness > 0 and self._boundary == "cpml":
             for entry in self._geometry:
-                if entry.material_name == "pec":
-                    continue
                 if hasattr(entry.shape, "bounding_box"):
                     try:
                         c1, c2 = entry.shape.bounding_box()
@@ -2951,8 +2952,9 @@ class Simulation:
                                 _w.warn(
                                     f"Material '{entry.material_name}' extends "
                                     f"into CPML region along {'xyz'[ax]}-axis. "
-                                    f"{absorber_label} assumes vacuum — dielectric in absorber "
-                                    f"causes increased reflections.",
+                                    f"{absorber_label} modifies field updates — "
+                                    f"geometry inside the absorber is physically "
+                                    f"meaningless (issue #61).",
                                     stacklevel=3,
                                 )
                                 break
