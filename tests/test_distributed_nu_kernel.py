@@ -765,3 +765,324 @@ def test_distributed_h_ghost_exchange_recovers_global_field():
 
     assert_class_b_parity(ts_single, ts_dist,
                           label="phase2b_h_ghost_exchange_global_field")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2C: full CPML on x-slabs — V3 plan lines 633-657
+# ---------------------------------------------------------------------------
+
+from rfx.runners.distributed_nu import (  # noqa: E402
+    init_cpml_for_sharded_nu,
+    shard_cpml_state_x_slab,
+)
+from tests._distributed_nu_tolerances import (  # noqa: E402
+    assert_class_c_cpml_seam_noop,
+    CPML_X_FACE_PSI_FIELDS,
+)
+
+
+def _phase2c_build_cpml_grid(nx_physical=16, ny=8, nz=8, dx0=1e-3,
+                             cpml_layers=4):
+    """Small NU grid with CPML padding (uniform xy + uniform dz; the
+    NU plumbing exercises the per-axis dx_x/dx_y/dz code paths even on a
+    degenerate-uniform profile).
+    """
+    dx_profile = np.full(nx_physical, dx0)
+    dz_profile = np.full(nz, dx0)
+    grid = make_nonuniform_grid(
+        (nx_physical * dx0, ny * dx0), dz_profile, dx0,
+        cpml_layers=cpml_layers,
+        dx_profile=dx_profile,
+    )
+    return grid
+
+
+def _phase2c_unstack_cpml(cpml_state_sharded, sharded_grid, n_cpml,
+                          field_name):
+    """Unstack a sharded CPML psi field back into per-rank arrays.
+
+    The runner returns CPMLState psi arrays with leading axis
+    ``n_devices * n_cpml``; this helper pulls them to host and reshapes
+    to ``(n_devices, n_cpml, d1, d2)`` so individual ranks can be
+    inspected.
+    """
+    arr = np.asarray(getattr(cpml_state_sharded, field_name))
+    n_devices = sharded_grid.n_devices
+    total = arr.shape[0]
+    assert total == n_devices * n_cpml, (
+        f"unstack: total leading dim {total} != "
+        f"n_devices * n_cpml = {n_devices * n_cpml}"
+    )
+    return arr.reshape(n_devices, n_cpml, *arr.shape[1:])
+
+
+@_PHASE2B_REQUIRES_2DEV
+def test_distributed_cpml_2device_matches_single_device():
+    """Phase 2C Class B forward parity: NU + CPML on all faces, 2 devices.
+
+    The 2-device distributed run with CPML must match the single-device
+    ``run_nonuniform`` reference at the final step on a small NU CPML
+    domain.  Source on rank 0, probe on rank 1, so the signal crosses
+    the seam.  Validates that the per-rank CPMLState evolution + the
+    rank-conditional x-face gating preserve forward parity.
+    """
+    devices = jax.devices()[:2]
+    n_devices = 2
+    n_steps = 60
+
+    grid = _phase2c_build_cpml_grid(
+        nx_physical=16, ny=8, nz=8, dx0=1e-3, cpml_layers=4)
+    materials = _phase2b_make_materials(grid)
+
+    # Source / probe in interior; cross the slab seam.
+    nx, ny_g, nz_g = grid.nx, grid.ny, grid.nz
+    src_idx = (nx // 4, ny_g // 2, nz_g // 2)
+    prb_idx = (3 * nx // 4, ny_g // 2, nz_g // 2)
+    src_si, src_sj, src_sk, src_comp, src_wf = _phase2b_make_current_source(
+        grid, src_idx, "ez", _phase2b_gauss_waveform, n_steps, materials,
+    )
+    src_spec = SourceSpec(
+        i=int(src_si), j=int(src_sj), k=int(src_sk),
+        component=src_comp, waveform=jnp.asarray(src_wf),
+    )
+    prb_spec = ProbeSpec(
+        i=int(prb_idx[0]), j=int(prb_idx[1]), k=int(prb_idx[2]),
+        component="ez",
+    )
+
+    # Single-device reference (uses init_cpml under the hood)
+    single_out = run_nonuniform(
+        grid=grid, materials=materials, n_steps=n_steps,
+        sources=[src_spec], probes=[prb_spec],
+    )
+    ts_single = jnp.asarray(single_out["time_series"])[:, 0]
+
+    # Distributed run with CPML
+    sharded_grid = build_sharded_nu_grid(grid, n_devices=n_devices)
+    sharded_mat = _phase2b_shard_mat(materials, sharded_grid)
+    cpml_params, cpml_state_stacked = init_cpml_for_sharded_nu(
+        sharded_grid, n_devices=n_devices,
+    )
+    from jax.sharding import Mesh
+    mesh = Mesh(np.array(devices), axis_names=("x",))
+    cpml_state_sharded = shard_cpml_state_x_slab(
+        cpml_state_stacked, sharded_grid, mesh,
+    )
+    out = run_nonuniform_distributed_pec(
+        sharded_grid=sharded_grid,
+        sharded_materials=sharded_mat,
+        sharded_pec_mask=None,
+        n_steps=n_steps,
+        sources=[src_spec],
+        probes=[prb_spec],
+        n_devices=n_devices,
+        devices=devices,
+        cpml_params=cpml_params,
+        cpml_state=cpml_state_sharded,
+    )
+    ts_dist = jnp.asarray(out["time_series"])[:, 0]
+
+    assert ts_dist.shape == ts_single.shape, (
+        f"shape mismatch: dist={ts_dist.shape}, single={ts_single.shape}"
+    )
+    assert_class_b_parity(ts_single, ts_dist,
+                          label="phase2c_cpml_2device_parity")
+
+
+@_PHASE2B_REQUIRES_2DEV
+def test_distributed_cpml_internal_seam_is_noop():
+    """Phase 2C Class C: interior-rank x-face CPML state is exactly zero.
+
+    Run a 2-device distributed CPML scan for 50 steps with a source that
+    drives a non-trivial field through the seam.  After the run, every
+    x-face CPML psi array on an interior rank must be exactly zero —
+    the seam is NOT a CPML boundary, only the outer x_lo / x_hi faces are.
+
+    With ``n_devices=3`` rank 1 is the interior rank; with ``n_devices=2``
+    there is no interior rank, so we pick a 3-device run when at least
+    3 virtual devices are available; otherwise we run the 2-device case
+    and assert that rank 0 owns x_lo psi but the *upper* slab of rank 0's
+    x-hi psi is unmodified (rank 0 is not rank N-1, so its x-hi psi must
+    stay zero).
+    """
+    devices_all = jax.devices()
+    n_devices = 3 if len(devices_all) >= 3 else 2
+    devices = devices_all[:n_devices]
+    n_steps = 50
+
+    grid = _phase2c_build_cpml_grid(
+        nx_physical=24 if n_devices == 3 else 16, ny=8, nz=8,
+        dx0=1e-3, cpml_layers=4,
+    )
+    materials = _phase2b_make_materials(grid)
+    nx = grid.nx
+
+    # Source in the centre so the field reaches every rank
+    src_idx = (nx // 2, grid.ny // 2, grid.nz // 2)
+    src_si, src_sj, src_sk, src_comp, src_wf = _phase2b_make_current_source(
+        grid, src_idx, "ez", _phase2b_gauss_waveform, n_steps, materials,
+    )
+    src_spec = SourceSpec(
+        i=int(src_si), j=int(src_sj), k=int(src_sk),
+        component=src_comp, waveform=jnp.asarray(src_wf),
+    )
+    prb_spec = ProbeSpec(i=nx // 2, j=grid.ny // 2, k=grid.nz // 2,
+                         component="ez")
+
+    sharded_grid = build_sharded_nu_grid(grid, n_devices=n_devices)
+    sharded_mat = _phase2b_shard_mat(materials, sharded_grid)
+    cpml_params, cpml_state_stacked = init_cpml_for_sharded_nu(
+        sharded_grid, n_devices=n_devices,
+    )
+    from jax.sharding import Mesh
+    mesh = Mesh(np.array(devices), axis_names=("x",))
+    cpml_state_sharded = shard_cpml_state_x_slab(
+        cpml_state_stacked, sharded_grid, mesh,
+    )
+    out = run_nonuniform_distributed_pec(
+        sharded_grid=sharded_grid,
+        sharded_materials=sharded_mat,
+        sharded_pec_mask=None,
+        n_steps=n_steps,
+        sources=[src_spec],
+        probes=[prb_spec],
+        n_devices=n_devices,
+        devices=devices,
+        cpml_params=cpml_params,
+        cpml_state=cpml_state_sharded,
+    )
+    final_cpml = out["cpml_state_sharded"]
+    assert final_cpml is not None, (
+        "Phase 2C runner must return cpml_state_sharded when CPML is enabled"
+    )
+
+    n_cpml = sharded_grid.cpml_layers
+
+    # Rank-by-rank inspection of every x-face psi field
+    if n_devices >= 3:
+        # Rank 1 is interior — every x-face psi must be exactly zero
+        from rfx.boundaries.cpml import CPMLState
+        rank1_psi = {}
+        for fname in CPML_X_FACE_PSI_FIELDS:
+            stacked = _phase2c_unstack_cpml(
+                final_cpml, sharded_grid, n_cpml, fname,
+            )
+            rank1_psi[fname] = jnp.asarray(stacked[1])  # rank 1
+        # Build a fake CPMLState-like NamedTuple subset for the helper
+        rank1_state = CPMLState(
+            psi_ex_ylo=jnp.zeros(1), psi_ex_yhi=jnp.zeros(1),
+            psi_ex_zlo=jnp.zeros(1), psi_ex_zhi=jnp.zeros(1),
+            psi_ey_xlo=rank1_psi["psi_ey_xlo"],
+            psi_ey_xhi=rank1_psi["psi_ey_xhi"],
+            psi_ey_zlo=jnp.zeros(1), psi_ey_zhi=jnp.zeros(1),
+            psi_ez_xlo=rank1_psi["psi_ez_xlo"],
+            psi_ez_xhi=rank1_psi["psi_ez_xhi"],
+            psi_ez_ylo=jnp.zeros(1), psi_ez_yhi=jnp.zeros(1),
+            psi_hx_ylo=jnp.zeros(1), psi_hx_yhi=jnp.zeros(1),
+            psi_hx_zlo=jnp.zeros(1), psi_hx_zhi=jnp.zeros(1),
+            psi_hy_xlo=rank1_psi["psi_hy_xlo"],
+            psi_hy_xhi=rank1_psi["psi_hy_xhi"],
+            psi_hy_zlo=jnp.zeros(1), psi_hy_zhi=jnp.zeros(1),
+            psi_hz_xlo=rank1_psi["psi_hz_xlo"],
+            psi_hz_xhi=rank1_psi["psi_hz_xhi"],
+            psi_hz_ylo=jnp.zeros(1), psi_hz_yhi=jnp.zeros(1),
+        )
+        assert_class_c_cpml_seam_noop(rank1_state, label="phase2c_seam_noop_rank1")
+    else:
+        # 2-device fallback: rank 0 owns x_lo only, so x_hi psi must be 0;
+        # rank 1 owns x_hi only, so x_lo psi must be 0.
+        for fname in CPML_X_FACE_PSI_FIELDS:
+            stacked = _phase2c_unstack_cpml(
+                final_cpml, sharded_grid, n_cpml, fname,
+            )
+            if fname.endswith("xlo"):
+                # Rank 1 (not rank 0) must NOT touch x_lo
+                assert np.all(stacked[1] == 0), (
+                    f"Phase 2C: rank 1 (interior side) modified x_lo psi "
+                    f"field '{fname}' — internal seam treated as boundary."
+                )
+            elif fname.endswith("xhi"):
+                # Rank 0 (not rank N-1) must NOT touch x_hi
+                assert np.all(stacked[0] == 0), (
+                    f"Phase 2C: rank 0 (interior side) modified x_hi psi "
+                    f"field '{fname}' — internal seam treated as boundary."
+                )
+
+
+@_PHASE2B_REQUIRES_2DEV
+def test_distributed_cpml_outer_face_active():
+    """Phase 2C Class C+D: outer x-face CPML on rank 0 / rank N-1 is active.
+
+    Drive a pulse from the centre of the domain.  After enough time
+    steps for the wavefront to reach both x-faces, rank 0's x_lo psi
+    arrays and rank (N-1)'s x_hi psi arrays must be non-zero — the
+    outer face IS a physical CPML boundary.
+
+    This is the complement of ``test_distributed_cpml_internal_seam_is_noop``:
+    seam-noop says interior ranks don't activate; outer-face-active
+    says boundary ranks DO activate.
+    """
+    devices = jax.devices()[:2]
+    n_devices = 2
+    n_steps = 80  # long enough for the pulse to reach both x-faces
+
+    grid = _phase2c_build_cpml_grid(
+        nx_physical=16, ny=8, nz=8, dx0=1e-3, cpml_layers=4)
+    materials = _phase2b_make_materials(grid)
+    nx = grid.nx
+
+    # Source in the centre (cell ~nx/2)
+    src_idx = (nx // 2, grid.ny // 2, grid.nz // 2)
+    src_si, src_sj, src_sk, src_comp, src_wf = _phase2b_make_current_source(
+        grid, src_idx, "ez", _phase2b_gauss_waveform, n_steps, materials,
+    )
+    src_spec = SourceSpec(
+        i=int(src_si), j=int(src_sj), k=int(src_sk),
+        component=src_comp, waveform=jnp.asarray(src_wf),
+    )
+    prb_spec = ProbeSpec(i=nx // 2, j=grid.ny // 2, k=grid.nz // 2,
+                         component="ez")
+
+    sharded_grid = build_sharded_nu_grid(grid, n_devices=n_devices)
+    sharded_mat = _phase2b_shard_mat(materials, sharded_grid)
+    cpml_params, cpml_state_stacked = init_cpml_for_sharded_nu(
+        sharded_grid, n_devices=n_devices,
+    )
+    from jax.sharding import Mesh
+    mesh = Mesh(np.array(devices), axis_names=("x",))
+    cpml_state_sharded = shard_cpml_state_x_slab(
+        cpml_state_stacked, sharded_grid, mesh,
+    )
+    out = run_nonuniform_distributed_pec(
+        sharded_grid=sharded_grid,
+        sharded_materials=sharded_mat,
+        sharded_pec_mask=None,
+        n_steps=n_steps,
+        sources=[src_spec],
+        probes=[prb_spec],
+        n_devices=n_devices,
+        devices=devices,
+        cpml_params=cpml_params,
+        cpml_state=cpml_state_sharded,
+    )
+    final_cpml = out["cpml_state_sharded"]
+    assert final_cpml is not None
+    n_cpml = sharded_grid.cpml_layers
+
+    # Rank 0 must have non-zero x_lo psi after the wave hits the boundary
+    rank0_psi_ey_xlo = _phase2c_unstack_cpml(
+        final_cpml, sharded_grid, n_cpml, "psi_ey_xlo",
+    )[0]
+    assert np.max(np.abs(rank0_psi_ey_xlo)) > 0, (
+        "Phase 2C: rank 0's psi_ey_xlo must be non-zero after the "
+        "wavefront reaches the x_lo boundary — outer x-face CPML inactive."
+    )
+
+    # Rank N-1 must have non-zero x_hi psi
+    rankN_psi_ey_xhi = _phase2c_unstack_cpml(
+        final_cpml, sharded_grid, n_cpml, "psi_ey_xhi",
+    )[n_devices - 1]
+    assert np.max(np.abs(rankN_psi_ey_xhi)) > 0, (
+        "Phase 2C: rank N-1's psi_ey_xhi must be non-zero after the "
+        "wavefront reaches the x_hi boundary — outer x-face CPML inactive."
+    )
