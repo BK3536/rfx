@@ -387,6 +387,7 @@ def _update_e_nu_dispersive(
     *,
     debye: tuple | None = None,
     lorentz: tuple | None = None,
+    e_old: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray] | None = None,
 ) -> tuple[FDTDState, object | None, object | None]:
     """E-field update with ADE dispersion on non-uniform grid.
 
@@ -398,12 +399,29 @@ def _update_e_nu_dispersive(
     Mirrors the structure of ``_update_e_with_optional_dispersion`` in
     ``rfx/simulation.py`` but replaces the uniform ``curl / dx`` with
     non-uniform ``curl * inv_d[axis]``.
+
+    Parameters
+    ----------
+    e_old : (ex_old, ey_old, ez_old) tuple of arrays, optional
+        Explicit pre-step E snapshots to use as ``*_old`` in the ADE
+        polarisation update.  When ``None`` (single-device default), the
+        helper reads ``state.ex/ey/ez`` directly — these are the fields
+        from the start of the step in the single-device runner because
+        no E ghost exchange occurs before this call.
+
+        On the distributed NU path (V3 Phase 2D), the caller MUST pass
+        explicit snapshots taken BEFORE any ghost exchange so that the
+        polarisation update uses pre-exchange E values.  See the ADE
+        Ordering Contract documented in ``run_nonuniform_distributed``.
     """
     from rfx.materials.debye import DebyeState
     from rfx.materials.lorentz import LorentzState
 
     curl_x, curl_y, curl_z = _curl_h_nu(state, inv_dx, inv_dy, inv_dz)
-    ex_old, ey_old, ez_old = state.ex, state.ey, state.ez
+    if e_old is not None:
+        ex_old, ey_old, ez_old = e_old
+    else:
+        ex_old, ey_old, ez_old = state.ex, state.ey, state.ez
 
     # --- Debye only ---
     if debye is not None and lorentz is None:

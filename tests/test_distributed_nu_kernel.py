@@ -1086,3 +1086,419 @@ def test_distributed_cpml_outer_face_active():
         "Phase 2C: rank N-1's psi_ey_xhi must be non-zero after the "
         "wavefront reaches the x_hi boundary — outer x-face CPML inactive."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2D: Debye / Lorentz E path on the sharded scan body — V3 plan 659-720
+# ---------------------------------------------------------------------------
+
+from rfx.runners.distributed_nu import (  # noqa: E402
+    shard_debye_coeffs_x_slab,
+    shard_debye_state_x_slab,
+    shard_lorentz_coeffs_x_slab,
+    shard_lorentz_state_x_slab,
+)
+from rfx.materials.debye import DebyePole, init_debye  # noqa: E402
+from rfx.materials.lorentz import (  # noqa: E402
+    LorentzPole, init_lorentz, lorentz_pole,
+)
+from tests._distributed_nu_tolerances import (  # noqa: E402
+    assert_class_d_timeseries_drift,
+)
+
+
+def _phase2d_debye_pole():
+    """Single-pole Debye: tau ~ a few ps, modest delta_eps so the
+    distributed test runs fast on CPU virtual devices."""
+    return DebyePole(delta_eps=2.0, tau=5e-12)
+
+
+def _phase2d_lorentz_pole():
+    """Single-pole Lorentz, microwave-band parameters."""
+    return lorentz_pole(delta_eps=1.5, omega_0=2.0 * np.pi * 30e9, delta=1e10)
+
+
+@_PHASE2B_REQUIRES_2DEV
+def test_distributed_debye_only_2device_matches_single_device():
+    """Phase 2D Class B forward parity (Debye-only).
+
+    Build a small NU PEC cavity with a Debye pole active in the central
+    slab.  2-device distributed run must match the single-device
+    ``run_nonuniform`` reference at the final step.  This is the V3
+    Phase 2D base parity gate for Debye dispersion.
+    """
+    devices = jax.devices()[:2]
+    n_devices = 2
+    n_steps = 80
+
+    grid = _phase2b_build_test_grid(nx_physical=16, ny=8, nz=8, ratio=1.0)
+    materials = _phase2b_make_materials(grid)
+    nx, ny_g, nz_g = grid.nx, grid.ny, grid.nz
+
+    # Debye mask: central slab spanning the slab seam so the ADE
+    # ordering matters at the seam cell.
+    debye_mask = jnp.zeros((nx, ny_g, nz_g), dtype=jnp.bool_)
+    seam_i = nx // 2
+    debye_mask = debye_mask.at[seam_i - 2:seam_i + 2,
+                               ny_g // 4:3 * ny_g // 4,
+                               nz_g // 4:3 * nz_g // 4].set(True)
+
+    debye = init_debye([_phase2d_debye_pole()], materials, grid.dt,
+                       mask=debye_mask)
+
+    src_idx = (4, ny_g // 2, nz_g // 2)
+    src_si, src_sj, src_sk, src_comp, src_wf = _phase2b_make_current_source(
+        grid, src_idx, "ez", _phase2b_gauss_waveform, n_steps, materials,
+    )
+    src_spec = SourceSpec(
+        i=int(src_si), j=int(src_sj), k=int(src_sk),
+        component=src_comp, waveform=jnp.asarray(src_wf),
+    )
+    prb_spec = ProbeSpec(i=12, j=ny_g // 2, k=nz_g // 2, component="ez")
+
+    # Single-device reference
+    single_out = run_nonuniform(
+        grid=grid, materials=materials, n_steps=n_steps,
+        sources=[src_spec], probes=[prb_spec],
+        debye=debye,
+    )
+    ts_single = jnp.asarray(single_out["time_series"])[:, 0]
+
+    # Distributed run with sharded Debye
+    sharded_grid = build_sharded_nu_grid(grid, n_devices=n_devices)
+    sharded_mat = _phase2b_shard_mat(materials, sharded_grid)
+    from jax.sharding import Mesh
+    mesh = Mesh(np.array(devices), axis_names=("x",))
+    debye_coeffs_sharded = shard_debye_coeffs_x_slab(
+        debye[0], sharded_grid, mesh,
+    )
+    debye_state_sharded = shard_debye_state_x_slab(
+        debye[1], sharded_grid, mesh,
+    )
+
+    out = run_nonuniform_distributed_pec(
+        sharded_grid=sharded_grid,
+        sharded_materials=sharded_mat,
+        sharded_pec_mask=None,
+        n_steps=n_steps,
+        sources=[src_spec],
+        probes=[prb_spec],
+        n_devices=n_devices,
+        devices=devices,
+        debye=(debye_coeffs_sharded, debye_state_sharded),
+    )
+    ts_dist = jnp.asarray(out["time_series"])[:, 0]
+
+    assert ts_dist.shape == ts_single.shape, (
+        f"shape mismatch: dist={ts_dist.shape}, single={ts_single.shape}"
+    )
+    assert out["debye_state_sharded"] is not None, (
+        "Phase 2D runner must return debye_state_sharded when Debye is enabled"
+    )
+    assert_class_b_parity(ts_single, ts_dist,
+                          label="phase2d_debye_only_2device_parity")
+
+
+@_PHASE2B_REQUIRES_2DEV
+def test_distributed_lorentz_only_2device_matches_single_device():
+    """Phase 2D Class B forward parity (Lorentz-only)."""
+    devices = jax.devices()[:2]
+    n_devices = 2
+    n_steps = 80
+
+    grid = _phase2b_build_test_grid(nx_physical=16, ny=8, nz=8, ratio=1.0)
+    materials = _phase2b_make_materials(grid)
+    nx, ny_g, nz_g = grid.nx, grid.ny, grid.nz
+
+    lorentz_mask = jnp.zeros((nx, ny_g, nz_g), dtype=jnp.bool_)
+    seam_i = nx // 2
+    lorentz_mask = lorentz_mask.at[seam_i - 2:seam_i + 2,
+                                   ny_g // 4:3 * ny_g // 4,
+                                   nz_g // 4:3 * nz_g // 4].set(True)
+
+    lorentz = init_lorentz([_phase2d_lorentz_pole()], materials, grid.dt,
+                           mask=lorentz_mask)
+
+    src_idx = (4, ny_g // 2, nz_g // 2)
+    src_si, src_sj, src_sk, src_comp, src_wf = _phase2b_make_current_source(
+        grid, src_idx, "ez", _phase2b_gauss_waveform, n_steps, materials,
+    )
+    src_spec = SourceSpec(
+        i=int(src_si), j=int(src_sj), k=int(src_sk),
+        component=src_comp, waveform=jnp.asarray(src_wf),
+    )
+    prb_spec = ProbeSpec(i=12, j=ny_g // 2, k=nz_g // 2, component="ez")
+
+    single_out = run_nonuniform(
+        grid=grid, materials=materials, n_steps=n_steps,
+        sources=[src_spec], probes=[prb_spec],
+        lorentz=lorentz,
+    )
+    ts_single = jnp.asarray(single_out["time_series"])[:, 0]
+
+    sharded_grid = build_sharded_nu_grid(grid, n_devices=n_devices)
+    sharded_mat = _phase2b_shard_mat(materials, sharded_grid)
+    from jax.sharding import Mesh
+    mesh = Mesh(np.array(devices), axis_names=("x",))
+    lorentz_coeffs_sharded = shard_lorentz_coeffs_x_slab(
+        lorentz[0], sharded_grid, mesh,
+    )
+    lorentz_state_sharded = shard_lorentz_state_x_slab(
+        lorentz[1], sharded_grid, mesh,
+    )
+
+    out = run_nonuniform_distributed_pec(
+        sharded_grid=sharded_grid,
+        sharded_materials=sharded_mat,
+        sharded_pec_mask=None,
+        n_steps=n_steps,
+        sources=[src_spec],
+        probes=[prb_spec],
+        n_devices=n_devices,
+        devices=devices,
+        lorentz=(lorentz_coeffs_sharded, lorentz_state_sharded),
+    )
+    ts_dist = jnp.asarray(out["time_series"])[:, 0]
+
+    assert ts_dist.shape == ts_single.shape
+    assert out["lorentz_state_sharded"] is not None, (
+        "Phase 2D runner must return lorentz_state_sharded when Lorentz is enabled"
+    )
+    assert_class_b_parity(ts_single, ts_dist,
+                          label="phase2d_lorentz_only_2device_parity")
+
+
+@_PHASE2B_REQUIRES_2DEV
+def test_distributed_mixed_dispersion_2device_matches_single_device():
+    """Phase 2D Class B forward parity (mixed Debye + Lorentz).
+
+    V3 mandatory: DP4 explicitly requires the mixed branch.  Both
+    materials active simultaneously; the runner must take the mixed
+    dispatch path inside ``_update_e_nu_dispersive``.
+    """
+    devices = jax.devices()[:2]
+    n_devices = 2
+    n_steps = 80
+
+    grid = _phase2b_build_test_grid(nx_physical=16, ny=8, nz=8, ratio=1.0)
+    materials = _phase2b_make_materials(grid)
+    nx, ny_g, nz_g = grid.nx, grid.ny, grid.nz
+
+    # Use the same mask region for both (mixed dispersion in a slab
+    # spanning the seam — the heaviest stress test for the ADE order).
+    mask = jnp.zeros((nx, ny_g, nz_g), dtype=jnp.bool_)
+    seam_i = nx // 2
+    mask = mask.at[seam_i - 2:seam_i + 2,
+                   ny_g // 4:3 * ny_g // 4,
+                   nz_g // 4:3 * nz_g // 4].set(True)
+
+    debye = init_debye([_phase2d_debye_pole()], materials, grid.dt, mask=mask)
+    lorentz = init_lorentz([_phase2d_lorentz_pole()], materials, grid.dt,
+                           mask=mask)
+
+    src_idx = (4, ny_g // 2, nz_g // 2)
+    src_si, src_sj, src_sk, src_comp, src_wf = _phase2b_make_current_source(
+        grid, src_idx, "ez", _phase2b_gauss_waveform, n_steps, materials,
+    )
+    src_spec = SourceSpec(
+        i=int(src_si), j=int(src_sj), k=int(src_sk),
+        component=src_comp, waveform=jnp.asarray(src_wf),
+    )
+    prb_spec = ProbeSpec(i=12, j=ny_g // 2, k=nz_g // 2, component="ez")
+
+    single_out = run_nonuniform(
+        grid=grid, materials=materials, n_steps=n_steps,
+        sources=[src_spec], probes=[prb_spec],
+        debye=debye, lorentz=lorentz,
+    )
+    ts_single = jnp.asarray(single_out["time_series"])[:, 0]
+
+    sharded_grid = build_sharded_nu_grid(grid, n_devices=n_devices)
+    sharded_mat = _phase2b_shard_mat(materials, sharded_grid)
+    from jax.sharding import Mesh
+    mesh = Mesh(np.array(devices), axis_names=("x",))
+    debye_coeffs_sharded = shard_debye_coeffs_x_slab(debye[0], sharded_grid, mesh)
+    debye_state_sharded = shard_debye_state_x_slab(debye[1], sharded_grid, mesh)
+    lorentz_coeffs_sharded = shard_lorentz_coeffs_x_slab(lorentz[0], sharded_grid, mesh)
+    lorentz_state_sharded = shard_lorentz_state_x_slab(lorentz[1], sharded_grid, mesh)
+
+    out = run_nonuniform_distributed_pec(
+        sharded_grid=sharded_grid,
+        sharded_materials=sharded_mat,
+        sharded_pec_mask=None,
+        n_steps=n_steps,
+        sources=[src_spec],
+        probes=[prb_spec],
+        n_devices=n_devices,
+        devices=devices,
+        debye=(debye_coeffs_sharded, debye_state_sharded),
+        lorentz=(lorentz_coeffs_sharded, lorentz_state_sharded),
+    )
+    ts_dist = jnp.asarray(out["time_series"])[:, 0]
+
+    assert ts_dist.shape == ts_single.shape
+    assert out["debye_state_sharded"] is not None
+    assert out["lorentz_state_sharded"] is not None
+    assert_class_b_parity(ts_single, ts_dist,
+                          label="phase2d_mixed_dispersion_2device_parity")
+
+
+@_PHASE2B_REQUIRES_2DEV
+def test_distributed_debye_seam_ade_ordering_isolated():
+    """Phase 2D Class D — ADE Ordering Contract seam-isolation gate.
+
+    M3 critic finding (V3 plan lines 679-698): if ghost exchange
+    overwrites ``ex_old`` on a slab boundary BEFORE the ADE update
+    runs, the polarisation update is corrupted at the seam.  The
+    distributed scan body must snapshot ``ex_old/ey_old/ez_old`` BEFORE
+    any ghost exchange and pass that snapshot into the ADE call.
+
+    Setup
+    -----
+    Vacuum everywhere except a 1-cell-thick Debye slab placed AT the
+    slab seam (rank 1's first real cell, global x-index = nx_per_rank).
+    Drive a pulse from rank 0, run 50 steps, compare the probe time-
+    series to the single-device reference.
+
+    If the runner reads ex_old from the post-exchange E (rank 0's value
+    leaked into rank 1's first real cell via the ghost), the
+    polarisation at the seam will diverge from single-device — caught
+    here by Class B parity (rel_err < 5e-5).
+    """
+    devices = jax.devices()[:2]
+    n_devices = 2
+    n_steps = 50
+
+    grid = _phase2b_build_test_grid(nx_physical=16, ny=8, nz=8, ratio=1.0)
+    materials = _phase2b_make_materials(grid)
+    nx, ny_g, nz_g = grid.nx, grid.ny, grid.nz
+
+    sharded_grid = build_sharded_nu_grid(grid, n_devices=n_devices)
+    seam_i = sharded_grid.nx_per_rank   # rank 1's first real cell
+
+    # 1-cell-thick Debye slab AT the slab seam.  Use a thicker
+    # transverse extent so the polarisation update does meaningful work.
+    debye_mask = jnp.zeros((nx, ny_g, nz_g), dtype=jnp.bool_)
+    debye_mask = debye_mask.at[seam_i, 1:-1, 1:-1].set(True)
+
+    debye = init_debye([_phase2d_debye_pole()], materials, grid.dt,
+                       mask=debye_mask)
+
+    src_idx = (3, ny_g // 2, nz_g // 2)
+    src_si, src_sj, src_sk, src_comp, src_wf = _phase2b_make_current_source(
+        grid, src_idx, "ez", _phase2b_gauss_waveform, n_steps, materials,
+    )
+    src_spec = SourceSpec(
+        i=int(src_si), j=int(src_sj), k=int(src_sk),
+        component=src_comp, waveform=jnp.asarray(src_wf),
+    )
+    # Probe sits ON the seam Debye cell so the polarisation feedback
+    # to E is in the sampled signal.
+    prb_spec = ProbeSpec(i=int(seam_i), j=ny_g // 2, k=nz_g // 2,
+                         component="ez")
+
+    single_out = run_nonuniform(
+        grid=grid, materials=materials, n_steps=n_steps,
+        sources=[src_spec], probes=[prb_spec],
+        debye=debye,
+    )
+    ts_single = jnp.asarray(single_out["time_series"])[:, 0]
+
+    sharded_mat = _phase2b_shard_mat(materials, sharded_grid)
+    from jax.sharding import Mesh
+    mesh = Mesh(np.array(devices), axis_names=("x",))
+    debye_coeffs_sharded = shard_debye_coeffs_x_slab(debye[0], sharded_grid, mesh)
+    debye_state_sharded = shard_debye_state_x_slab(debye[1], sharded_grid, mesh)
+
+    out = run_nonuniform_distributed_pec(
+        sharded_grid=sharded_grid,
+        sharded_materials=sharded_mat,
+        sharded_pec_mask=None,
+        n_steps=n_steps,
+        sources=[src_spec],
+        probes=[prb_spec],
+        n_devices=n_devices,
+        devices=devices,
+        debye=(debye_coeffs_sharded, debye_state_sharded),
+    )
+    ts_dist = jnp.asarray(out["time_series"])[:, 0]
+
+    # Class D semantic: this test catches an ordering violation that
+    # would not be detectable from final-step parity alone.  Use
+    # Class B (5e-5) — the seam Debye cell amplifies an ordering
+    # mistake substantially above that threshold.
+    assert_class_b_parity(
+        ts_single, ts_dist,
+        label="phase2d_debye_seam_ade_ordering_isolated",
+    )
+
+
+@_PHASE2B_REQUIRES_2DEV
+def test_distributed_dispersion_drift_over_time():
+    """Phase 2D Class C — cumulative drift sweep across 4 checkpoints.
+
+    Single-time-point parity can miss subtle drift that only surfaces
+    after multiple polarisation update cycles.  Run for 200 steps with
+    Debye dispersion in a slab spanning the seam, then verify
+    ``rel_err < 5e-4`` at T/4, T/2, 3T/4, and T (Class D drift sweep).
+    """
+    devices = jax.devices()[:2]
+    n_devices = 2
+    n_steps = 200
+
+    grid = _phase2b_build_test_grid(nx_physical=16, ny=8, nz=8, ratio=1.0)
+    materials = _phase2b_make_materials(grid)
+    nx, ny_g, nz_g = grid.nx, grid.ny, grid.nz
+
+    sharded_grid = build_sharded_nu_grid(grid, n_devices=n_devices)
+    seam_i = sharded_grid.nx_per_rank
+
+    # Debye slab spanning the seam — wide enough that ADE feedback
+    # accumulates measurably over 200 steps.
+    debye_mask = jnp.zeros((nx, ny_g, nz_g), dtype=jnp.bool_)
+    debye_mask = debye_mask.at[seam_i - 2:seam_i + 3, 1:-1, 1:-1].set(True)
+
+    debye = init_debye([_phase2d_debye_pole()], materials, grid.dt,
+                       mask=debye_mask)
+
+    src_idx = (3, ny_g // 2, nz_g // 2)
+    src_si, src_sj, src_sk, src_comp, src_wf = _phase2b_make_current_source(
+        grid, src_idx, "ez", _phase2b_gauss_waveform, n_steps, materials,
+    )
+    src_spec = SourceSpec(
+        i=int(src_si), j=int(src_sj), k=int(src_sk),
+        component=src_comp, waveform=jnp.asarray(src_wf),
+    )
+    prb_spec = ProbeSpec(i=12, j=ny_g // 2, k=nz_g // 2, component="ez")
+
+    single_out = run_nonuniform(
+        grid=grid, materials=materials, n_steps=n_steps,
+        sources=[src_spec], probes=[prb_spec],
+        debye=debye,
+    )
+    ts_single = jnp.asarray(single_out["time_series"])[:, 0]
+
+    sharded_mat = _phase2b_shard_mat(materials, sharded_grid)
+    from jax.sharding import Mesh
+    mesh = Mesh(np.array(devices), axis_names=("x",))
+    debye_coeffs_sharded = shard_debye_coeffs_x_slab(debye[0], sharded_grid, mesh)
+    debye_state_sharded = shard_debye_state_x_slab(debye[1], sharded_grid, mesh)
+
+    out = run_nonuniform_distributed_pec(
+        sharded_grid=sharded_grid,
+        sharded_materials=sharded_mat,
+        sharded_pec_mask=None,
+        n_steps=n_steps,
+        sources=[src_spec],
+        probes=[prb_spec],
+        n_devices=n_devices,
+        devices=devices,
+        debye=(debye_coeffs_sharded, debye_state_sharded),
+    )
+    ts_dist = jnp.asarray(out["time_series"])[:, 0]
+
+    # Drift sweep at T/4, T/2, 3T/4, T (rel_err < 5e-4)
+    assert_class_d_timeseries_drift(
+        ts_single, ts_dist,
+        label="phase2d_dispersion_drift_over_time",
+    )
