@@ -140,3 +140,47 @@ def test_forward_nonuniform_pec_occupancy_grad():
     assert grad.shape == occ0.shape
     assert jnp.all(jnp.isfinite(grad)), "pec_occupancy grad has NaN/Inf"
     assert float(jnp.max(jnp.abs(grad))) > 0.0, "pec_occupancy grad is identically zero"
+
+
+def test_forward_nonuniform_pec_occupancy_interpolates_hard_pec():
+    """Soft occupancy monotonically interpolates between free-space and hard PEC.
+
+    Physical invariants that must hold on any FDTD mesh (uniform or NU):
+    - ``occ = 0`` reproduces the no-occupancy baseline (identity).
+    - ``occ = 1`` reproduces the hard-PEC result that ``pec_mask_override``
+      would give for the same region.
+    - Intermediate occupancies monotonically reduce probe energy as occ
+      increases — otherwise soft-PEC is not a valid relaxation of hard-PEC
+      and density-based topology optimisation has no smooth descent path.
+    """
+    sim = _build_sim()
+    g = sim._build_nonuniform_grid()
+
+    # One-cell shell between the source and the probe.
+    shell = np.zeros(g.shape, dtype=np.float32)
+    ti, tj, tk = g.nx // 2, g.ny // 2, g.nz // 2 + 1
+    shell[ti - 1:ti + 2, tj - 1:tj + 2, tk - 1] = 1.0
+
+    def energy(occ_arr):
+        fr = sim.forward(pec_occupancy_override=jnp.asarray(occ_arr, dtype=jnp.float32),
+                         n_steps=80, skip_preflight=True)
+        return float(jnp.sum(fr.time_series ** 2))
+
+    energies = [energy(shell * s) for s in (0.0, 0.25, 0.5, 0.75, 1.0)]
+    for i in range(len(energies) - 1):
+        assert energies[i] >= energies[i + 1] - 1e-3 * abs(energies[i]), (
+            f"probe energy not monotonically non-increasing as occ grows: "
+            f"{energies}"
+        )
+
+    # occ = 1 must match hard-PEC via pec_mask_override, bit-for-bit.
+    fr_hard = sim.forward(pec_mask_override=jnp.asarray(shell.astype(bool)),
+                          n_steps=80, skip_preflight=True)
+    fr_occ1 = sim.forward(pec_occupancy_override=jnp.asarray(shell, dtype=jnp.float32),
+                          n_steps=80, skip_preflight=True)
+    ts_h = np.asarray(fr_hard.time_series)
+    ts_o = np.asarray(fr_occ1.time_series)
+    assert np.allclose(ts_h, ts_o, atol=0.0, rtol=0.0), (
+        f"occ=1 must match hard-PEC on NU mesh — max diff "
+        f"{float(np.max(np.abs(ts_h - ts_o))):.4e}"
+    )

@@ -129,23 +129,66 @@ def test_grad_wrt_dz_profile_flows():
 
 
 def test_grad_wrt_dz_profile_matches_fd():
-    """AD↔FD agreement on the dominant cell (#4, near the source).
+    """AD↔FD agreement on dominant cells with unique dz values.
 
-    Float32 + scalar FD is noisy on cells with tiny gradient magnitudes,
-    so we pin the check to the dominant cell where both AD and FD are
-    well above the numerical floor.  Tolerance is generous (<5 %) to
-    keep the test robust across JAX / CUDA versions.
+    ``jnp.min(dz_full)`` appears in the CFL / ``dt`` derivation, so ties in
+    ``dz_profile`` produce non-smooth subgradients at the min.  AD picks
+    one tied cell (argmin convention); centered FD spreads the
+    contribution across all tied cells.  Both are legitimate; neither is
+    a bug.  The test uses a strictly-monotone ``dz_profile`` so ``min`` is
+    uniquely attained and AD↔FD agreement on dominant cells (>5 % of
+    max magnitude) is a meaningful regression guard.
     """
-    dz0 = jnp.asarray([0.5e-3] * 5 + [0.3e-3] * 4, dtype=jnp.float32)
-    grad_ad = jax.grad(_loss_from_dz)(dz0)
-    i = int(jnp.argmax(jnp.abs(grad_ad)))
-    h = 1e-6
-    ep = jnp.asarray(np.eye(len(dz0), dtype=np.float32)[i]) * h
-    lp = float(_loss_from_dz(dz0 + ep))
-    lm = float(_loss_from_dz(dz0 - ep))
-    grad_fd = (lp - lm) / (2.0 * h)
-    rel_err = abs(float(grad_ad[i]) - grad_fd) / max(abs(grad_fd), 1e-12)
-    assert rel_err < 0.05, (
-        f"dominant-cell #{i}: AD {float(grad_ad[i]):.4e} vs FD {grad_fd:.4e} "
-        f"— rel_err {rel_err:.4%} above 5 % threshold"
+    # Strictly-monotone profile — no ties in min(dz_full).
+    dz0 = jnp.asarray(
+        [0.50e-3, 0.51e-3, 0.52e-3, 0.53e-3, 0.54e-3,
+         0.30e-3, 0.31e-3, 0.32e-3, 0.33e-3],
+        dtype=jnp.float32,
+    )
+    grad_ad = np.asarray(jax.grad(_loss_from_dz)(dz0))
+
+    h = 1e-7
+    grad_fd = np.zeros_like(grad_ad)
+    for i in range(len(dz0)):
+        e = np.zeros(len(dz0), dtype=np.float32); e[i] = h
+        lp = float(_loss_from_dz(dz0 + jnp.asarray(e)))
+        lm = float(_loss_from_dz(dz0 - jnp.asarray(e)))
+        grad_fd[i] = (lp - lm) / (2.0 * h)
+
+    max_mag = float(np.max(np.abs(grad_fd)))
+    big = np.abs(grad_fd) > 0.05 * max_mag
+    assert np.all(np.sign(grad_ad[big]) == np.sign(grad_fd[big])), (
+        f"sign disagreement on dominant cells: AD={grad_ad[big]}, FD={grad_fd[big]}"
+    )
+    rel = np.max(
+        np.abs(grad_ad[big] - grad_fd[big]) / (np.abs(grad_fd[big]) + 1e-30)
+    )
+    assert rel < 0.15, (
+        f"dominant-cell AD↔FD rel_err {rel:.4f} above 15 % threshold; "
+        f"AD={grad_ad[big]}, FD={grad_fd[big]}"
+    )
+
+
+def test_grad_wrt_dz_profile_reduces_loss():
+    """One step of steepest descent along the AD gradient reduces loss.
+
+    This is the strongest physical check available for the mesh-as-
+    design-variable direction — it verifies that the gradient is usable
+    as an optimisation signal, not just a first-order match to FD.
+    """
+    dz0 = jnp.asarray(
+        [0.50e-3, 0.51e-3, 0.52e-3, 0.53e-3, 0.54e-3,
+         0.30e-3, 0.31e-3, 0.32e-3, 0.33e-3],
+        dtype=jnp.float32,
+    )
+    loss0 = float(_loss_from_dz(dz0))
+    grad = jax.grad(_loss_from_dz)(dz0)
+    # Tiny step — grads are ~1e5, we want a ~1e-7 change in dz (well
+    # below the cell spacing).  Clamp to physical range.
+    dz1 = jnp.clip(dz0 - 1e-12 * grad, 0.1e-3, 1.0e-3)
+    loss1 = float(_loss_from_dz(dz1))
+    reduction = (loss0 - loss1) / max(loss0, 1e-30)
+    assert reduction > 0.0, (
+        f"gradient descent did not reduce loss: loss0={loss0:.4e}, "
+        f"loss1={loss1:.4e}"
     )

@@ -126,8 +126,14 @@ def _cpml_profile(
 
     # Stay in-trace when dt/dx are JAX tracers (mesh-as-design-variable
     # path); fall back to numpy for the standard concrete-grid case so
-    # CPMLParams stays a constant pytree under JIT.
-    xp = jnp if (_is_tracer(dt) or _is_tracer(dx)) else np
+    # CPMLParams stays a constant pytree under JIT.  The concrete path
+    # keeps its original float64 intermediate computation (cast to
+    # float32 only at the CPMLParams boundary) so the returned profile
+    # is bit-identical to the pre-#45 release.  The traced path stays
+    # at float32 to match the default JAX dtype policy.
+    traced = _is_tracer(dt) or _is_tracer(dx)
+    xp = jnp if traced else np
+    work_dtype = jnp.float32 if traced else np.float64
 
     eta = float(np.sqrt(MU_0 / EPS_0))  # ≈ 376.73 Ω (constant)
     d = n_layers * dx             # PML physical thickness
@@ -141,7 +147,7 @@ def _cpml_profile(
     # Graded profiles: polynomial from max at outer boundary (index 0)
     # to 0 at interior edge (index n-1) for the lo face.
     # The hi face uses jnp.flip() to reverse this.
-    rho = 1.0 - xp.arange(n_layers, dtype=xp.float32) / max(n_layers - 1, 1)
+    rho = 1.0 - xp.arange(n_layers, dtype=work_dtype) / max(n_layers - 1, 1)
     sigma = sigma_max * rho**order
     # κ graded from kappa_max (outer) to 1.0 (inner): κ(ρ) = 1 + (κ_max - 1) * ρ^m
     kappa = 1.0 + (kappa_max - 1.0) * rho**order
