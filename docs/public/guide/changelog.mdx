@@ -5,6 +5,35 @@ sidebar:
   order: 99
 ---
 
+## v1.6.1
+
+Preflight hardening + differentiable-path unification. No physics changes vs v1.6.0.
+
+### New features
+
+- **Auto-preflight** (issue #66): `forward()`, `optimize()`, and `topology_optimize()` now call `sim.preflight(strict=False)` at entry and emit a single `UserWarning` summarising any issues. Physics violations surface before the AD tape is built instead of 20-60 min into a run. Opt out via `skip_preflight=True`.
+- **`optimize()` routes through `forward()`** (issue #64): the differentiable inverse-design entry point now delegates to `sim.forward()` for uniform/NU dispatch, and forwards the `checkpoint_every` / `n_warmup` / `emit_time_series` kwargs. NU meshes (`dz_profile`, `dx_profile`, `dy_profile`) are now usable with `optimize()` without raising.
+
+### Fixes
+
+- **PEC-in-CPML detection** (issue #61): preflight P1.9 no longer skips PEC entries when scanning for geometry inside the CPML region.
+- **Taflove dispersion check**: the cell-ratio heuristic is replaced with a physics-based per-axis phase-velocity error at `freq_max` (application-independent — no more false positives on lossy-FR4 patch configs).
+- **Probe/source-in-PEC check** (P1.8): warns when a probe, port, or source location lies inside a PEC volume.
+- **NU cell aspect-ratio warning**: non-uniform axes with cell ratios above 2.0:1 now warn with a per-axis Courant-asymmetry line, pinpointing which axis of the dz/dx/dy profile is the offender.
+- **Decimated harminv** (`scripts/convergence_grid.py`): Matrix-Pencil SVD is O(N³); the F3 case (dx = 0.25 mm, 20.6 M cells, N_tail ≈ 90 k) hit a 57 GB Hankel and timed out on CPU. The script now decimates the time series before harminv whenever N_tail > 30 k, capped by the Nyquist-safe factor `1 / (4 · f_max · dt)`. Empirical: D up to the Nyquist cap preserves `f_res` to 1e-4 % and `Q` exactly.
+
+### Validation
+
+Convergence sweep (2.4 GHz FR4 patch, F1/F2/F3 at 4:1 aspect) completed end-to-end with the decimated harminv, confirming monotonic convergence:
+
+| Case | dx | f_res (GHz) | Error vs Balanis |
+| ---- | -- | ----------- | ---------------- |
+| F1 | 1.0 mm | 2.649 | 9.31 % |
+| F2 | 0.5 mm | 2.563 | 5.76 % |
+| F3 | 0.25 mm (20.6 M cells) | 2.475 | **2.13 %** |
+
+---
+
 ## v1.6.0
 
 Memory-efficient inverse design + NU physics correctness.
