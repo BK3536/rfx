@@ -2389,44 +2389,69 @@ class Simulation:
                     except (NotImplementedError, TypeError, AttributeError):
                         continue
 
-        # Cell aspect ratio + Courant asymmetry on NU meshes (Taflove
-        # Ch. 4). CFL dt is set by the smallest cell. When min(dz) << dx,
-        # the per-axis Courant numbers diverge:
-        #   nu_z ≈ c·dt/dz ≈ 1/√3 (optimal)
-        #   nu_x = c·dt/dx = (dz/dx)/√3  (suboptimal, shrinks with ratio)
-        # Reducing dx while holding dz fixed INCREASES nu_x, worsening
-        # x-direction dispersion → anti-convergence for patch f_res.
-        # Fix: co-refine dz with dx to maintain constant Courant numbers.
-        for axis_name, prof in (("x", self._dx_profile),
-                                ("y", self._dy_profile),
-                                ("z", self._dz_profile)):
-            if prof is not None:
-                min_d = float(np.min(prof))
-                dx_nominal = self._dx or (C0 / self._freq_max / 20.0)
-                ratio = max(dx_nominal / min_d, min_d / dx_nominal)
-                if ratio > 2.0:
-                    # Compute Courant asymmetry for the warning
-                    dt_cfl = 1.0 / (C0 * math.sqrt(
-                        1.0 / dx_nominal ** 2 +
-                        1.0 / dx_nominal ** 2 +
-                        1.0 / min_d ** 2))
-                    nu_coarse = C0 * dt_cfl / dx_nominal
-                    nu_fine = C0 * dt_cfl / min_d
-                    _w.warn(
-                        f"Cell aspect ratio {ratio:.1f}:1 between dx="
-                        f"{dx_nominal*1e3:.3f}mm and min({axis_name}_profile)="
-                        f"{min_d*1e3:.3f}mm. Per-axis Courant numbers "
-                        f"diverge: nu_coarse={nu_coarse:.3f}, "
-                        f"nu_fine={nu_fine:.3f}. FDTD dispersion degrades "
-                        f"when Courant numbers are asymmetric (Taflove "
-                        f"Ch. 4); refining dx alone while holding "
-                        f"{axis_name}_profile fixed will ANTI-converge. "
-                        f"Co-refine both to maintain constant aspect ratio.",
-                        stacklevel=3,
-                    )
+        # Physics-based numerical dispersion check (Taflove Ch. 4).
+        # Instead of a fixed aspect-ratio heuristic, compute the actual
+        # per-axis phase velocity error at freq_max from the FDTD
+        # dispersion relation. This is application-independent.
+        self._check_numerical_dispersion()
 
         # Thin-metal-on-NU-mesh symmetry (Meep/OpenEMS convention — issue #48).
         self._validate_thin_metal_on_nu_mesh()
+
+    def _check_numerical_dispersion(self) -> None:
+        """Warn when per-axis FDTD phase velocity error at freq_max
+        exceeds a threshold (Taflove Ch. 4 dispersion relation).
+
+        For each axis the worst-case phase velocity is:
+            v_ph = (omega·dt) / (2·arcsin(nu_i · sin(k·d_i/2)))
+        where nu_i = c·dt/d_i, k = 2π/λ, d_i = cell size along axis i.
+
+        Reports the per-axis error so the user sees which axis is under-
+        resolved or has Courant mismatch — no arbitrary ratio threshold.
+        """
+        import warnings as _w
+
+        dx_nom = self._dx or (C0 / self._freq_max / 20.0)
+        d = [dx_nom, dx_nom, dx_nom]
+        if self._dx_profile is not None:
+            d[0] = float(np.min(self._dx_profile))
+        if self._dy_profile is not None:
+            d[1] = float(np.min(self._dy_profile))
+        if self._dz_profile is not None:
+            d[2] = float(np.min(self._dz_profile))
+
+        inv_sq = sum(1.0 / di ** 2 for di in d)
+        dt_cfl = 0.99 / (C0 * math.sqrt(inv_sq))
+        omega = 2.0 * math.pi * self._freq_max
+        k0 = omega / C0
+
+        errors = {}
+        sin_wdt2 = math.sin(omega * dt_cfl / 2.0)
+        for ax, (name, di) in enumerate(zip("xyz", d)):
+            # Taflove Eq. 4.44: v_ph along axis i
+            # = omega * d_i / (2 * arcsin(d_i * sin(omega*dt/2) / (c*dt)))
+            arg = di * sin_wdt2 / (C0 * dt_cfl)
+            if abs(arg) >= 1.0:
+                errors[name] = float("inf")
+                continue
+            v_ph = omega * di / (2.0 * math.asin(arg))
+            errors[name] = abs(v_ph - C0) / C0
+
+        max_err = max(errors.values())
+        if max_err > 0.02:
+            parts = ", ".join(
+                f"{name}={err*100:.1f}%" for name, err in errors.items()
+            )
+            worst = max(errors, key=errors.get)
+            _w.warn(
+                f"FDTD numerical dispersion at freq_max="
+                f"{self._freq_max/1e9:.2f}GHz exceeds 2%: {parts}. "
+                f"Worst axis: {worst} (cell {d['xyz'.index(worst)]*1e3:.3f}mm). "
+                f"Phase velocity error causes resonance frequency bias. "
+                f"Refine the coarse axis or co-refine all axes together "
+                f"(Taflove Ch. 4).",
+                stacklevel=4,
+            )
 
     def _validate_thin_metal_on_nu_mesh(self) -> None:
         """Warn when a thin PEC sheet sits on a NU axis without symmetric
