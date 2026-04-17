@@ -49,10 +49,16 @@ class Boundary:
     ``lo`` and ``hi`` carry one of the tokens ``cpml``, ``upml``, ``pec``,
     ``pmc``, ``periodic``.  A ``periodic`` axis must be symmetric: both
     faces must be ``periodic`` or neither.
+
+    Optional ``lo_thickness`` / ``hi_thickness`` (CPML/UPML only) override
+    the global ``cpml_layers`` scalar for that face. A ``None`` value
+    (default) defers to the scalar.
     """
 
     lo: str
     hi: str
+    lo_thickness: int | None = None
+    hi_thickness: int | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "lo", _normalise_token(self.lo))
@@ -63,6 +69,25 @@ class Boundary:
                 f"lo={self.lo!r} hi={self.hi!r}. Use Boundary(lo='periodic', "
                 f"hi='periodic') or rename the asymmetric side."
             )
+        # thickness is meaningful only on absorbing faces.
+        if self.lo_thickness is not None and self.lo not in ABSORBING_TOKENS:
+            raise ValueError(
+                f"lo_thickness is only meaningful for absorbing faces "
+                f"(cpml, upml); got lo={self.lo!r} with thickness="
+                f"{self.lo_thickness}."
+            )
+        if self.hi_thickness is not None and self.hi not in ABSORBING_TOKENS:
+            raise ValueError(
+                f"hi_thickness is only meaningful for absorbing faces "
+                f"(cpml, upml); got hi={self.hi!r} with thickness="
+                f"{self.hi_thickness}."
+            )
+        for name, val in (("lo_thickness", self.lo_thickness),
+                          ("hi_thickness", self.hi_thickness)):
+            if val is not None and (not isinstance(val, int) or val < 0):
+                raise ValueError(
+                    f"{name} must be a non-negative int, got {val!r}."
+                )
 
     @classmethod
     def from_string(cls, token: str) -> "Boundary":
@@ -71,11 +96,27 @@ class Boundary:
         return cls(lo=t, hi=t)
 
     def to_dict(self) -> dict:
-        return {"lo": self.lo, "hi": self.hi}
+        out = {"lo": self.lo, "hi": self.hi}
+        if self.lo_thickness is not None:
+            out["lo_thickness"] = self.lo_thickness
+        if self.hi_thickness is not None:
+            out["hi_thickness"] = self.hi_thickness
+        return out
 
     @classmethod
     def from_dict(cls, d: dict) -> "Boundary":
-        return cls(lo=d["lo"], hi=d["hi"])
+        return cls(
+            lo=d["lo"], hi=d["hi"],
+            lo_thickness=d.get("lo_thickness"),
+            hi_thickness=d.get("hi_thickness"),
+        )
+
+    def resolved_lo_thickness(self, default: int) -> int:
+        """Per-face layer count, falling back to the scalar default."""
+        return self.lo_thickness if self.lo_thickness is not None else default
+
+    def resolved_hi_thickness(self, default: int) -> int:
+        return self.hi_thickness if self.hi_thickness is not None else default
 
 
 _BoundaryInput = Union[str, Boundary, dict]
