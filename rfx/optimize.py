@@ -83,6 +83,7 @@ def optimize(
     emit_time_series: bool = True,
     n_warmup: int = 0,
     design_mask: jnp.ndarray | None = None,
+    distributed: bool = False,
 ) -> OptimizeResult:
     """Run gradient-based optimization on a design region.
 
@@ -200,6 +201,7 @@ def optimize(
             emit_time_series=emit_time_series,
             n_warmup=n_warmup,
             design_mask=design_mask,
+            distributed=distributed,
             skip_preflight=True,  # already done at optimize() entry
         )
         import inspect
@@ -416,6 +418,7 @@ def progressive_optimize(
     checkpoint_every: int | None = None,
     emit_time_series: bool = True,
     n_warmup: int = 0,
+    distributed: bool = False,
 ) -> ProgressiveOptimizeResult:
     """Progressive multi-resolution inverse design (issue #42).
 
@@ -519,6 +522,7 @@ def progressive_optimize(
             checkpoint_every=checkpoint_every,
             emit_time_series=emit_time_series,
             n_warmup=n_warmup,
+            distributed=distributed,
         )
 
         stage_results.append(stage_result)
