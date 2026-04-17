@@ -435,7 +435,7 @@ class Simulation:
         freq_max: float,
         domain: tuple[float, float, float],
         *,
-        boundary: str = "cpml",
+        boundary: "str | BoundarySpec | dict" = "cpml",
         cpml_layers: int = 8,
         cpml_kappa_max: float = 1.0,
         pec_faces: set[str] | list[str] | None = None,
@@ -448,8 +448,28 @@ class Simulation:
         solver: str = "yee",
         adi_cfl_factor: float = 5.0,
     ):
-        if boundary not in ("pec", "cpml", "upml"):
-            raise ValueError(f"boundary must be 'pec', 'cpml', or 'upml', got {boundary!r}")
+        from rfx.boundaries.spec import BoundarySpec, Boundary, normalize_boundary
+
+        # T7-B: accept BoundarySpec directly or normalise a legacy scalar
+        # boundary=<str>. A BoundarySpec provided here is authoritative;
+        # concurrent legacy kwargs (pec_faces) conflict with it.
+        _explicit_spec = isinstance(boundary, (BoundarySpec, dict))
+        if _explicit_spec:
+            if pec_faces is not None:
+                raise ValueError(
+                    "pec_faces= cannot be combined with a BoundarySpec "
+                    "boundary= argument; encode PEC faces inside the "
+                    "BoundarySpec (e.g. z=Boundary(lo='pec', hi='cpml'))."
+                )
+            spec = normalize_boundary(boundary)
+        else:
+            # Legacy scalar path — validated below, lifted to BoundarySpec
+            # after pec_faces / set_periodic_axes() have been resolved.
+            if boundary not in ("pec", "cpml", "upml"):
+                raise ValueError(
+                    f"boundary must be 'pec', 'cpml', or 'upml', got {boundary!r}"
+                )
+            spec = None  # deferred; folded in after legacy fields settle
         if freq_max <= 0:
             raise ValueError(f"freq_max must be positive, got {freq_max}")
         if precision not in ("float32", "mixed"):
@@ -519,7 +539,27 @@ class Simulation:
                 )
 
         _valid_faces = {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"}
-        self._pec_faces = set(pec_faces) if pec_faces else set()
+        if _explicit_spec:
+            # BoundarySpec is authoritative; derive the legacy views so
+            # downstream code that has not migrated continues to work.
+            self._pec_faces = spec.pec_faces()
+            legacy_boundary = spec.absorber_type
+            if legacy_boundary is None:
+                # No absorbing face: pick 'pec' (matches historic all-PEC).
+                legacy_boundary = "pec"
+            boundary = legacy_boundary  # feed the rest of __init__
+        else:
+            if pec_faces is not None:
+                import warnings as _w
+                _w.warn(
+                    "pec_faces= kwarg is deprecated; encode PEC faces in "
+                    "BoundarySpec instead (e.g. "
+                    "boundary=BoundarySpec(x='cpml', y='cpml', "
+                    "z=Boundary(lo='pec', hi='cpml'))). The kwarg will be "
+                    "removed in rfx v2.0.",
+                    DeprecationWarning, stacklevel=2,
+                )
+            self._pec_faces = set(pec_faces) if pec_faces else set()
         if self._pec_faces - _valid_faces:
             raise ValueError(
                 f"pec_faces must be subset of {_valid_faces}, "
@@ -574,6 +614,17 @@ class Simulation:
         self._refinement: dict | None = None
         self._lumped_rlc: list[LumpedRLCSpec] = []
         self._floquet_ports: list[_FloquetPortEntry] = []
+
+        # T7-B: canonical BoundarySpec. When the caller supplies a
+        # BoundarySpec directly it is authoritative; otherwise compose
+        # one from the legacy triad (scalar boundary + pec_faces +
+        # periodic_axes='' at construction). set_periodic_axes() and any
+        # future legacy mutation rebuilds via _build_spec_from_legacy.
+        if _explicit_spec:
+            self._boundary_spec = spec
+            self._periodic_axes = spec.periodic_axes()
+        else:
+            self._boundary_spec = self._build_spec_from_legacy()
 
     # ---- refinement (subgridding) ----
 
@@ -1330,8 +1381,34 @@ class Simulation:
         ))
         return self
 
+    def _build_spec_from_legacy(self):
+        """T7-B: compose a canonical BoundarySpec from the legacy triad.
+
+        Called once at ``__init__`` time and whenever the legacy fields
+        change (``set_periodic_axes``, mutation of ``pec_faces``). The
+        spec is the single source of truth for T7-D preflight and
+        T7-C / T7-E runner integration; the legacy fields remain as
+        derived views for code that has not yet migrated.
+        """
+        from rfx.boundaries.spec import BoundarySpec, Boundary
+        default = self._boundary  # 'cpml' | 'upml' | 'pec'
+        axes = {}
+        for axis_name in "xyz":
+            if axis_name in self._periodic_axes:
+                axes[axis_name] = Boundary(lo="periodic", hi="periodic")
+            else:
+                lo_tok = "pec" if f"{axis_name}_lo" in self._pec_faces else default
+                hi_tok = "pec" if f"{axis_name}_hi" in self._pec_faces else default
+                axes[axis_name] = Boundary(lo=lo_tok, hi=hi_tok)
+        return BoundarySpec(x=axes["x"], y=axes["y"], z=axes["z"])
+
     def set_periodic_axes(self, axes: str = "xyz") -> "Simulation":
         """Set periodic boundary axes for high-level runs.
+
+        .. deprecated:: 1.7.0
+            Encode periodic axes directly in :class:`BoundarySpec`:
+            ``boundary=BoundarySpec(x='periodic', y='cpml', z='cpml')``.
+            This method will be removed in v2.0.
 
         Parameters
         ----------
@@ -1339,6 +1416,14 @@ class Simulation:
             Any combination of ``x``, ``y``, ``z``. Empty string disables
             manual periodic overrides.
         """
+        import warnings as _w
+        _w.warn(
+            "Simulation.set_periodic_axes() is deprecated; pass a "
+            "BoundarySpec to Simulation(..., boundary=BoundarySpec(...)) "
+            "with periodic tokens on the desired axes instead. "
+            "The method will be removed in rfx v2.0.",
+            DeprecationWarning, stacklevel=2,
+        )
         normalized = "".join(axis for axis in "xyz" if axis in axes)
         invalid = sorted(set(axes) - set("xyz"))
         if invalid:
@@ -1348,6 +1433,9 @@ class Simulation:
         if self._waveguide_ports:
             raise ValueError("Manual periodic-axis overrides are not supported together with waveguide ports")
         self._periodic_axes = normalized
+        # Rebuild the canonical BoundarySpec so downstream code that
+        # consults it (T7-C/D/E) sees the updated periodic axes.
+        self._boundary_spec = self._build_spec_from_legacy()
         return self
 
     # ---- Floquet ports ----
