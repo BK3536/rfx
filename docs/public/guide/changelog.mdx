@@ -5,6 +5,37 @@ sidebar:
   order: 99
 ---
 
+## v1.6.2
+
+`Simulation.forward(distributed=True)` opt-in for non-uniform meshes + correctness fix for the multi-device gradient path. No physics changes on the single-device path vs v1.6.1.
+
+### New features
+
+- **`Simulation.forward(distributed=True)`** (issue #44): opt-in 2-GPU+ sharded forward + grad on non-uniform meshes. Dispatches through `rfx/runners/distributed_nu.py`, composes segmented remat via `checkpoint_every`, and emits a one-time `UserWarning` summarising the evidence. NU-only in v1.6.2 (DP3). Reject rules (TFSF / waveguide ports / uniform mesh / `distributed=True` on single device) are raised up front.
+- **`Simulation.__init__` mesh-as-design-variable gradient** (nu_known_limits #2): tracer-valued `dz_profile` now flows end-to-end from the `Simulation` level. Caller supplies a concrete `domain[2]` (profile sum cannot be host-coerced during tracing); all validation sites (`_validate_mesh_quality`, `_check_numerical_dispersion`, `_validate_thin_metal_on_nu_mesh`, CPML-z advisories) skip host-side scans on tracer input. Downstream `coords_from_nonuniform_grid` / `position_to_index` / `make_current_source` stay tracer-safe.
+
+### Fixes
+
+- **Distributed mixed Debye+Lorentz gradient NaN** (issue #44 Phase 4): `_split_lorentz_coeffs` and `shard_lorentz_coeffs_x_slab` padded `lorentz_coeffs.cc` with `0.0`, producing `1 / cc = inf` at ghost cells and leaking NaN through `0 * inf` into real-cell gradients. Now padded with `1 / EPS_0` (vacuum). Forward stays bit-perfect (PEC x-face zeroes the ghost), backward is NaN-free. Phase 3.5 CPU calibration: `grad_nan_count` 166,392 → 0. Regression guarded by `test_distributed_mixed_dispersion_grad_no_corner_nan`.
+
+### Validation
+
+VESSL evidence (DP5 research note `docs/research_notes/2026-04-17_issue44_distributed_nu_composition.md`):
+
+| Hardware | Case | Config | Fwd (single / N-dev) | Bwd | Peak / dev |
+| --- | --- | --- | --- | --- | --- |
+| RTX 4090 × 1 (Job 0) | 6.66 M cells | ce = 10, n = 100 | 1.998 s / — | 13.64 s | 1.606 GB |
+| A6000 × 2 (Job A) | 10 M cells | ce = 25, n = 100 | 4.10 s / 16.45 s | 19.42 s | 27.24 GB |
+
+Test status: 29 kernel + 17 composition + 2 smoke + 10 NU forward-grad + 4 NU gradient + 34 NU API, all green.
+
+### Notes
+
+- M5 spike xfail sentinel (`jax.grad(jit(checkpoint(shard_map(scan))))`) was removed in this release. The upstream JAX composition remains unfixed, but Phase 2F's `custom_vjp` path is the production segmented-remat implementation — the minimal-reproducer xfail no longer documents a correctness gate.
+- Job B (4-GPU scale-out) is parked; REMI infra has no 4-GPU node. The 2 × A6000 Job A evidence satisfies the multi-GPU memory-profile acceptance from the issue body.
+
+---
+
 ## v1.6.1
 
 Preflight hardening + differentiable-path unification. No physics changes vs v1.6.0.
