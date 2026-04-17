@@ -35,8 +35,10 @@ Test inventory (V3 plan §Phase 1 Tolerance Contract):
 
  #  | Name                                                         | Class
 ----+--------------------------------------------------------------+------
-  1 | test_shard_map_checkpoint_trivial_scan_grad (M5 spike)       | E [xfail]
-  2 | test_forward_distributed_flag_requires_multi_device          | E/API
+ -- | (was) test_shard_map_checkpoint_trivial_scan_grad — removed 2026-04-17;
+    |   Phase 2F custom_vjp path is the production segmented-remat path, so
+    |   the minimal-reproducer xfail sentinel is no longer needed.
+  1 | test_forward_distributed_flag_requires_multi_device          | E/API
   3 | test_forward_distributed_rejects_uniform_mesh_in_v162        | E/API
   4 | test_forward_distributed_rejects_tfsf_on_nu_path             | E/API
   5 | test_forward_distributed_requested_devices_gt_available_raises| E/API
@@ -124,75 +126,18 @@ def _make_nu_sim_small(
 
 
 # ---------------------------------------------------------------------------
-# Test 1 — M5 Spike: shard_map + checkpoint trivial scan grad
+# Tests — API contract: distributed=True public API
 # ---------------------------------------------------------------------------
-
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "M5 spike: jax.checkpoint(shard_map(scan)) composing with jax.grad is "
-        "an upstream JAX limitation tracked in the V3 plan. The test will "
-        "self-announce (XPASS) when JAX fixes the composition; until then "
-        "Phase 2F uses a custom vjp path so this primitive is not on the "
-        "critical path. strict=False keeps the suite green if JAX changes."
-    ),
-)
-def test_shard_map_checkpoint_trivial_scan_grad():
-    """Trivial toy: jax.grad(jax.checkpoint(shard_map(scan_body)))(x).
-
-    No physics — just a linear scan over a NamedTuple carry that multiplies
-    x by 1.0 at each step.  The gradient should be 1.0.
-
-    This must be the FIRST test in the file to make the dependency order
-    explicit: if this fails, all physics tests will also fail, and the root
-    cause is JAX composition, not rfx.
-
-    Outcome:
-      PASSED  → JAX composition works on this install; Phase 2F proceeds normally.
-      XFAIL   → Non-trivial fixes needed; Phase 2F budget escalates from 8h to 24h.
-    """
-    _require_two_devices()
-
-    from jax.experimental.shard_map import shard_map
-    from jax.sharding import Mesh, PartitionSpec as P
-    import jax.lax as lax
-
-    devices = jax.devices()[:2]
-    mesh = Mesh(np.array(devices), axis_names=("x",))
-
-    n_steps = 8
-
-    def scan_body(carry, _):
-        # Trivial: multiply carry by 1.0 so grad w.r.t. initial value = 1.0
-        return carry * 1.0, carry
-
-    @jax.checkpoint
-    def sharded_scan(x):
-        # shard_map wraps a trivial scan; each device runs its own copy
-        def per_device_scan(x_local):
-            final, _ = lax.scan(scan_body, x_local, None, length=n_steps)
-            return final
-
-        result = shard_map(
-            per_device_scan,
-            mesh=mesh,
-            in_specs=P("x"),
-            out_specs=P("x"),
-            check_rep=False,
-        )(x)
-        return jnp.sum(result)
-
-    x = jnp.ones(2)  # one scalar per device
-    grad = jax.grad(sharded_scan)(x)
-
-    # Expected: each element of grad should be 1.0 (linear passthrough)
-    assert jnp.allclose(grad, jnp.ones_like(grad), atol=1e-6), (
-        f"Trivial shard_map+checkpoint scan grad is not 1.0: {grad}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Tests 2-6 — API contract: distributed=True kwarg not yet wired
+#
+# (Removed the M5 spike test `test_shard_map_checkpoint_trivial_scan_grad`
+# on 2026-04-17. The upstream JAX composition
+# `jax.grad(jit(checkpoint(shard_map(scan))))` remains broken in
+# jax 0.6.x, but Phase 2F shipped a `custom_vjp` workaround that is the
+# production segmented-remat path; the minimal-reproducer xfail sentinel
+# is no longer needed.  If JAX upstream fixes the composition, the
+# custom_vjp path can be removed in a v1.7.0 simplification pass, but
+# that is a refactor opportunity, not a correctness gate.)
+#
 # ---------------------------------------------------------------------------
 
 def test_forward_distributed_flag_requires_multi_device():
