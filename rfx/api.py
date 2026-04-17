@@ -230,6 +230,24 @@ class ForwardResult(NamedTuple):
     freqs: object = None
 
 
+class _PreparedUniformForwardInputs(NamedTuple):
+    """Prepared uniform-mesh inputs shared by differentiable forward lanes."""
+
+    materials: MaterialArrays
+    sources: list
+    raw_phase1_sources: tuple[tuple[int, int, int, str, jnp.ndarray], ...]
+    probes: list
+    debye: tuple | None
+    lorentz: tuple | None
+    ntff_box: object | None
+    waveguide_ports: list
+    periodic_bool: tuple[bool, bool, bool]
+    cpml_axes_run: str
+    pec_axes_run: str
+    pec_mask_local: jnp.ndarray | None
+    pec_occupancy_local: jnp.ndarray | None
+
+
 # ---------------------------------------------------------------------------
 # Material specification
 # ---------------------------------------------------------------------------
@@ -1954,8 +1972,12 @@ class Simulation:
             base_materials = base_materials._replace(
                 sigma=jnp.where(pec_mask_wg, 1e10, base_materials.sigma))
         materials = base_materials
-        if n_steps is None:
-            n_steps = grid.num_timesteps(num_periods=num_periods)
+        n_steps = self._resolve_phase1_hybrid_runner_state_n_steps(
+            grid,
+            n_steps=n_steps,
+            num_periods=num_periods,
+        )
+        assert n_steps is not None
         _, debye, lorentz = self._init_dispersion(materials, grid.dt, debye_spec, lorentz_spec)
 
         def _resolve_freqs(entry: _WaveguidePortEntry) -> jnp.ndarray:
@@ -3291,156 +3313,36 @@ class Simulation:
                 return_state=False,
             )
 
-        from rfx.simulation import (
-            run as _run,
-            make_source,
-            make_probe,
-            make_port_source,
-            make_wire_port_sources,
-        )
-        from rfx.sources.sources import (
-            LumpedPort,
-            WirePort,
-            setup_lumped_port,
-            setup_wire_port,
-            _wire_port_cells,
-        )
-
-        sources = []
-        probes = []
-        pec_mask_local = pec_mask
-        pec_occupancy_local = pec_occupancy
-
-        for pe in self._ports:
-            if pe.impedance == 0.0:
-                from rfx.simulation import make_j_source
-                sources.append(
-                    make_j_source(grid, pe.position, pe.component,
-                                  pe.waveform, n_steps, materials)
-                )
-                continue
-
-            if pe.extent is not None:
-                axis_map = {"ex": 0, "ey": 1, "ez": 2}
-                axis = axis_map[pe.component]
-                end = list(pe.position)
-                end[axis] += pe.extent
-                wp = WirePort(
-                    start=pe.position,
-                    end=tuple(end),
-                    component=pe.component,
-                    impedance=pe.impedance,
-                    excitation=pe.waveform,
-                )
-                materials = setup_wire_port(grid, wp, materials)
-                if pe.excite:
-                    sources.extend(make_wire_port_sources(grid, wp, materials, n_steps))
-                for cell in _wire_port_cells(grid, wp):
-                    if pec_mask_local is not None:
-                        pec_mask_local = pec_mask_local.at[cell[0], cell[1], cell[2]].set(False)
-                    if pec_occupancy_local is not None:
-                        pec_occupancy_local = pec_occupancy_local.at[cell[0], cell[1], cell[2]].set(0.0)
-                continue
-
-            lp = LumpedPort(
-                position=pe.position,
-                component=pe.component,
-                impedance=pe.impedance,
-                excitation=pe.waveform,
-            )
-            materials = setup_lumped_port(grid, lp, materials)
-            if pe.excite:
-                sources.append(make_port_source(grid, lp, materials, n_steps))
-            idx = grid.position_to_index(pe.position)
-            if pec_mask_local is not None:
-                pec_mask_local = pec_mask_local.at[idx[0], idx[1], idx[2]].set(False)
-            if pec_occupancy_local is not None:
-                pec_occupancy_local = pec_occupancy_local.at[idx[0], idx[1], idx[2]].set(0.0)
-
-        for pe in self._probes:
-            probes.append(make_probe(grid, pe.position, pe.component))
-
-        if not probes and self._ports:
-            for pe in self._ports:
-                probes.append(make_probe(grid, pe.position, pe.component))
-
-        _, debye, lorentz = self._init_dispersion(
-            materials, grid.dt, debye_spec, lorentz_spec,
-        )
-
-        ntff_box = None
-        if self._ntff is not None:
-            from rfx.farfield import make_ntff_box
-            corner_lo, corner_hi, freqs = self._ntff
-            ntff_box = make_ntff_box(grid, corner_lo, corner_hi, freqs)
-
-        # Waveguide ports (differentiable DFT accumulation inside scan)
-        waveguide_ports = []
-        if self._waveguide_ports:
-            wg_freqs = None
-            for pe in self._waveguide_ports:
-                if pe.freqs is not None:
-                    wg_freqs = jnp.asarray(pe.freqs, dtype=jnp.float32)
-                    break
-            if wg_freqs is None:
-                wg_freqs = jnp.linspace(
-                    self._freq_max * 0.5, self._freq_max, 20, dtype=jnp.float32)
-            for pe in self._waveguide_ports:
-                waveguide_ports.append(
-                    self._build_waveguide_port_config(pe, grid, wg_freqs, n_steps))
-
-        # Floquet ports — inject soft source, same as run_uniform.py:274-327
-        periodic = None
-        if self._periodic_axes:
-            periodic = tuple(axis in self._periodic_axes for axis in "xyz")
-
-        if self._floquet_ports:
-            axis_map_str = {"x": 0, "y": 1, "z": 2}
-            for fpe in self._floquet_ports:
-                axis_idx = axis_map_str[fpe.axis]
-                fp_f0 = fpe.f0 if fpe.f0 is not None else self._freq_max / 2
-                from rfx.sources.sources import GaussianPulse as _GP
-                wf = _GP(f0=fp_f0, bandwidth=fpe.bandwidth, amplitude=fpe.amplitude)
-                center = [self._domain[i] / 2.0 for i in range(3)]
-                center[axis_idx] = fpe.position
-                if fpe.polarization == "te":
-                    comp = {"z": "ex", "x": "ey", "y": "ex"}[fpe.axis]
-                else:
-                    comp = {"z": "ey", "x": "ez", "y": "ez"}[fpe.axis]
-                from rfx.simulation import make_source as _make_src
-                sources.append(_make_src(grid, tuple(center), comp, wf, n_steps))
-            if periodic is None:
-                periodic = (True, True, False)  # default x-y periodic for Floquet
-
-        periodic_bool = periodic if periodic is not None else (False, False, False)
-
-        # Forward cpml_axes from the grid — when waveguide ports are
-        # present the grid restricts CPML to the non-propagation axes.
-        # The default _run cpml_axes="xyz" builds CPML state for axes
-        # that have no padding, producing shape-broadcast errors like
-        # (8,1,1) vs (nx,ny,nz) during the scan (issue #29). The run()
-        # path forwards these explicitly at api.py:2012, so does the
-        # waveguide compute path at :2077 / :2092.
-        cpml_axes_run = grid.cpml_axes
-        pec_axes_run = "".join(a for a in "xyz" if a not in cpml_axes_run)
-
-        result = _run(
+        prepared = self._prepare_uniform_forward_inputs(
             grid,
             materials,
+            debye_spec,
+            lorentz_spec,
+            n_steps=n_steps,
+            pec_mask=pec_mask,
+            pec_occupancy=pec_occupancy,
+        )
+
+        from rfx.simulation import (
+            run as _run,
+        )
+        result = _run(
+            grid,
+            prepared.materials,
             n_steps,
             boundary=self._boundary,
-            cpml_axes=cpml_axes_run,
-            pec_axes=pec_axes_run,
-            periodic=periodic_bool,
-            debye=debye,
-            lorentz=lorentz,
-            sources=sources,
-            probes=probes,
-            waveguide_ports=waveguide_ports if waveguide_ports else None,
-            ntff=ntff_box,
+            cpml_axes=prepared.cpml_axes_run,
+            pec_axes=prepared.pec_axes_run,
+            periodic=prepared.periodic_bool,
+            debye=prepared.debye,
+            lorentz=prepared.lorentz,
+            sources=prepared.sources,
+            probes=prepared.probes,
+            waveguide_ports=prepared.waveguide_ports if prepared.waveguide_ports else None,
+            ntff=prepared.ntff_box,
             checkpoint=checkpoint,
-            pec_mask=pec_mask_local,
-            pec_occupancy=pec_occupancy_local,
+            pec_mask=prepared.pec_mask_local,
+            pec_occupancy=prepared.pec_occupancy_local,
             return_state=False,
         )
         return ForwardResult(
@@ -3593,8 +3495,12 @@ class Simulation:
         if pec_mask_override is not None:
             pec_mask = pec_mask_override if pec_mask is None else (pec_mask | pec_mask_override)
 
-        if n_steps is None:
-            n_steps = grid.num_timesteps(num_periods=num_periods)
+        n_steps = self._resolve_phase1_hybrid_runner_state_n_steps(
+            grid,
+            n_steps=n_steps,
+            num_periods=num_periods,
+        )
+        assert n_steps is not None
 
         return self._forward_from_materials(
             grid,
@@ -3605,6 +3511,634 @@ class Simulation:
             checkpoint=checkpoint,
             pec_mask=pec_mask,
             pec_occupancy=pec_occupancy_override,
+        )
+
+    def inspect_hybrid_phase1(
+        self,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridInspection":
+        """Inspect whether the current configuration fits the Phase 1 hybrid seam."""
+
+        return self.inspect_hybrid_phase1_from_inputs(
+            self.build_hybrid_phase1_inputs(
+                eps_override=eps_override,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+        )
+
+    def _resolve_phase1_hybrid_runner_state_n_steps(
+        self,
+        grid: Grid | NonUniformGrid | None,
+        *,
+        n_steps: int | None,
+        num_periods: float,
+    ) -> int | None:
+        """Resolve the n_steps value for Phase 1 helper surfaces.
+
+        Supports both the supported uniform replay seam and the unsupported
+        non-uniform inspected branch.
+        """
+
+        if n_steps is not None:
+            return n_steps
+        if grid is None:
+            return None
+        if hasattr(grid, "num_timesteps"):
+            return grid.num_timesteps(num_periods=num_periods)
+        return int(np.ceil(num_periods * (1.0 / float(self._freq_max)) / float(grid.dt)))
+
+    def build_hybrid_phase1_inputs(
+        self,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridInputs":
+        """Build the seam-owned Phase 1 input spec for uniform hybrid preparation."""
+
+        grid, prepared, report = self._inspect_hybrid_phase1_prepared(
+            eps_override=eps_override,
+            n_steps=n_steps,
+            num_periods=num_periods,
+        )
+        return self.build_hybrid_phase1_inputs_from_inspected_runner_state(
+            grid,
+            prepared,
+            report,
+            n_steps=n_steps,
+            num_periods=num_periods,
+        )
+
+    def prepare_hybrid_phase1(
+        self,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridPrepared":
+        """Return the public inspection + context bundle for Phase 1 hybrid runs."""
+
+        return self.prepare_hybrid_phase1_from_inputs(
+            self.build_hybrid_phase1_inputs(
+                eps_override=eps_override,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+        )
+
+    def build_hybrid_phase1_context(
+        self,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridContext":
+        """Build the stable replay context for the supported Phase 1 seam."""
+
+        return self.build_hybrid_phase1_context_from_inputs(
+            self.build_hybrid_phase1_inputs(
+                eps_override=eps_override,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+        )
+
+    def inspect_hybrid_phase1_from_inputs(self, inputs: "Phase1HybridInputs") -> "Phase1HybridInspection":
+        """Inspect the Phase 1 seam from the seam-owned input surface."""
+
+        from rfx.hybrid_adjoint import inspect_phase1_hybrid_from_inputs
+
+        return inspect_phase1_hybrid_from_inputs(inputs)
+
+    def build_hybrid_phase1_inputs_from_prepared_runner_state(
+        self,
+        grid: Grid,
+        prepared: "Phase1HybridPreparedRunnerState",
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridInputs":
+        """Build the Phase 1 input surface from the seam-owned prepared-runner state."""
+
+        from rfx.hybrid_adjoint import build_phase1_hybrid_inputs_from_prepared_runner_state
+
+        return build_phase1_hybrid_inputs_from_prepared_runner_state(
+            boundary=self._boundary,
+            grid=grid,
+            prepared=prepared,
+            n_steps=self._resolve_phase1_hybrid_runner_state_n_steps(
+                grid,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            ),
+        )
+
+    def build_hybrid_phase1_inputs_from_inspected_runner_state(
+        self,
+        grid: Grid | NonUniformGrid | None,
+        prepared: "Phase1HybridPreparedRunnerState | None",
+        report: "Phase1HybridInspection",
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridInputs":
+        """Build the Phase 1 input surface from the seam-owned inspected-runner state."""
+
+        from rfx.hybrid_adjoint import build_phase1_hybrid_inputs_from_inspected_runner_state
+
+        return build_phase1_hybrid_inputs_from_inspected_runner_state(
+            boundary=self._boundary,
+            probe_count=len(self._probes),
+            grid=grid,
+            prepared=prepared,
+            report=report,
+            n_steps=self._resolve_phase1_hybrid_runner_state_n_steps(
+                grid,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            ),
+        )
+
+    def inspect_hybrid_phase1_from_prepared_runner_state(
+        self,
+        grid: Grid,
+        prepared: "Phase1HybridPreparedRunnerState",
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridInspection":
+        """Inspect the Phase 1 seam from the seam-owned prepared-runner surface."""
+
+        return self.inspect_hybrid_phase1_from_inputs(
+            self.build_hybrid_phase1_inputs_from_prepared_runner_state(
+                grid,
+                prepared,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+        )
+
+    def inspect_hybrid_phase1_from_inspected_runner_state(
+        self,
+        grid: Grid | NonUniformGrid | None,
+        prepared: "Phase1HybridPreparedRunnerState | None",
+        report: "Phase1HybridInspection",
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridInspection":
+        """Inspect the Phase 1 seam from the seam-owned inspected-runner surface."""
+
+        return self.inspect_hybrid_phase1_from_inputs(
+            self.build_hybrid_phase1_inputs_from_inspected_runner_state(
+                grid,
+                prepared,
+                report,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+        )
+
+    def prepare_hybrid_phase1_from_inputs(self, inputs: "Phase1HybridInputs") -> "Phase1HybridPrepared":
+        """Prepare the Phase 1 seam from the seam-owned input surface."""
+
+        from rfx.hybrid_adjoint import prepare_phase1_hybrid_from_inputs
+
+        return prepare_phase1_hybrid_from_inputs(inputs)
+
+    def prepare_hybrid_phase1_from_prepared_runner_state(
+        self,
+        grid: Grid,
+        prepared: "Phase1HybridPreparedRunnerState",
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridPrepared":
+        """Prepare the Phase 1 seam from the seam-owned prepared-runner surface."""
+
+        return self.prepare_hybrid_phase1_from_inputs(
+            self.build_hybrid_phase1_inputs_from_prepared_runner_state(
+                grid,
+                prepared,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+        )
+
+    def prepare_hybrid_phase1_from_inspected_runner_state(
+        self,
+        grid: Grid | NonUniformGrid | None,
+        prepared: "Phase1HybridPreparedRunnerState | None",
+        report: "Phase1HybridInspection",
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridPrepared":
+        """Prepare the Phase 1 seam from the seam-owned inspected-runner surface."""
+
+        return self.prepare_hybrid_phase1_from_inputs(
+            self.build_hybrid_phase1_inputs_from_inspected_runner_state(
+                grid,
+                prepared,
+                report,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+        )
+
+    def build_hybrid_phase1_context_from_inputs(self, inputs: "Phase1HybridInputs") -> "Phase1HybridContext":
+        """Build the Phase 1 replay context from the seam-owned input surface."""
+
+        from rfx.hybrid_adjoint import build_phase1_hybrid_context_from_inputs
+
+        return build_phase1_hybrid_context_from_inputs(inputs)
+
+    def build_hybrid_phase1_context_from_prepared_runner_state(
+        self,
+        grid: Grid,
+        prepared: "Phase1HybridPreparedRunnerState",
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridContext":
+        """Build the Phase 1 replay context from the seam-owned prepared-runner surface."""
+
+        return self.build_hybrid_phase1_context_from_inputs(
+            self.build_hybrid_phase1_inputs_from_prepared_runner_state(
+                grid,
+                prepared,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+        )
+
+    def build_hybrid_phase1_context_from_inspected_runner_state(
+        self,
+        grid: Grid | NonUniformGrid | None,
+        prepared: "Phase1HybridPreparedRunnerState | None",
+        report: "Phase1HybridInspection",
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridContext":
+        """Build the Phase 1 replay context from the seam-owned inspected-runner surface."""
+
+        return self.build_hybrid_phase1_context_from_inputs(
+            self.build_hybrid_phase1_inputs_from_inspected_runner_state(
+                grid,
+                prepared,
+                report,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+        )
+
+    def forward_hybrid_phase1_from_inputs(
+        self,
+        inputs: "Phase1HybridInputs",
+        *,
+        eps_override: jnp.ndarray | None = None,
+    ) -> ForwardResult:
+        """Execute the Phase 1 seam from the seam-owned input surface."""
+
+        from rfx.hybrid_adjoint import forward_phase1_hybrid_from_inputs
+
+        return forward_phase1_hybrid_from_inputs(inputs, eps_override)
+
+    def forward_hybrid_phase1_from_context(
+        self,
+        context: "Phase1HybridContext",
+        *,
+        eps_override: jnp.ndarray | None = None,
+    ) -> ForwardResult:
+        """Execute the supported Phase 1 replay seam from a built context."""
+
+        from rfx.hybrid_adjoint import forward_phase1_hybrid_from_context
+
+        return forward_phase1_hybrid_from_context(context, eps_override)
+
+    def forward_hybrid_phase1_from_prepared(
+        self,
+        prepared: "Phase1HybridPrepared",
+        *,
+        eps_override: jnp.ndarray | None = None,
+    ) -> ForwardResult:
+        """Execute the Phase 1 seam from the public prepared bundle."""
+
+        from rfx.hybrid_adjoint import forward_phase1_hybrid_from_prepared
+
+        return forward_phase1_hybrid_from_prepared(prepared, eps_override)
+
+    def forward_hybrid_phase1_from_prepared_runner_state(
+        self,
+        grid: Grid,
+        prepared: "Phase1HybridPreparedRunnerState",
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+        eps_override: jnp.ndarray | None = None,
+    ) -> ForwardResult:
+        """Execute the Phase 1 seam from the seam-owned prepared-runner surface."""
+
+        return self.forward_hybrid_phase1_from_inputs(
+            self.build_hybrid_phase1_inputs_from_prepared_runner_state(
+                grid,
+                prepared,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            ),
+            eps_override=eps_override,
+        )
+
+    def forward_hybrid_phase1_from_inspected_runner_state(
+        self,
+        grid: Grid | NonUniformGrid | None,
+        prepared: "Phase1HybridPreparedRunnerState | None",
+        report: "Phase1HybridInspection",
+        *,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+        eps_override: jnp.ndarray | None = None,
+    ) -> ForwardResult:
+        """Execute the Phase 1 seam from the seam-owned inspected-runner surface."""
+
+        return self.forward_hybrid_phase1_from_inputs(
+            self.build_hybrid_phase1_inputs_from_inspected_runner_state(
+                grid,
+                prepared,
+                report,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            ),
+            eps_override=eps_override,
+        )
+
+    def _inspect_hybrid_phase1_prepared(
+        self,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> tuple[Grid | NonUniformGrid | None, "Phase1HybridPreparedRunnerState | None", "Phase1HybridInspection"]:
+        is_nonuniform = (
+            self._dz_profile is not None
+            or self._dx_profile is not None
+            or self._dy_profile is not None
+        )
+        if is_nonuniform:
+            grid = self._build_nonuniform_grid() if n_steps is None else None
+            n_steps = self._resolve_phase1_hybrid_runner_state_n_steps(
+                grid,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+            from rfx.hybrid_adjoint import unsupported_phase1_hybrid_nonuniform_report
+
+            report = self.inspect_hybrid_phase1_from_inspected_runner_state(
+                grid,
+                None,
+                unsupported_phase1_hybrid_nonuniform_report(
+                    probe_count=len(self._probes),
+                    boundary=self._boundary,
+                ),
+                n_steps=n_steps,
+            )
+            return grid, None, report
+
+        grid = self._build_grid()
+        materials, debye_spec, lorentz_spec, pec_mask, _, _ = self._assemble_materials(grid)
+        if eps_override is not None:
+            materials = MaterialArrays(
+                eps_r=eps_override,
+                sigma=materials.sigma,
+                mu_r=materials.mu_r,
+            )
+        n_steps = self._resolve_phase1_hybrid_runner_state_n_steps(
+            grid,
+            n_steps=n_steps,
+            num_periods=num_periods,
+        )
+        assert n_steps is not None
+
+        prepared = self._prepare_uniform_forward_inputs(
+            grid,
+            materials,
+            debye_spec,
+            lorentz_spec,
+            n_steps=n_steps,
+            pec_mask=pec_mask,
+            pec_occupancy=None,
+        )
+
+        from rfx.hybrid_adjoint import Phase1HybridPreparedRunnerState
+
+        prepared = Phase1HybridPreparedRunnerState.from_uniform_prepared(prepared)
+        report = self.inspect_hybrid_phase1_from_prepared_runner_state(
+            grid,
+            prepared,
+            n_steps=n_steps,
+        )
+        return grid, prepared, report
+
+    def forward_hybrid_phase1(
+        self,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+        fallback: str = "pure_ad",
+    ) -> ForwardResult:
+        """Experimental Phase 1 hybrid-adjoint forward for time-series objectives.
+
+        This is an explicit, non-default execution lane for the approved
+        uniform / lossless / PEC-only proof-of-concept. Unsupported
+        physics routes back to ``forward()`` when ``fallback="pure_ad"``
+        and raises when ``fallback="raise"``.
+        """
+        if fallback not in {"pure_ad", "raise"}:
+            raise ValueError(f"fallback must be 'pure_ad' or 'raise', got {fallback!r}")
+
+        inputs = self.build_hybrid_phase1_inputs(
+            eps_override=eps_override,
+            n_steps=n_steps,
+            num_periods=num_periods,
+        )
+        report = self.inspect_hybrid_phase1_from_inputs(inputs)
+        if not report.supported:
+            if fallback == "pure_ad":
+                return self.forward(
+                    eps_override=eps_override,
+                    n_steps=n_steps,
+                    num_periods=num_periods,
+                    checkpoint=True,
+                )
+            raise ValueError(report.reason_text)
+        return self.forward_hybrid_phase1_from_inputs(inputs)
+
+    def _prepare_uniform_forward_inputs(
+        self,
+        grid: Grid,
+        materials: MaterialArrays,
+        debye_spec: tuple | None,
+        lorentz_spec: tuple | None,
+        *,
+        n_steps: int,
+        pec_mask: jnp.ndarray | None = None,
+        pec_occupancy: jnp.ndarray | None = None,
+    ) -> _PreparedUniformForwardInputs:
+        """Prepare the uniform differentiable forward inputs once."""
+
+        from rfx.simulation import (
+            make_j_source,
+            make_probe,
+            make_port_source,
+            make_source,
+            make_wire_port_sources,
+        )
+        from rfx.sources.sources import (
+            LumpedPort,
+            WirePort,
+            setup_lumped_port,
+            setup_wire_port,
+            _wire_port_cells,
+        )
+
+        sources = []
+        raw_phase1_sources = []
+        probes = []
+        pec_mask_local = pec_mask
+        pec_occupancy_local = pec_occupancy
+
+        for pe in self._ports:
+            if pe.impedance == 0.0:
+                idx = grid.position_to_index(pe.position)
+                times = jnp.arange(n_steps, dtype=jnp.float32) * grid.dt
+                raw_phase1_sources.append(
+                    (idx[0], idx[1], idx[2], pe.component, jax.vmap(pe.waveform)(times))
+                )
+                sources.append(
+                    make_j_source(
+                        grid,
+                        pe.position,
+                        pe.component,
+                        pe.waveform,
+                        n_steps,
+                        materials,
+                    )
+                )
+                continue
+
+            if pe.extent is not None:
+                axis_map = {"ex": 0, "ey": 1, "ez": 2}
+                axis = axis_map[pe.component]
+                end = list(pe.position)
+                end[axis] += pe.extent
+                wp = WirePort(
+                    start=pe.position,
+                    end=tuple(end),
+                    component=pe.component,
+                    impedance=pe.impedance,
+                    excitation=pe.waveform,
+                )
+                materials = setup_wire_port(grid, wp, materials)
+                if pe.excite:
+                    sources.extend(make_wire_port_sources(grid, wp, materials, n_steps))
+                for cell in _wire_port_cells(grid, wp):
+                    if pec_mask_local is not None:
+                        pec_mask_local = pec_mask_local.at[cell[0], cell[1], cell[2]].set(False)
+                    if pec_occupancy_local is not None:
+                        pec_occupancy_local = pec_occupancy_local.at[cell[0], cell[1], cell[2]].set(0.0)
+                continue
+
+            lp = LumpedPort(
+                position=pe.position,
+                component=pe.component,
+                impedance=pe.impedance,
+                excitation=pe.waveform,
+            )
+            materials = setup_lumped_port(grid, lp, materials)
+            if pe.excite:
+                sources.append(make_port_source(grid, lp, materials, n_steps))
+            idx = grid.position_to_index(pe.position)
+            if pec_mask_local is not None:
+                pec_mask_local = pec_mask_local.at[idx[0], idx[1], idx[2]].set(False)
+            if pec_occupancy_local is not None:
+                pec_occupancy_local = pec_occupancy_local.at[idx[0], idx[1], idx[2]].set(0.0)
+
+        for pe in self._probes:
+            probes.append(make_probe(grid, pe.position, pe.component))
+
+        if not probes and self._ports:
+            for pe in self._ports:
+                probes.append(make_probe(grid, pe.position, pe.component))
+
+        _, debye, lorentz = self._init_dispersion(
+            materials, grid.dt, debye_spec, lorentz_spec,
+        )
+
+        ntff_box = None
+        if self._ntff is not None:
+            from rfx.farfield import make_ntff_box
+            corner_lo, corner_hi, freqs = self._ntff
+            ntff_box = make_ntff_box(grid, corner_lo, corner_hi, freqs)
+
+        waveguide_ports = []
+        if self._waveguide_ports:
+            wg_freqs = None
+            for pe in self._waveguide_ports:
+                if pe.freqs is not None:
+                    wg_freqs = jnp.asarray(pe.freqs, dtype=jnp.float32)
+                    break
+            if wg_freqs is None:
+                wg_freqs = jnp.linspace(
+                    self._freq_max * 0.5, self._freq_max, 20, dtype=jnp.float32)
+            for pe in self._waveguide_ports:
+                waveguide_ports.append(
+                    self._build_waveguide_port_config(pe, grid, wg_freqs, n_steps)
+                )
+
+        periodic = None
+        if self._periodic_axes:
+            periodic = tuple(axis in self._periodic_axes for axis in "xyz")
+
+        if self._floquet_ports:
+            axis_map_str = {"x": 0, "y": 1, "z": 2}
+            for fpe in self._floquet_ports:
+                axis_idx = axis_map_str[fpe.axis]
+                fp_f0 = fpe.f0 if fpe.f0 is not None else self._freq_max / 2
+                from rfx.sources.sources import GaussianPulse as _GP
+                wf = _GP(f0=fp_f0, bandwidth=fpe.bandwidth, amplitude=fpe.amplitude)
+                center = [self._domain[i] / 2.0 for i in range(3)]
+                center[axis_idx] = fpe.position
+                if fpe.polarization == "te":
+                    comp = {"z": "ex", "x": "ey", "y": "ex"}[fpe.axis]
+                else:
+                    comp = {"z": "ey", "x": "ez", "y": "ez"}[fpe.axis]
+                sources.append(make_source(grid, tuple(center), comp, wf, n_steps))
+            if periodic is None:
+                periodic = (True, True, False)
+
+        periodic_bool = periodic if periodic is not None else (False, False, False)
+        cpml_axes_run = grid.cpml_axes
+        pec_axes_run = "".join(a for a in "xyz" if a not in cpml_axes_run)
+        return _PreparedUniformForwardInputs(
+            materials=materials,
+            sources=sources,
+            raw_phase1_sources=tuple(raw_phase1_sources),
+            probes=probes,
+            debye=debye,
+            lorentz=lorentz,
+            ntff_box=ntff_box,
+            waveguide_ports=waveguide_ports,
+            periodic_bool=periodic_bool,
+            cpml_axes_run=cpml_axes_run,
+            pec_axes_run=pec_axes_run,
+            pec_mask_local=pec_mask_local,
+            pec_occupancy_local=pec_occupancy_local,
         )
 
     # ---- run ----
@@ -3814,8 +4348,12 @@ class Simulation:
             )
 
         # ---- Uniform path ----
-        if n_steps is None:
-            n_steps = grid.num_timesteps(num_periods=num_periods)
+        n_steps = self._resolve_phase1_hybrid_runner_state_n_steps(
+            grid,
+            n_steps=n_steps,
+            num_periods=num_periods,
+        )
+        assert n_steps is not None
 
         from rfx.runners.uniform import run_uniform
         _field_dtype = jnp.float16 if self._precision == "mixed" else None

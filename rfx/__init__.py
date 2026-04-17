@@ -97,6 +97,41 @@ from rfx.probes.probes import (
     FluxMonitor, init_flux_monitor, update_flux_monitor, flux_spectrum,
 )
 from rfx.sweep import parametric_sweep, SweepResult, plot_sweep
+from rfx.hybrid_adjoint import (
+    Phase1FieldState,
+    Phase1HybridInventory,
+    Phase1HybridPreparedRunnerState,
+    Phase1HybridContext,
+    Phase1HybridInspection,
+    Phase1HybridPrepared,
+    Phase1HybridInputs,
+    phase1_forward_result,
+    run_phase1_forward_time_series,
+    make_phase1_hybrid_forward,
+    phase1_hybrid_support_reasons,
+    build_phase1_hybrid_context,
+    build_phase1_hybrid_context_from_inputs,
+    build_phase1_hybrid_context_from_prepared_runner_state,
+    build_phase1_hybrid_context_from_inspected_runner_state,
+    build_phase1_hybrid_inputs_from_prepared_runner_state,
+    build_phase1_hybrid_inputs_from_inspected_runner_state,
+    inspect_phase1_hybrid,
+    inspect_phase1_hybrid_from_inputs,
+    inspect_phase1_hybrid_from_prepared_runner_state,
+    inspect_phase1_hybrid_from_inspected_runner_state,
+    prepare_phase1_hybrid,
+    prepare_phase1_hybrid_from_inputs,
+    prepare_phase1_hybrid_from_prepared_runner_state,
+    prepare_phase1_hybrid_from_inspected_runner_state,
+    forward_phase1_hybrid_from_context,
+    forward_phase1_hybrid_from_prepared,
+    forward_phase1_hybrid_from_inputs,
+    forward_phase1_hybrid_from_prepared_runner_state,
+    forward_phase1_hybrid_from_inspected_runner_state,
+    unsupported_phase1_hybrid_nonuniform,
+    unsupported_phase1_hybrid_nonuniform_report,
+    unsupported_phase1_hybrid_nonuniform_inputs,
+)
 from rfx.vmap_sweep import vmap_material_sweep, VmapSweepResult
 from rfx.pcb import PCBLayer, Stackup
 from rfx.floquet import (
