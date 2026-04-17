@@ -31,13 +31,44 @@ The canonical contracts live in:
 | materials | isotropic linear, conductive, validated dispersive subsets |
 | workflows | cavity, waveguide, patch antenna, simple scattering, resonance, de-embedding, selected differentiable proxy objectives |
 
+## v1.7.0 — `BoundarySpec` per-axis boundary API
+
+v1.7.0 introduces a per-axis, per-face boundary specification
+(`rfx.boundaries.spec.BoundarySpec` + `Boundary`) that replaces the
+asymmetric `boundary=<scalar> + pec_faces + set_periodic_axes()` triad.
+
+### Valid tokens
+
+| Token | Status in v1.7.0 | Notes |
+|---|---|---|
+| `"cpml"` | supported | default absorber; per-face thickness still uses the scalar `cpml_layers` (see Phase 2 below) |
+| `"upml"` | supported (bounded) | single-absorber-type rule: cannot coexist with `"cpml"` in the same spec |
+| `"pec"` | supported | replaces `pec_faces={...}` |
+| `"periodic"` | supported | replaces `set_periodic_axes(...)`; must be symmetric on the axis (both `lo` and `hi` or neither) |
+| `"pmc"` | **spec-accept only (Phase 1)** | `Simulation()` raises `NotImplementedError`; runtime wiring lands in v1.7.1 / v1.8 |
+
+### Invariants enforced at construction time
+
+- `periodic` is rejected on a single face of an axis (`Boundary(lo='periodic', hi='cpml')` → `ValueError`).
+- Mixing `cpml` and `upml` tokens anywhere in the spec → `ValueError` (no absorber interface-layer is implemented).
+- Unknown tokens → `ValueError`.
+
+### Phase 2 (Phase 1 in v1.7.0)
+
+- **Asymmetric per-face CPML thickness** (`Boundary(lo_thickness=4, hi_thickness=16)`) — accepted at the spec level, rejected at `Simulation()` with `NotImplementedError`. Phase 2 refactors `CPMLAxisParams` so the engine honours per-face thickness.
+- **PMC runtime** — accepted at the spec level, rejected at `Simulation()`. Phase 2 lands `apply_pmc_faces` + cross-validation.
+
+### Legacy API (still works, emits `DeprecationWarning` on `pec_faces` / `set_periodic_axes`)
+
+The scalar `boundary="cpml"` (default) continues to work silently; only `pec_faces=` and `set_periodic_axes()` emit deprecation warnings. The legacy triad is lifted into `self._boundary_spec` via a shim, so all downstream code consults the canonical spec. Planned removal: **v2.0**.
+
 ## Shadow lane
 
 Current shadow surface:
 
-- nonuniform graded-z thin-substrate workflows
-- selected smoke and convergence coverage
-- current-main finite-ground-plane patch crossval evidence
+- nonuniform thin-substrate workflows with graded `dz` and optional per-cell `dx` / `dy` profiles
+- probes, Harminv workflows, DFT planes, NTFF accumulation, waveguide ports, lumped RLC, and `+x` / `-x` TFSF on the current shadow-lane path
+- selected smoke/convergence coverage plus current practical demo / cross-check evidence
 
 Shadow means the code is real and may be tested, but the lane is not yet the
 public claims-bearing baseline.
@@ -46,23 +77,19 @@ public claims-bearing baseline.
 
 | Lane | Notes |
 |---|---|
-| SBP-SAT / subgridding | research lane, not a claims-bearing baseline |
 | ADI | separate accuracy/stability envelope |
 | distributed | scaling lane |
 | Floquet/Bloch | promotion pending explicit benchmark ladder |
 
 ## Unsupported combinations
 
-Unsupported combinations must hard-fail.
+Unsupported combinations must hard-fail where documented.
 
 | Combination | Expected behavior |
 |---|---|
 | Floquet + nonuniform | hard-fail |
-| NTFF + nonuniform | hard-fail |
-| DFT planes + nonuniform | hard-fail |
-| TFSF + nonuniform | hard-fail |
-| Waveguide ports + nonuniform | hard-fail |
-| Lumped RLC + nonuniform | hard-fail |
+| Oblique or non-`±x` TFSF + nonuniform | hard-fail |
+| Geometry gradients through traced profile construction | not a current documented workflow |
 
 ## Promotion rule
 

@@ -5,6 +5,52 @@ sidebar:
   order: 99
 ---
 
+## v1.7.0
+
+Per-axis boundary API + mesh-as-design-variable closure + flux/NTFF polish.
+
+### New features
+
+- **`BoundarySpec` / `Boundary` per-axis boundary API** (T7): a single canonical object replaces the `boundary="cpml" + pec_faces={"z_lo"} + set_periodic_axes("x")` triad. Axes accept either a shorthand string (`x="cpml"`, symmetric) or a per-face `Boundary(lo="pec", hi="cpml")`. Valid tokens: `cpml`, `upml`, `pec`, `pmc`, `periodic`. Construction-time `ValueError` on periodic-axis asymmetry, CPML/UPML mixing, and unknown tokens. The legacy triad remains functional (lifted internally into `_boundary_spec`); `pec_faces=` and `set_periodic_axes()` emit `DeprecationWarning` and are slated for removal in v2.0.
+- **`dx_profile` / `dy_profile` mesh-as-design-variable gradient** (T2): `jax.grad` w.r.t. a tracer-valued `dx_profile` / `dy_profile` flows end-to-end through `Simulation.__init__`, closing the last two NU xfail sentinels. Caller must supply a concrete scalar `dx` and concrete `domain[0]` / `domain[1]` for the traced axis (mirrors the dz path shipped in v1.6.2).
+
+### Follow-up (Phase 2 of T7 — v1.7.1 / v1.8)
+
+- `Boundary(lo_thickness=, hi_thickness=)` is accepted at the spec level; asymmetric per-face or per-axis thickness raises `NotImplementedError` because the CPMLAxisParams engine still uses a single scalar `cpml_layers`. Phase 2 refactors the engine for true per-face thickness.
+- `pmc` token is accepted by `BoundarySpec` but rejected at `Simulation` construction — PMC runtime physics lands alongside the CPMLAxisParams refactor with cross-validation tests.
+
+### Polish
+
+- **`add_flux_monitor` fail-fast on non-uniform meshes** (T5): the flux-monitor scan body lives only in the uniform runner, so the NU and distributed-NU paths now raise `NotImplementedError` instead of silently dropping the observable. Public docs updated with the finite-region standing-wave caveat and the NU-mesh-only limitation.
+- **NTFF + NU single-device composition regression** (T5): `tests/test_nonuniform_api.py::TestNTFFOnNonUniform` asserts `ntff_data` is populated with finite face accumulators on a NU mesh.
+
+### Test status
+
+T7 spec + shim + thickness + preflight + PMC guard: 60 new tests all green.
+Legacy regression: `test_api` + `test_periodic_cpml` + `test_progressive_optimize` + `test_nonuniform_api` + `test_nonuniform_xy` + `test_nonuniform_forward_grad` (104 passed), `test_distributed_nu_*` + `test_floquet` + `test_ntff_sweep` (48 passed). Zero regressions.
+
+### Migration
+
+```python
+# v1.6.x (still works, emits DeprecationWarning)
+sim = Simulation(freq_max=10e9, domain=(L, L, H), dx=dx, boundary="cpml",
+                 pec_faces={"z_lo"})
+sim.set_periodic_axes("x")
+
+# v1.7.0 (recommended)
+from rfx.boundaries.spec import BoundarySpec, Boundary
+sim = Simulation(
+    freq_max=10e9, domain=(L, L, H), dx=dx,
+    boundary=BoundarySpec(
+        x="periodic",
+        y="cpml",
+        z=Boundary(lo="pec", hi="cpml"),
+    ),
+)
+```
+
+---
+
 ## v1.6.3
 
 Per-axis boundary correctness + `distributed=True` thread-through for progressive inverse design.
