@@ -1,0 +1,20 @@
+# Public-doc repo-sync surfaces should stay trackable.
+!/public/
+!/public/**
+!/guides/
+!/guides/**
+
+# Local/internal-only docs should never be published or synced to the public repo.
+/.omx/
+/References/
+/agent/
+/agent-memory/
+/agent_memory/
+/api/
+/codex_specs/
+/codex-spec*/
+/guide/
+/reports/
+/research_notes/
+/researchnote*/
+/superpowers/
