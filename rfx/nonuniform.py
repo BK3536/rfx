@@ -1104,7 +1104,12 @@ def run_nonuniform(
         import numpy as _np
         n_wp = len(wire_ports)
         nf = len(sp_freqs)
-        S = _np.zeros((n_wp, n_wp, nf), dtype=_np.complex64)
+        # Tracer-safe accumulation (issue #70): build S with jnp + .at[].set
+        # so jax.grad on an objective that pulls through the wire_sparams
+        # extractor does not hit TracerArrayConversionError. Concrete-path
+        # callers still get a jnp.ndarray that numpy consumers accept via
+        # np.asarray(...) (jnp arrays implement __array__).
+        S = jnp.zeros((n_wp, n_wp, nf), dtype=jnp.complex64)
 
         # Pick the first excited port as the "k" column. If no port is
         # excited (all passive), fall back to the legacy diagonal-only
@@ -1137,7 +1142,7 @@ def run_nonuniform(
             safe_a_k = jnp.where(jnp.abs(a_k) > 0, a_k, jnp.ones_like(a_k))
             for j in range(n_wp):
                 b_j = ab_per_port[j][1]
-                S[j, k, :] = _np.array(b_j / safe_a_k)
+                S = S.at[j, k, :].set(b_j / safe_a_k)
 
         result["s_params"] = S
         result["s_param_freqs"] = _np.array(sp_freqs)
