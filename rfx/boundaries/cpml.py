@@ -37,23 +37,33 @@ class CPMLParams(NamedTuple):
 
 
 class CPMLAxisParams(NamedTuple):
-    """Per-axis CPML profiles for anisotropic grids.
+    """Per-face CPML profiles (6 faces) for anisotropic grids.
 
-    On uniform grids (dx=dy=dz) all four profiles are identical.
-    On non-uniform grids the z-lo and z-hi faces use their actual
-    boundary cell sizes for the sigma_max and curl scaling.
+    T7 Phase 2 PR1 refactor (v1.7.1): promoted the ``x`` / ``y`` axis-level
+    profiles to explicit ``x_lo`` / ``x_hi`` / ``y_lo`` / ``y_hi`` fields.
+    The hi-face profile arrays are pre-flipped so the scan body no longer
+    calls ``jnp.flip`` at every step.
+
+    On uniform grids the six profiles are computed from the same
+    ``(dt, dx)`` input so their (σ, κ, α) arrays are identical up to
+    the hi-face flip. On non-uniform z the z-lo and z-hi faces already
+    use independent cell sizes.
 
     Cell sizes are stored as Python floats (not traced) so they
     can be used inside JIT-compiled scan bodies.
     """
-    x: CPMLParams       # x-faces (uses dx)
-    y: CPMLParams       # y-faces (uses dy)
+    x_lo: CPMLParams    # x-lo face
+    x_hi: CPMLParams    # x-hi face (flipped relative to x_lo in the uniform case)
+    y_lo: CPMLParams    # y-lo face
+    y_hi: CPMLParams    # y-hi face (flipped relative to y_lo in the uniform case)
     z_lo: CPMLParams    # z-lo face (uses dz at lo boundary)
-    z_hi: CPMLParams    # z-hi face (uses dz at hi boundary)
-    dx_x: float = 0.0   # x cell size
-    dx_y: float = 0.0   # y cell size
-    dz_lo: float = 0.0  # z-lo boundary cell size
-    dz_hi: float = 0.0  # z-hi boundary cell size
+    z_hi: CPMLParams    # z-hi face (uses dz at hi boundary, already independent pre-PR1)
+    dx_x_lo: float = 0.0   # x-lo boundary cell size
+    dx_x_hi: float = 0.0   # x-hi boundary cell size
+    dx_y_lo: float = 0.0   # y-lo boundary cell size
+    dx_y_hi: float = 0.0   # y-hi boundary cell size
+    dz_lo: float = 0.0     # z-lo boundary cell size
+    dz_hi: float = 0.0     # z-hi boundary cell size
 
 
 class CPMLState(NamedTuple):
@@ -190,6 +200,22 @@ def _get_axis_cell_sizes(grid):
     return dx, dy, dz_lo, dz_hi
 
 
+def _flip_profile(p: CPMLParams) -> CPMLParams:
+    """Return the hi-face profile for a lo-oriented CPMLParams.
+
+    Pre-computes the flipped (σ, κ, α, b, c) arrays so the scan body
+    can access hi-face coefficients via direct field read instead of
+    calling ``jnp.flip`` at every step (T7 Phase 2 PR1).
+    """
+    return CPMLParams(
+        sigma=jnp.flip(p.sigma),
+        kappa=jnp.flip(p.kappa),
+        alpha=jnp.flip(p.alpha),
+        b=jnp.flip(p.b),
+        c=jnp.flip(p.c),
+    )
+
+
 def _cpml_noop_profile(n_layers: int) -> CPMLParams:
     """Return a no-op CPML profile (identity: no absorption).
 
@@ -233,17 +259,35 @@ def init_cpml(grid, *, kappa_max: float | None = None,
     dx, dy, dz_lo, dz_hi = _get_axis_cell_sizes(grid)
 
     noop = _cpml_noop_profile(n)
-    prof_x = noop if ("x_lo" in pec_faces and "x_hi" in pec_faces) else _cpml_profile(n, grid.dt, dx, kappa_max=kappa_max)
-    prof_y = noop if ("y_lo" in pec_faces and "y_hi" in pec_faces) else _cpml_profile(n, grid.dt, dy, kappa_max=kappa_max)
-    prof_zlo = noop if "z_lo" in pec_faces else _cpml_profile(n, grid.dt, dz_lo, kappa_max=kappa_max)
-    prof_zhi = noop if "z_hi" in pec_faces else _cpml_profile(n, grid.dt, dz_hi, kappa_max=kappa_max)
+    # T7 Phase 2 PR1: six face-specific profiles. The lo-face profile
+    # carries σ_max at index 0 descending; the hi face is the flipped
+    # version, pre-computed so the scan body is flip-free. A PEC face
+    # uses the no-op profile (identity: no absorption).
+    def _face_profile(is_pec: bool, cell_size) -> CPMLParams:
+        if is_pec:
+            return noop
+        return _cpml_profile(n, grid.dt, cell_size, kappa_max=kappa_max)
+
+    prof_x_lo = _face_profile("x_lo" in pec_faces, dx)
+    prof_x_hi = noop if "x_hi" in pec_faces else _flip_profile(
+        prof_x_lo if "x_lo" not in pec_faces else _cpml_profile(n, grid.dt, dx, kappa_max=kappa_max)
+    )
+    prof_y_lo = _face_profile("y_lo" in pec_faces, dy)
+    prof_y_hi = noop if "y_hi" in pec_faces else _flip_profile(
+        prof_y_lo if "y_lo" not in pec_faces else _cpml_profile(n, grid.dt, dy, kappa_max=kappa_max)
+    )
+    prof_z_lo = _face_profile("z_lo" in pec_faces, dz_lo)
+    prof_z_hi = noop if "z_hi" in pec_faces else _flip_profile(
+        _cpml_profile(n, grid.dt, dz_hi, kappa_max=kappa_max)
+    )
 
     params = CPMLAxisParams(
-        x=prof_x,
-        y=prof_y,
-        z_lo=prof_zlo,
-        z_hi=prof_zhi,
-        dx_x=dx, dx_y=dy, dz_lo=dz_lo, dz_hi=dz_hi,
+        x_lo=prof_x_lo, x_hi=prof_x_hi,
+        y_lo=prof_y_lo, y_hi=prof_y_hi,
+        z_lo=prof_z_lo, z_hi=prof_z_hi,
+        dx_x_lo=dx, dx_x_hi=dx,
+        dx_y_lo=dy, dx_y_hi=dy,
+        dz_lo=dz_lo, dz_hi=dz_hi,
     )
 
     nx, ny, nz = grid.shape if hasattr(grid, 'shape') else (grid.nx, grid.ny, grid.nz)
@@ -316,25 +360,30 @@ def apply_cpml_e(
     else:
         ce_xlo = ce_xhi = ce_ylo = ce_yhi = ce_zlo = ce_zhi = dt / EPS_0
 
-    # Unpack per-axis profiles and cell sizes (stored as Python floats,
-    # safe inside JIT — no tracing of grid.dz needed).
+    # Unpack per-face profiles and cell sizes (T7 Phase 2 PR1 — 6 faces).
     if isinstance(cpml_params, CPMLAxisParams):
-        px, py, pz_lo, pz_hi = cpml_params.x, cpml_params.y, cpml_params.z_lo, cpml_params.z_hi
-        dx_x, dx_y, dz_lo, dz_hi = cpml_params.dx_x, cpml_params.dx_y, cpml_params.dz_lo, cpml_params.dz_hi
+        px_lo, px_hi = cpml_params.x_lo, cpml_params.x_hi
+        py_lo, py_hi = cpml_params.y_lo, cpml_params.y_hi
+        pz_lo, pz_hi = cpml_params.z_lo, cpml_params.z_hi
+        dx_x_lo, dx_x_hi = cpml_params.dx_x_lo, cpml_params.dx_x_hi
+        dx_y_lo, dx_y_hi = cpml_params.dx_y_lo, cpml_params.dx_y_hi
+        dz_lo, dz_hi = cpml_params.dz_lo, cpml_params.dz_hi
     else:
-        # Legacy single-profile path (uniform grid)
-        px = py = pz_lo = pz_hi = cpml_params
-        dx_x = dx_y = dz_lo = dz_hi = float(grid.dx)
+        # Legacy single-profile path (uniform grid): build ephemeral
+        # flipped hi-face profiles so the scan body stays uniform.
+        px_lo = py_lo = pz_lo = cpml_params
+        px_hi = py_hi = pz_hi = _flip_profile(cpml_params)
+        dx_x_lo = dx_x_hi = dx_y_lo = dx_y_hi = dz_lo = dz_hi = float(grid.dx)
 
-    # X-axis profile
-    b_x_lo = px.b[:, None, None]; c_x_lo = px.c[:, None, None]; k_x_lo = px.kappa[:, None, None]
-    b_x_hi = jnp.flip(px.b)[:, None, None]; c_x_hi = jnp.flip(px.c)[:, None, None]; k_x_hi = jnp.flip(px.kappa)[:, None, None]
-    # Y-axis profile
-    b_y_lo = py.b[:, None, None]; c_y_lo = py.c[:, None, None]; k_y_lo = py.kappa[:, None, None]
-    b_y_hi = jnp.flip(py.b)[:, None, None]; c_y_hi = jnp.flip(py.c)[:, None, None]; k_y_hi = jnp.flip(py.kappa)[:, None, None]
-    # Z-axis profiles (lo and hi may differ)
+    # X-axis profiles (hi-face pre-flipped at init time — no jnp.flip here).
+    b_x_lo = px_lo.b[:, None, None]; c_x_lo = px_lo.c[:, None, None]; k_x_lo = px_lo.kappa[:, None, None]
+    b_x_hi = px_hi.b[:, None, None]; c_x_hi = px_hi.c[:, None, None]; k_x_hi = px_hi.kappa[:, None, None]
+    # Y-axis profiles
+    b_y_lo = py_lo.b[:, None, None]; c_y_lo = py_lo.c[:, None, None]; k_y_lo = py_lo.kappa[:, None, None]
+    b_y_hi = py_hi.b[:, None, None]; c_y_hi = py_hi.c[:, None, None]; k_y_hi = py_hi.kappa[:, None, None]
+    # Z-axis profiles (lo and hi independent by design)
     b_zl = pz_lo.b[:, None, None]; c_zl = pz_lo.c[:, None, None]; k_zl = pz_lo.kappa[:, None, None]
-    b_zh = jnp.flip(pz_hi.b)[:, None, None]; c_zh = jnp.flip(pz_hi.c)[:, None, None]; k_zh = jnp.flip(pz_hi.kappa)[:, None, None]
+    b_zh = pz_hi.b[:, None, None]; c_zh = pz_hi.c[:, None, None]; k_zh = pz_hi.kappa[:, None, None]
 
     ex = state.ex
     ey = state.ey
@@ -348,7 +397,7 @@ def apply_cpml_e(
         # --- X-lo: Ey correction from dHz/dx ---
         hz_xlo = state.hz[:n, :, :]
         hz_shifted_xlo = _shift_bwd(state.hz, 0)[:n, :, :]
-        curl_hz_dx_xlo = (hz_xlo - hz_shifted_xlo) / dx_x
+        curl_hz_dx_xlo = (hz_xlo - hz_shifted_xlo) / dx_x_lo
 
         new_psi_ey_xlo = b_x_lo * cpml_state.psi_ey_xlo + c_x_lo * curl_hz_dx_xlo
         ey = ey.at[:n, :, :].add(-ce_xlo * new_psi_ey_xlo)
@@ -357,7 +406,7 @@ def apply_cpml_e(
         # --- X-hi: Ey correction from dHz/dx ---
         hz_xhi = state.hz[-n:, :, :]
         hz_shifted_xhi = _shift_bwd(state.hz, 0)[-n:, :, :]
-        curl_hz_dx_xhi = (hz_xhi - hz_shifted_xhi) / dx_x
+        curl_hz_dx_xhi = (hz_xhi - hz_shifted_xhi) / dx_x_hi
 
         new_psi_ey_xhi = b_x_hi * cpml_state.psi_ey_xhi + c_x_hi * curl_hz_dx_xhi
         ey = ey.at[-n:, :, :].add(-ce_xhi * new_psi_ey_xhi)
@@ -366,7 +415,7 @@ def apply_cpml_e(
         # --- X-lo: Ez correction from dHy/dx ---
         hy_xlo = state.hy[:n, :, :]
         hy_shifted_xlo = _shift_bwd(state.hy, 0)[:n, :, :]
-        curl_hy_dx_xlo = (hy_xlo - hy_shifted_xlo) / dx_x
+        curl_hy_dx_xlo = (hy_xlo - hy_shifted_xlo) / dx_x_lo
         curl_hy_dx_xlo_t = jnp.transpose(curl_hy_dx_xlo, (0, 2, 1))
 
         new_psi_ez_xlo = b_x_lo * cpml_state.psi_ez_xlo + c_x_lo * curl_hy_dx_xlo_t
@@ -377,7 +426,7 @@ def apply_cpml_e(
         # --- X-hi: Ez correction from dHy/dx ---
         hy_xhi = state.hy[-n:, :, :]
         hy_shifted_xhi = _shift_bwd(state.hy, 0)[-n:, :, :]
-        curl_hy_dx_xhi = (hy_xhi - hy_shifted_xhi) / dx_x
+        curl_hy_dx_xhi = (hy_xhi - hy_shifted_xhi) / dx_x_hi
         curl_hy_dx_xhi_t = jnp.transpose(curl_hy_dx_xhi, (0, 2, 1))
 
         new_psi_ez_xhi = b_x_hi * cpml_state.psi_ez_xhi + c_x_hi * curl_hy_dx_xhi_t
@@ -398,7 +447,7 @@ def apply_cpml_e(
         # --- Y-lo: Ex correction from dHz/dy ---
         hz_ylo = state.hz[:, :n, :]
         hz_shifted_ylo = _shift_bwd(state.hz, 1)[:, :n, :]
-        curl_hz_dy_ylo = (hz_ylo - hz_shifted_ylo) / dx_y
+        curl_hz_dy_ylo = (hz_ylo - hz_shifted_ylo) / dx_y_lo
 
         curl_hz_dy_ylo_t = jnp.transpose(curl_hz_dy_ylo, (1, 0, 2))
 
@@ -411,7 +460,7 @@ def apply_cpml_e(
         # --- Y-hi: Ex correction from dHz/dy ---
         hz_yhi = state.hz[:, -n:, :]
         hz_shifted_yhi = _shift_bwd(state.hz, 1)[:, -n:, :]
-        curl_hz_dy_yhi = (hz_yhi - hz_shifted_yhi) / dx_y
+        curl_hz_dy_yhi = (hz_yhi - hz_shifted_yhi) / dx_y_hi
 
         curl_hz_dy_yhi_t = jnp.transpose(curl_hz_dy_yhi, (1, 0, 2))
 
@@ -424,7 +473,7 @@ def apply_cpml_e(
         # --- Y-lo: Ez correction from dHx/dy ---
         hx_ylo = state.hx[:, :n, :]
         hx_shifted_ylo = _shift_bwd(state.hx, 1)[:, :n, :]
-        curl_hx_dy_ylo = (hx_ylo - hx_shifted_ylo) / dx_y
+        curl_hx_dy_ylo = (hx_ylo - hx_shifted_ylo) / dx_y_lo
 
         curl_hx_dy_ylo_t = jnp.transpose(curl_hx_dy_ylo, (1, 2, 0))
 
@@ -437,7 +486,7 @@ def apply_cpml_e(
         # --- Y-hi: Ez correction from dHx/dy ---
         hx_yhi = state.hx[:, -n:, :]
         hx_shifted_yhi = _shift_bwd(state.hx, 1)[:, -n:, :]
-        curl_hx_dy_yhi = (hx_yhi - hx_shifted_yhi) / dx_y
+        curl_hx_dy_yhi = (hx_yhi - hx_shifted_yhi) / dx_y_hi
 
         curl_hx_dy_yhi_t = jnp.transpose(curl_hx_dy_yhi, (1, 2, 0))
 
@@ -558,23 +607,28 @@ def apply_cpml_h(
     else:
         ch_xlo = ch_xhi = ch_ylo = ch_yhi = ch_zlo = ch_zhi = dt / MU_0
 
-    # Unpack per-axis profiles and cell sizes
+    # Unpack per-face profiles and cell sizes (T7 Phase 2 PR1).
     if isinstance(cpml_params, CPMLAxisParams):
-        px, py, pz_lo, pz_hi = cpml_params.x, cpml_params.y, cpml_params.z_lo, cpml_params.z_hi
-        dx_x, dx_y, dz_lo, dz_hi = cpml_params.dx_x, cpml_params.dx_y, cpml_params.dz_lo, cpml_params.dz_hi
+        px_lo, px_hi = cpml_params.x_lo, cpml_params.x_hi
+        py_lo, py_hi = cpml_params.y_lo, cpml_params.y_hi
+        pz_lo, pz_hi = cpml_params.z_lo, cpml_params.z_hi
+        dx_x_lo, dx_x_hi = cpml_params.dx_x_lo, cpml_params.dx_x_hi
+        dx_y_lo, dx_y_hi = cpml_params.dx_y_lo, cpml_params.dx_y_hi
+        dz_lo, dz_hi = cpml_params.dz_lo, cpml_params.dz_hi
     else:
-        px = py = pz_lo = pz_hi = cpml_params
-        dx_x = dx_y = dz_lo = dz_hi = float(grid.dx)
+        px_lo = py_lo = pz_lo = cpml_params
+        px_hi = py_hi = pz_hi = _flip_profile(cpml_params)
+        dx_x_lo = dx_x_hi = dx_y_lo = dx_y_hi = dz_lo = dz_hi = float(grid.dx)
 
-    # X-axis profile
-    b_x_lo = px.b[:, None, None]; c_x_lo = px.c[:, None, None]; k_x_lo = px.kappa[:, None, None]
-    b_x_hi = jnp.flip(px.b)[:, None, None]; c_x_hi = jnp.flip(px.c)[:, None, None]; k_x_hi = jnp.flip(px.kappa)[:, None, None]
-    # Y-axis profile
-    b_y_lo = py.b[:, None, None]; c_y_lo = py.c[:, None, None]; k_y_lo = py.kappa[:, None, None]
-    b_y_hi = jnp.flip(py.b)[:, None, None]; c_y_hi = jnp.flip(py.c)[:, None, None]; k_y_hi = jnp.flip(py.kappa)[:, None, None]
+    # X-axis profiles (hi-face pre-flipped at init time).
+    b_x_lo = px_lo.b[:, None, None]; c_x_lo = px_lo.c[:, None, None]; k_x_lo = px_lo.kappa[:, None, None]
+    b_x_hi = px_hi.b[:, None, None]; c_x_hi = px_hi.c[:, None, None]; k_x_hi = px_hi.kappa[:, None, None]
+    # Y-axis profiles
+    b_y_lo = py_lo.b[:, None, None]; c_y_lo = py_lo.c[:, None, None]; k_y_lo = py_lo.kappa[:, None, None]
+    b_y_hi = py_hi.b[:, None, None]; c_y_hi = py_hi.c[:, None, None]; k_y_hi = py_hi.kappa[:, None, None]
     # Z-axis profiles
     b_zl = pz_lo.b[:, None, None]; c_zl = pz_lo.c[:, None, None]; k_zl = pz_lo.kappa[:, None, None]
-    b_zh = jnp.flip(pz_hi.b)[:, None, None]; c_zh = jnp.flip(pz_hi.c)[:, None, None]; k_zh = jnp.flip(pz_hi.kappa)[:, None, None]
+    b_zh = pz_hi.b[:, None, None]; c_zh = pz_hi.c[:, None, None]; k_zh = pz_hi.kappa[:, None, None]
 
     hx = state.hx
     hy = state.hy
@@ -588,7 +642,7 @@ def apply_cpml_h(
         # --- X-lo: Hy correction from dEz/dx ---
         ez_xlo = state.ez[:n, :, :]
         ez_shifted_xlo = _shift_fwd(state.ez, 0)[:n, :, :]
-        curl_ez_dx_xlo = (ez_shifted_xlo - ez_xlo) / dx_x
+        curl_ez_dx_xlo = (ez_shifted_xlo - ez_xlo) / dx_x_lo
 
         new_psi_hy_xlo = b_x_lo * cpml_state.psi_hy_xlo + c_x_lo * curl_ez_dx_xlo
         hy = hy.at[:n, :, :].add(ch_xlo * new_psi_hy_xlo)
@@ -597,7 +651,7 @@ def apply_cpml_h(
         # --- X-hi: Hy correction from dEz/dx ---
         ez_xhi = state.ez[-n:, :, :]
         ez_shifted_xhi = _shift_fwd(state.ez, 0)[-n:, :, :]
-        curl_ez_dx_xhi = (ez_shifted_xhi - ez_xhi) / dx_x
+        curl_ez_dx_xhi = (ez_shifted_xhi - ez_xhi) / dx_x_hi
 
         new_psi_hy_xhi = b_x_hi * cpml_state.psi_hy_xhi + c_x_hi * curl_ez_dx_xhi
         hy = hy.at[-n:, :, :].add(ch_xhi * new_psi_hy_xhi)
@@ -606,7 +660,7 @@ def apply_cpml_h(
         # --- X-lo: Hz correction from dEy/dx ---
         ey_xlo = state.ey[:n, :, :]
         ey_shifted_xlo = _shift_fwd(state.ey, 0)[:n, :, :]
-        curl_ey_dx_xlo = (ey_shifted_xlo - ey_xlo) / dx_x
+        curl_ey_dx_xlo = (ey_shifted_xlo - ey_xlo) / dx_x_lo
         curl_ey_dx_xlo_t = jnp.transpose(curl_ey_dx_xlo, (0, 2, 1))
 
         new_psi_hz_xlo = b_x_lo * cpml_state.psi_hz_xlo + c_x_lo * curl_ey_dx_xlo_t
@@ -617,7 +671,7 @@ def apply_cpml_h(
         # --- X-hi: Hz correction from dEy/dx ---
         ey_xhi = state.ey[-n:, :, :]
         ey_shifted_xhi = _shift_fwd(state.ey, 0)[-n:, :, :]
-        curl_ey_dx_xhi = (ey_shifted_xhi - ey_xhi) / dx_x
+        curl_ey_dx_xhi = (ey_shifted_xhi - ey_xhi) / dx_x_hi
         curl_ey_dx_xhi_t = jnp.transpose(curl_ey_dx_xhi, (0, 2, 1))
 
         new_psi_hz_xhi = b_x_hi * cpml_state.psi_hz_xhi + c_x_hi * curl_ey_dx_xhi_t
@@ -638,7 +692,7 @@ def apply_cpml_h(
         # --- Y-lo: Hx correction from dEz/dy ---
         ez_ylo = state.ez[:, :n, :]
         ez_shifted_ylo = _shift_fwd(state.ez, 1)[:, :n, :]
-        curl_ez_dy_ylo = (ez_shifted_ylo - ez_ylo) / dx_y
+        curl_ez_dy_ylo = (ez_shifted_ylo - ez_ylo) / dx_y_lo
 
         curl_ez_dy_ylo_t = jnp.transpose(curl_ez_dy_ylo, (1, 0, 2))
 
@@ -651,7 +705,7 @@ def apply_cpml_h(
         # --- Y-hi: Hx correction from dEz/dy ---
         ez_yhi = state.ez[:, -n:, :]
         ez_shifted_yhi = _shift_fwd(state.ez, 1)[:, -n:, :]
-        curl_ez_dy_yhi = (ez_shifted_yhi - ez_yhi) / dx_y
+        curl_ez_dy_yhi = (ez_shifted_yhi - ez_yhi) / dx_y_hi
 
         curl_ez_dy_yhi_t = jnp.transpose(curl_ez_dy_yhi, (1, 0, 2))
 
@@ -664,7 +718,7 @@ def apply_cpml_h(
         # --- Y-lo: Hz correction from dEx/dy ---
         ex_ylo = state.ex[:, :n, :]
         ex_shifted_ylo = _shift_fwd(state.ex, 1)[:, :n, :]
-        curl_ex_dy_ylo = (ex_shifted_ylo - ex_ylo) / dx_y
+        curl_ex_dy_ylo = (ex_shifted_ylo - ex_ylo) / dx_y_lo
 
         curl_ex_dy_ylo_t = jnp.transpose(curl_ex_dy_ylo, (1, 2, 0))
 
@@ -677,7 +731,7 @@ def apply_cpml_h(
         # --- Y-hi: Hz correction from dEx/dy ---
         ex_yhi = state.ex[:, -n:, :]
         ex_shifted_yhi = _shift_fwd(state.ex, 1)[:, -n:, :]
-        curl_ex_dy_yhi = (ex_shifted_yhi - ex_yhi) / dx_y
+        curl_ex_dy_yhi = (ex_shifted_yhi - ex_yhi) / dx_y_hi
 
         curl_ex_dy_yhi_t = jnp.transpose(curl_ex_dy_yhi, (1, 2, 0))
 
