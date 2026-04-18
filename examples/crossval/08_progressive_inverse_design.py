@@ -41,6 +41,7 @@ import numpy as np
 import jax.numpy as jnp
 
 from rfx import Simulation
+from rfx.boundaries.spec import BoundarySpec
 from rfx.optimize import (
     DesignRegion,
     ProgressiveStage,
@@ -62,6 +63,7 @@ def sim_factory(dx: float) -> Simulation:
         freq_max=12e9,
         domain=DOMAIN,
         dx=dx,
+        boundary=BoundarySpec.uniform("cpml"),
         cpml_layers=6,
     )
     # Source on the +z side

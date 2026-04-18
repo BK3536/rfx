@@ -171,6 +171,7 @@ print("PART 1: rfx — Harminv ringdown resonance")
 print("=" * 70)
 
 from rfx import Simulation, Box
+from rfx.boundaries.spec import BoundarySpec
 from rfx.sources.sources import GaussianPulse, ModulatedGaussian
 from rfx.auto_config import smooth_grading
 from rfx.harminv import harminv
@@ -237,7 +238,7 @@ def build_patch(with_port: bool,
         dz_profile=dz_profile,
         dx_profile=dx_profile,
         dy_profile=dy_profile,
-        boundary="cpml",
+        boundary=BoundarySpec.uniform("cpml"),
         cpml_layers=n_cpml,
         # NOTE: no pec_faces — bottom CPML absorbs radiation below GP
     )

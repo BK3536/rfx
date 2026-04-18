@@ -117,6 +117,7 @@ print("PART 2: rfx — Harminv resonance extraction")
 print("=" * 70)
 
 from rfx import Simulation
+from rfx.boundaries.spec import BoundarySpec
 from rfx.geometry.csg import Cylinder as RfxCylinder
 from rfx.sources.sources import ModulatedGaussian
 from rfx.simulation import SnapshotSpec
@@ -124,7 +125,8 @@ from rfx.harminv import harminv
 import jax.numpy as jnp
 
 sim_rfx = Simulation(freq_max=0.25 * C0 / a, domain=(domain, domain, dx),
-                     dx=dx, boundary="upml", cpml_layers=cpml_n, mode="2d_tmz")
+                     dx=dx, boundary=BoundarySpec.uniform("upml"),
+                     cpml_layers=cpml_n, mode="2d_tmz")
 sim_rfx.add_material("ring", eps_r=eps_wg)
 sim_rfx.add(RfxCylinder(center=ring_center_rfx, radius=(r + w) * a,
                          height=dx, axis="z"), material="ring")
@@ -247,7 +249,8 @@ else:
 
         sim_rfx_nb = Simulation(freq_max=0.25 * C0 / a,
                                 domain=(domain, domain, dx), dx=dx,
-                                boundary="upml", cpml_layers=cpml_n,
+                                boundary=BoundarySpec.uniform("upml"),
+                                cpml_layers=cpml_n,
                                 mode="2d_tmz")
         sim_rfx_nb.add_material("ring", eps_r=eps_wg)
         sim_rfx_nb.add(RfxCylinder(center=ring_center_rfx,

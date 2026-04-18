@@ -131,13 +131,15 @@ print("PART 2: rfx — straight waveguide with flux monitor")
 print("=" * 70)
 
 from rfx import Simulation, Box
+from rfx.boundaries.spec import BoundarySpec
 from rfx.sources.sources import ModulatedGaussian
 from rfx.simulation import SnapshotSpec
 import jax.numpy as jnp
 
 sim_rfx = Simulation(freq_max=0.25 * C0 / a,
                      domain=(domain_x, domain_y, dx), dx=dx,
-                     boundary="upml", cpml_layers=cpml_n, mode="2d_tmz")
+                     boundary=BoundarySpec.uniform("upml"),
+                     cpml_layers=cpml_n, mode="2d_tmz")
 sim_rfx.add_material("wg", eps_r=eps_wg)
 
 # Waveguide: infinite in x (spans full domain), width=1a centered in y

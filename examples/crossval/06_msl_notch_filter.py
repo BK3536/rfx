@@ -49,6 +49,7 @@ import numpy as np
 import jax.numpy as jnp
 
 from rfx import Simulation, Box
+from rfx.boundaries.spec import BoundarySpec, Boundary
 from rfx.sources.sources import GaussianPulse
 from rfx.auto_config import smooth_grading
 
@@ -178,9 +179,11 @@ sim = Simulation(
     dz_profile=dz_profile,
     dx_profile=dx_profile,
     dy_profile=dy_profile,
-    boundary="cpml",
+    boundary=BoundarySpec(
+        x="cpml", y="cpml",
+        z=Boundary(lo="pec", hi="cpml"),  # ground plane at z=0
+    ),
     cpml_layers=n_cpml,
-    pec_faces={"z_lo"},         # ground plane at z=0
 )
 sim.add_material("ro4350b", eps_r=substrate_epr)
 

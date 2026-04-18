@@ -50,6 +50,7 @@ import numpy as np
 
 from scipy.ndimage import uniform_filter1d
 from rfx import Simulation, Box, GaussianPulse, flux_spectrum
+from rfx.boundaries.spec import BoundarySpec
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 C0 = 2.998e8
@@ -106,7 +107,8 @@ def add_line_source(sim, x, y_center, width):
 print("Run 1: Straight waveguide (self-calibration)...", flush=True)
 t0 = time.time()
 sim_s = Simulation(freq_max=0.25 * C0 / a, domain=(sx, sy, dx), dx=dx,
-                   boundary=boundary, cpml_layers=cpml_n, mode="2d_tmz")
+                   boundary=BoundarySpec.uniform(boundary),
+                   cpml_layers=cpml_n, mode="2d_tmz")
 sim_s.add_material("wg", eps_r=eps_wg)
 sim_s.add(Box((0, wg_y - w_wg / 2, 0), (sx, wg_y + w_wg / 2, dx)),
           material="wg")
@@ -125,7 +127,8 @@ print(f"  {time.time()-t0:.1f}s")
 print("Run 2: 90-degree bend...", flush=True)
 t0 = time.time()
 sim_b = Simulation(freq_max=0.25 * C0 / a, domain=(sx, sy, dx), dx=dx,
-                   boundary=boundary, cpml_layers=cpml_n, mode="2d_tmz")
+                   boundary=BoundarySpec.uniform(boundary),
+                   cpml_layers=cpml_n, mode="2d_tmz")
 sim_b.add_material("wg", eps_r=eps_wg)
 sim_b.add(Box((0, wg_y - w_wg / 2, 0),
               (wg_x + w_wg / 2, wg_y + w_wg / 2, dx)), material="wg")

@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 
 from rfx import Simulation, Box, GaussianPulse
+from rfx.boundaries.spec import BoundarySpec
 from rfx.core.yee import MaterialArrays
 from rfx.optimize import DesignRegion, _latent_to_eps
 from rfx.sources.sources import LumpedPort, setup_lumped_port
@@ -31,7 +32,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # =============================================================================
 # Setup — matches test_optimize_convergence.py::TestOptimizeDielectricSlabS11
 # =============================================================================
-sim = Simulation(freq_max=10e9, domain=(0.06, 0.02, 0.02), boundary="pec")
+sim = Simulation(freq_max=10e9, domain=(0.06, 0.02, 0.02),
+                 boundary=BoundarySpec.uniform("pec"))
 sim.add_port((0.01, 0.01, 0.01), "ez", impedance=50.0,
              waveform=GaussianPulse(f0=5e9, bandwidth=0.5))
 sim.add_probe((0.01, 0.01, 0.01), "ez")     # probe 0: S11 (at port)
