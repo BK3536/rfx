@@ -1,15 +1,15 @@
-"""T7-C Phase 1: per-face CPML thickness spec + runtime guard.
+"""T7-C spec + runtime tests.
 
-The ``Boundary`` dataclass carries ``lo_thickness`` / ``hi_thickness``
-attributes; non-absorbing faces reject thickness at construction time.
-The ``Simulation.__init__`` guard raises ``NotImplementedError`` when
-the spec asks for asymmetric thickness that the existing CPMLAxisParams
-engine cannot honour. The CPMLAxisParams refactor (Phase 2) lands in a
-follow-up.
+Phase 1 (v1.7.0) introduced ``Boundary.lo_thickness`` /
+``hi_thickness`` as spec-level fields with a runtime guard that
+rejected asymmetric thickness. Phase 2 PR2 (v1.7.1) replaced the
+guard with the padded-profile runtime, so these tests now assert
+that asymmetric thickness builds and runs end-to-end.
 """
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from rfx import Simulation
@@ -91,30 +91,45 @@ class TestSimulationThicknessPhase1Guard:
         # and the runtime scalar (engine authority in Phase 1) is still 8
         assert sim._cpml_layers == 8
 
-    def test_asymmetric_per_face_thickness_raises(self):
+    def test_asymmetric_per_face_thickness_runs(self):
+        """T7 Phase 2 PR2: asymmetric per-face thickness now runs end-to-
+        end via the no-op-padded CPML profile. The Simulation builds
+        and sim.forward() returns finite output; Grid.face_layers
+        carries the per-face counts."""
         spec = BoundarySpec(
             x="cpml",
             y="cpml",
             z=Boundary(lo="cpml", hi="cpml", lo_thickness=4, hi_thickness=16),
         )
-        with pytest.raises(NotImplementedError, match="asymmetric per-face"):
-            Simulation(
-                freq_max=10e9, domain=(0.01, 0.01, 0.005), dx=0.5e-3,
-                cpml_layers=8, boundary=spec,
-            )
+        sim = Simulation(
+            freq_max=10e9, domain=(0.01, 0.01, 0.01), dx=0.5e-3,
+            cpml_layers=16, boundary=spec,
+        )
+        sim.add_source((0.005, 0.005, 0.005), "ez")
+        sim.add_probe((0.005, 0.005, 0.006), "ez")
+        grid = sim._build_grid()
+        assert grid.face_layers["z_lo"] == 4
+        assert grid.face_layers["z_hi"] == 16
+        ts = np.asarray(sim.run(n_steps=40).time_series)
+        assert ts.shape[0] == 40
+        assert np.all(np.isfinite(ts))
 
-    def test_asymmetric_per_axis_thickness_raises(self):
-        """Different thickness between two axes (all symmetric per-axis)."""
+    def test_asymmetric_per_axis_thickness_runs(self):
+        """Different thickness between two axes (each symmetric on its
+        own axis). Now runs end-to-end post-PR2."""
         spec = BoundarySpec(
             x=Boundary(lo="cpml", hi="cpml", lo_thickness=8, hi_thickness=8),
             y=Boundary(lo="cpml", hi="cpml", lo_thickness=16, hi_thickness=16),
             z="cpml",
         )
-        with pytest.raises(NotImplementedError, match="asymmetric per-face"):
-            Simulation(
-                freq_max=10e9, domain=(0.01, 0.01, 0.005), dx=0.5e-3,
-                cpml_layers=8, boundary=spec,
-            )
+        sim = Simulation(
+            freq_max=10e9, domain=(0.01, 0.01, 0.005), dx=0.5e-3,
+            cpml_layers=16, boundary=spec,
+        )
+        grid = sim._build_grid()
+        assert grid.face_layers["x_lo"] == 8
+        assert grid.face_layers["y_lo"] == 16
+        assert grid.face_layers["z_lo"] == 16  # default scalar
 
     def test_pec_face_with_cpml_axis_no_thickness_conflict(self):
         """PEC face doesn't carry thickness and must not trigger the guard."""

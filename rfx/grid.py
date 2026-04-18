@@ -44,6 +44,8 @@ class Grid:
         mode: str = "3d",
         kappa_max: float | None = None,
         pec_faces: set[str] | None = None,
+        pmc_faces: set[str] | None = None,
+        face_layers: dict | None = None,
     ):
         if mode not in ("3d", "2d_tmz", "2d_tez"):
             raise ValueError(f"mode must be '3d', '2d_tmz', or '2d_tez', got {mode!r}")
@@ -56,6 +58,23 @@ class Grid:
         self.cpml_layers = cpml_layers
         self.kappa_max = kappa_max
         self.pec_faces = pec_faces or set()
+        self.pmc_faces = pmc_faces or set()
+        # T7 Phase 2 PR2: per-face active CPML layer counts (thickness).
+        # Defaults to the scalar ``cpml_layers`` on every face (the
+        # symmetric fast path). Asymmetric thickness is achieved by
+        # capping active layers below ``cpml_layers`` per face — the
+        # unused allocation stays as no-op padding in the CPML profile
+        # so the Yee grid + CPMLState shape stay uniform.
+        _default_face_n = {f: cpml_layers for f in
+                           ("x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi")}
+        self.face_layers = {**_default_face_n, **(face_layers or {})}
+        for _face, _n in self.face_layers.items():
+            if _n > cpml_layers:
+                raise ValueError(
+                    f"face_layers[{_face!r}]={_n} exceeds cpml_layers="
+                    f"{cpml_layers}; the scalar is the allocation budget "
+                    f"and per-face active layers must be <= that budget."
+                )
         self.cpml_axes = "".join(axis for axis in "xyz" if axis in cpml_axes)
         self.mode = mode
         self.is_2d = mode.startswith("2d")

@@ -492,6 +492,11 @@ def run(
     # Freeze the set into a tuple for use inside the JIT-traced body
     _pec_faces_frozen = frozenset(_pec_faces) if use_pec_faces else frozenset()
 
+    # ---- per-face PMC from grid.pmc_faces (T7 Phase 2 PR3) ----
+    _pmc_faces = getattr(grid, "pmc_faces", None) or set()
+    use_pmc_faces = bool(_pmc_faces)
+    _pmc_faces_frozen = frozenset(_pmc_faces) if use_pmc_faces else frozenset()
+
     # ---- subsystem flags (resolved at trace time) ----
     use_cpml = boundary == "cpml" and grid.cpml_layers > 0
     use_upml = boundary == "upml" and grid.cpml_layers > 0
@@ -695,6 +700,9 @@ def run(
                 st, cpml_new = apply_cpml_h(
                     st, cpml_params, carry["cpml"], grid, cpml_axes,
                     materials=materials)
+            if use_pmc_faces:
+                from rfx.boundaries.pmc import apply_pmc_faces
+                st = apply_pmc_faces(st, _pmc_faces_frozen)
             if use_tfsf:
                 if _tfsf_is_2d:
                     tfsf_h_state = update_tfsf_2d_h(tfsf_cfg, carry["tfsf"], dx, dt)
@@ -1095,6 +1103,11 @@ def run_until_decay(
     use_pec_faces = bool(_pec_faces_decay)
     _pec_faces_frozen = frozenset(_pec_faces_decay) if use_pec_faces else frozenset()
 
+    # ---- per-face PMC from grid.pmc_faces (T7 Phase 2 PR3) ----
+    _pmc_faces_decay = getattr(grid, "pmc_faces", None) or set()
+    use_pmc_faces = bool(_pmc_faces_decay)
+    _pmc_faces_frozen = frozenset(_pmc_faces_decay) if use_pmc_faces else frozenset()
+
     use_ntff = ntff is not None
     use_dft_planes = len(dft_planes) > 0
     use_flux_monitors = len(flux_monitors) > 0
@@ -1228,6 +1241,9 @@ def run_until_decay(
             st, cpml_new = apply_cpml_h(
                 st, cpml_params, carry_in["cpml"], grid, cpml_axes,
                 materials=materials)
+        if use_pmc_faces:
+            from rfx.boundaries.pmc import apply_pmc_faces
+            st = apply_pmc_faces(st, _pmc_faces_frozen)
         if use_tfsf:
             if _tfsf_is_2d:
                 tfsf_h_state = update_tfsf_2d_h(tfsf_cfg, carry_in["tfsf"], dx, dt)

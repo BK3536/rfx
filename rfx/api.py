@@ -626,18 +626,17 @@ class Simulation:
         else:
             self._boundary_spec = self._build_spec_from_legacy()
 
-        # T7-C: reject per-face thickness combinations the CPML engine
-        # can't yet honour. Phase 1 supports only a single scalar
-        # thickness that matches the legacy cpml_layers across every
-        # absorbing face. Asymmetric per-face or per-axis thickness
-        # lands with the CPMLAxisParams refactor (v1.7.1 / v1.8).
-        self._check_thickness_uniformity_phase1()
+        # T7 Phase 2 PR2: per-face CPML thickness now runs end-to-end
+        # via the padded-profile engine in rfx/boundaries/cpml.py.
+        # The Phase 1 guard _check_thickness_uniformity_phase1 has
+        # been removed; Boundary.lo_thickness / .hi_thickness are
+        # consumed by _build_grid → Grid.face_layers → init_cpml.
 
-        # T7-E Phase 1: PMC runtime is not yet wired. The BoundarySpec
-        # accepts 'pmc' tokens so users can build specs and inspect
-        # them, but Simulation construction rejects any PMC face with a
-        # clear follow-up pointer.
-        self._check_pmc_phase1()
+        # T7-E Phase 2 PR3: PMC runtime lands in rfx/boundaries/pmc.py
+        # and is hooked into the uniform scan body after each H update
+        # (rfx/simulation.py). The Phase 1 construction guard has been
+        # removed; PMC faces flow through Grid.pmc_faces and are applied
+        # in-trace.
 
     # ---- refinement (subgridding) ----
 
@@ -1394,57 +1393,6 @@ class Simulation:
         ))
         return self
 
-    def _check_pmc_phase1(self) -> None:
-        """T7-E Phase 1: reject PMC faces at Simulation construction.
-
-        ``BoundarySpec`` accepts ``'pmc'`` tokens (so users can build
-        and inspect specs), but the Yee update path does not yet have
-        ``apply_pmc_faces``.  The Phase 2 runner wiring (v1.7.1 / v1.8
-        follow-up) lands the physics with cross-validation tests.
-        """
-        pmc_faces = self._boundary_spec.pmc_faces()
-        if pmc_faces:
-            raise NotImplementedError(
-                f"PMC runtime not yet wired; the Phase 2 follow-up "
-                f"(v1.7.1 / v1.8) lands apply_pmc_faces with validated "
-                f"physics. Got PMC on {sorted(pmc_faces)}. Workaround: "
-                f"use boundary='pec' or omit the pmc face until v1.8."
-            )
-
-    def _check_thickness_uniformity_phase1(self) -> None:
-        """T7-C Phase 1: reject per-face CPML thickness combinations the
-        existing CPMLAxisParams engine cannot honour.
-
-        The scalar ``cpml_layers`` stays authoritative for runtime. Any
-        absorbing face whose per-face thickness (``lo_thickness`` /
-        ``hi_thickness`` on the ``Boundary``) differs either from the
-        scalar or from another absorbing face in the spec raises
-        ``NotImplementedError``. Users who need asymmetric thickness
-        must wait for the Phase 2 runner refactor.
-        """
-        default = self._cpml_layers
-        observed_thickness = None
-        for axis_name, boundary in (("x", self._boundary_spec.x),
-                                    ("y", self._boundary_spec.y),
-                                    ("z", self._boundary_spec.z)):
-            for side, face_thickness in (("lo", boundary.lo_thickness),
-                                         ("hi", boundary.hi_thickness)):
-                face_tok = boundary.lo if side == "lo" else boundary.hi
-                if face_tok not in ("cpml", "upml"):
-                    continue
-                resolved = face_thickness if face_thickness is not None else default
-                if observed_thickness is None:
-                    observed_thickness = resolved
-                elif resolved != observed_thickness:
-                    raise NotImplementedError(
-                        "asymmetric per-face CPML thickness is not yet "
-                        "wired into the runner; the Phase 2 CPMLAxisParams "
-                        "refactor (tracked as v1.7.1 / v1.8 follow-up) will "
-                        f"enable this. Got {axis_name}_{side}={resolved} "
-                        f"layers != {observed_thickness} layers on another "
-                        "absorbing face."
-                    )
-
     def _build_spec_from_legacy(self):
         """T7-B: compose a canonical BoundarySpec from the legacy triad.
 
@@ -1804,6 +1752,8 @@ class Simulation:
                 return axes
             return "".join(ax for ax in axes if ax not in self._periodic_axes)
 
+        face_layers = self._resolve_face_layers()
+
         if self._waveguide_ports or extra_waveguide_axes:
             cpml_axes = _filter_periodic(
                 self._waveguide_cpml_axes(extra_waveguide_axes)
@@ -1817,6 +1767,8 @@ class Simulation:
                 mode=self._mode,
                 kappa_max=self._cpml_kappa_max,
                 pec_faces=self._pec_faces,
+                pmc_faces=self._boundary_spec.pmc_faces(),
+                face_layers=face_layers,
             )
         return Grid(
             freq_max=self._freq_max,
@@ -1827,7 +1779,24 @@ class Simulation:
             mode=self._mode,
             kappa_max=self._cpml_kappa_max,
             pec_faces=self._pec_faces,
+            pmc_faces=self._boundary_spec.pmc_faces(),
+            face_layers=face_layers,
         )
+
+    def _resolve_face_layers(self) -> dict:
+        """T7 Phase 2 PR2: per-face active CPML layer counts from the
+        canonical ``BoundarySpec``. Faces without an explicit
+        ``lo_thickness`` / ``hi_thickness`` default to the scalar
+        ``cpml_layers`` (the symmetric common case — no padding).
+        """
+        n_default = self._cpml_layers
+        out = {}
+        for axis_name, boundary in (("x", self._boundary_spec.x),
+                                    ("y", self._boundary_spec.y),
+                                    ("z", self._boundary_spec.z)):
+            out[f"{axis_name}_lo"] = boundary.resolved_lo_thickness(n_default)
+            out[f"{axis_name}_hi"] = boundary.resolved_hi_thickness(n_default)
+        return out
 
     # Threshold above which sigma is treated as PEC (use mask instead).
     _PEC_SIGMA_THRESHOLD = 1e6

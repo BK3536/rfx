@@ -200,6 +200,46 @@ def _get_axis_cell_sizes(grid):
     return dx, dy, dz_lo, dz_hi
 
 
+def _pad_profile_at_end(p: CPMLParams, n_active: int, n_alloc: int) -> CPMLParams:
+    """Extend a lo-face profile from ``n_active`` to ``n_alloc`` by
+    appending no-op entries (σ=0, κ=1, α=0, b=1, c=0) at the end.
+
+    Used by T7 Phase 2 PR2 when the user requests a lo-face CPML
+    thickness below the allocation budget. The padded region (indices
+    ``[n_active:n_alloc]``) produces identity updates — no absorption,
+    no field modification — so the cells between the active CPML and
+    the simulation interior behave like plain Yee cells.
+    """
+    if n_active >= n_alloc:
+        return p
+    pad = n_alloc - n_active
+    return CPMLParams(
+        sigma=jnp.concatenate([p.sigma, jnp.zeros(pad, dtype=p.sigma.dtype)]),
+        kappa=jnp.concatenate([p.kappa, jnp.ones(pad, dtype=p.kappa.dtype)]),
+        alpha=jnp.concatenate([p.alpha, jnp.zeros(pad, dtype=p.alpha.dtype)]),
+        b=jnp.concatenate([p.b, jnp.ones(pad, dtype=p.b.dtype)]),
+        c=jnp.concatenate([p.c, jnp.zeros(pad, dtype=p.c.dtype)]),
+    )
+
+
+def _pad_profile_at_start(p: CPMLParams, n_active: int, n_alloc: int) -> CPMLParams:
+    """Prepend no-op entries to bring a hi-face (pre-flipped) profile
+    up to ``n_alloc``. The active cells stay at the outer boundary end
+    of the array (index ``n_alloc - 1``), and the front padding
+    corresponds to interior cells that see no absorption.
+    """
+    if n_active >= n_alloc:
+        return p
+    pad = n_alloc - n_active
+    return CPMLParams(
+        sigma=jnp.concatenate([jnp.zeros(pad, dtype=p.sigma.dtype), p.sigma]),
+        kappa=jnp.concatenate([jnp.ones(pad, dtype=p.kappa.dtype), p.kappa]),
+        alpha=jnp.concatenate([jnp.zeros(pad, dtype=p.alpha.dtype), p.alpha]),
+        b=jnp.concatenate([jnp.ones(pad, dtype=p.b.dtype), p.b]),
+        c=jnp.concatenate([jnp.zeros(pad, dtype=p.c.dtype), p.c]),
+    )
+
+
 def _flip_profile(p: CPMLParams) -> CPMLParams:
     """Return the hi-face profile for a lo-oriented CPMLParams.
 
@@ -259,27 +299,35 @@ def init_cpml(grid, *, kappa_max: float | None = None,
     dx, dy, dz_lo, dz_hi = _get_axis_cell_sizes(grid)
 
     noop = _cpml_noop_profile(n)
-    # T7 Phase 2 PR1: six face-specific profiles. The lo-face profile
-    # carries σ_max at index 0 descending; the hi face is the flipped
-    # version, pre-computed so the scan body is flip-free. A PEC face
-    # uses the no-op profile (identity: no absorption).
-    def _face_profile(is_pec: bool, cell_size) -> CPMLParams:
+    # T7 Phase 2 PR2: per-face active layer counts. The allocation
+    # budget ``n`` stays uniform (CPMLState shape unchanged, JIT cache
+    # preserved on the symmetric common case). Faces with an active
+    # layer count below the budget get a no-op-padded profile so the
+    # scan body sees identity updates in the padded region.
+    face_layers = getattr(grid, "face_layers", None) or {
+        f: n for f in ("x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi")
+    }
+
+    def _lo_face_profile(is_pec: bool, cell_size, face_name: str) -> CPMLParams:
         if is_pec:
             return noop
-        return _cpml_profile(n, grid.dt, cell_size, kappa_max=kappa_max)
+        n_active = int(face_layers.get(face_name, n))
+        p = _cpml_profile(n_active, grid.dt, cell_size, kappa_max=kappa_max)
+        return _pad_profile_at_end(p, n_active, n)
 
-    prof_x_lo = _face_profile("x_lo" in pec_faces, dx)
-    prof_x_hi = noop if "x_hi" in pec_faces else _flip_profile(
-        prof_x_lo if "x_lo" not in pec_faces else _cpml_profile(n, grid.dt, dx, kappa_max=kappa_max)
-    )
-    prof_y_lo = _face_profile("y_lo" in pec_faces, dy)
-    prof_y_hi = noop if "y_hi" in pec_faces else _flip_profile(
-        prof_y_lo if "y_lo" not in pec_faces else _cpml_profile(n, grid.dt, dy, kappa_max=kappa_max)
-    )
-    prof_z_lo = _face_profile("z_lo" in pec_faces, dz_lo)
-    prof_z_hi = noop if "z_hi" in pec_faces else _flip_profile(
-        _cpml_profile(n, grid.dt, dz_hi, kappa_max=kappa_max)
-    )
+    def _hi_face_profile(is_pec: bool, cell_size, face_name: str) -> CPMLParams:
+        if is_pec:
+            return noop
+        n_active = int(face_layers.get(face_name, n))
+        base = _cpml_profile(n_active, grid.dt, cell_size, kappa_max=kappa_max)
+        return _pad_profile_at_start(_flip_profile(base), n_active, n)
+
+    prof_x_lo = _lo_face_profile("x_lo" in pec_faces, dx, "x_lo")
+    prof_x_hi = _hi_face_profile("x_hi" in pec_faces, dx, "x_hi")
+    prof_y_lo = _lo_face_profile("y_lo" in pec_faces, dy, "y_lo")
+    prof_y_hi = _hi_face_profile("y_hi" in pec_faces, dy, "y_hi")
+    prof_z_lo = _lo_face_profile("z_lo" in pec_faces, dz_lo, "z_lo")
+    prof_z_hi = _hi_face_profile("z_hi" in pec_faces, dz_hi, "z_hi")
 
     params = CPMLAxisParams(
         x_lo=prof_x_lo, x_hi=prof_x_hi,
