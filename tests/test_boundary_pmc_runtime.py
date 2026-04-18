@@ -18,10 +18,12 @@ Mechanism pins:
    CPML share an axis.
 4. **Dual-boundary Hx sample** — PMC zeros Hx at the face cell while
    PEC leaves it free, confirming the two code paths are engaged.
-5. **Distributed-PMC rejection** — the sharded NU forward path does
-   not yet wire ``apply_pmc_faces``; ``forward(distributed=True)`` with
-   any PMC face raises ``NotImplementedError`` (mirrors TFSF /
-   waveguide-port rejection).
+5. **Distributed-PMC acceptance** (v1.7.4 T8) — the sharded NU forward
+   path now wires ``apply_pmc_faces`` via ``_apply_pmc_face_nu_shmap``
+   (and dually in ``distributed_v2.py`` / ``distributed.py``).
+   ``forward(distributed=True)`` with any PMC face must NOT raise
+   ``NotImplementedError``. Full sharded-state evidence is in
+   ``tests/test_boundary_pmc_distributed.py``.
 
 Additional quantitative oracles beyond the λ/4 ladder (closed-box
 energy conservation, analytic impedance matching) are tracked as a
@@ -98,12 +100,19 @@ def test_mixed_pmc_cpml_seam_is_finite():
     assert np.all(np.isfinite(ts))
 
 
-def test_pmc_plus_distributed_forward_raises():
-    """The distributed NU forward path does not yet wire apply_pmc_faces
-    into its sharded scan body. Until the PMC sharded hook ships
-    (v1.7.2 follow-up), requesting both PMC and distributed=True must
-    fail fast at forward(), mirroring the TFSF / waveguide rejection
-    pattern."""
+def test_pmc_plus_distributed_forward_accepts():
+    """v1.7.4 T8: PMC is now wired into the sharded NU forward path.
+
+    The reject guard that used to live at ``rfx/api.py:4264-4274`` was
+    removed in T8 once ``_apply_pmc_face_nu_shmap`` landed in the
+    sharded scan body. Regression pin: ``forward(distributed=True)``
+    with a PMC face must NOT raise ``NotImplementedError`` anymore.
+
+    Quantitative PMC-on-sharded-state evidence is asserted in
+    ``tests/test_boundary_pmc_distributed.py``. Here we only pin that
+    the dispatch no longer blocks; a full sharded run requires a
+    multi-device fixture and is covered separately.
+    """
     import jax
     dz = np.array([0.5e-3] * 10, dtype=np.float64)
     sim = Simulation(
@@ -114,14 +123,16 @@ def test_pmc_plus_distributed_forward_raises():
     )
     sim.add_source((0.005, 0.005, 0.002), "ez")
     sim.add_probe((0.005, 0.005, 0.003), "ez")
-    # Construct a "multiple devices" list by reusing the single
-    # available device; the distributed dispatch path runs the reject
-    # before any sharding, so this is sufficient to exercise the guard.
-    devices = [jax.devices()[0], jax.devices()[0]]
-    with pytest.raises(NotImplementedError,
-                       match="PMC boundary faces are not supported.*distributed"):
-        sim.forward(n_steps=20, distributed=True, devices=devices,
-                    skip_preflight=True)
+    # Use a real single-device list. Multi-device sharded-PMC evidence
+    # lives in tests/test_boundary_pmc_distributed.py.
+    devices = [jax.devices()[0]]
+    # Should NOT raise the removed PMC NotImplementedError. If the
+    # guard is ever restored by mistake, this line raises.
+    res = sim.forward(n_steps=20, distributed=True, devices=devices,
+                      skip_preflight=True)
+    # Sanity: probe time series is finite.
+    ts = np.asarray(res.time_series)
+    assert np.all(np.isfinite(ts))
 
 
 def test_pmc_and_pec_produce_physically_different_h_at_face():

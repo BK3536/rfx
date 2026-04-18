@@ -571,6 +571,59 @@ def _apply_pec_local(state, n_devices, nx_local_with_ghost, axis_name="devices")
     return state._replace(ex=ex, ey=ey, ez=ez)
 
 
+def _apply_pmc_local(state, n_devices, nx_local_with_ghost, axis_name,
+                     pmc_faces):
+    """Apply PMC (``H_tangential = 0``) on a local slab.
+
+    Electromagnetic dual of :func:`_apply_pec_local`. Hook point is the
+    H-half of the scan body (after H ghost exchange, before E update)
+    per OQ9 — PMC must fire before the next E-update reads H via curl.
+
+    - y and z PMC: always applied on every device (all devices own the
+      full y/z extent).
+    - x PMC: only device 0 applies x-lo, only device N-1 applies x-hi.
+      Acts on the first/last REAL cell (index ghost and
+      ``nx_local_with_ghost - 1 - ghost``), NOT the ghost cell.
+    """
+    if not pmc_faces:
+        return state
+
+    device_idx = lax.axis_index(axis_name)
+    ghost = 1
+
+    hx, hy, hz = state.hx, state.hy, state.hz
+
+    if "y_lo" in pmc_faces:
+        hx = hx.at[:, 0, :].set(0.0)
+        hz = hz.at[:, 0, :].set(0.0)
+    if "y_hi" in pmc_faces:
+        hx = hx.at[:, -1, :].set(0.0)
+        hz = hz.at[:, -1, :].set(0.0)
+    if "z_lo" in pmc_faces:
+        hx = hx.at[:, :, 0].set(0.0)
+        hy = hy.at[:, :, 0].set(0.0)
+    if "z_hi" in pmc_faces:
+        hx = hx.at[:, :, -1].set(0.0)
+        hy = hy.at[:, :, -1].set(0.0)
+
+    is_first = (device_idx == 0)
+    is_last = (device_idx == n_devices - 1)
+    last_real = nx_local_with_ghost - 1 - ghost
+
+    if "x_lo" in pmc_faces:
+        hy_new = jnp.where(is_first, 0.0, hy[ghost, :, :])
+        hz_new = jnp.where(is_first, 0.0, hz[ghost, :, :])
+        hy = hy.at[ghost, :, :].set(hy_new)
+        hz = hz.at[ghost, :, :].set(hz_new)
+    if "x_hi" in pmc_faces:
+        hy_new = jnp.where(is_last, 0.0, hy[last_real, :, :])
+        hz_new = jnp.where(is_last, 0.0, hz[last_real, :, :])
+        hy = hy.at[last_real, :, :].set(hy_new)
+        hz = hz.at[last_real, :, :].set(hz_new)
+
+    return state._replace(hx=hx, hy=hy, hz=hz)
+
+
 # ---------------------------------------------------------------------------
 # Distributed CPML support (Phase 2)
 # ---------------------------------------------------------------------------
@@ -1200,6 +1253,15 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
         devices = jax.devices()
     n_devices = len(devices)
 
+    # Resolve PMC faces (v1.7.4 T8). ``BoundarySpec.pmc_faces()`` returns
+    # a set; freeze it so it is safely closed-over by the pmap scan
+    # bodies defined below. Empty frozenset == no-op inside the helper.
+    _pmc_faces_frozen = frozenset(
+        sim._boundary_spec.pmc_faces()
+        if getattr(sim, "_boundary_spec", None) is not None
+        else ()
+    )
+
     # Build grid and materials (full domain)
     grid = sim._build_grid()
     base_materials, debye_spec, lorentz_spec, pec_mask, pec_shapes, _ = (
@@ -1379,6 +1441,14 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
                     st,
                 )
 
+                # 3b. PMC face (H-tangential = 0) — v1.7.4 T8. H-half
+                #     hook per OQ9: after H ghost exchange, before E
+                #     update. PMC must fire before the next E-update
+                #     reads H via curl.
+                st = _apply_pmc_local(
+                    st, n_devices, nx_local, "devices",
+                    _pmc_faces_frozen)
+
                 # 4. E update (local)
                 _debye_arg = (debye_coeffs_dev, db_st) if has_debye else None
                 _lorentz_arg = (lorentz_coeffs_dev, lr_st) if has_lorentz else None
@@ -1458,6 +1528,13 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
                     lambda s: s,
                     st,
                 )
+
+                # 2b. PMC face (H-tangential = 0) — v1.7.4 T8. H-half
+                #     hook per OQ9: after H ghost exchange, before E
+                #     update.
+                st = _apply_pmc_local(
+                    st, n_devices, nx_local, "devices",
+                    _pmc_faces_frozen)
 
                 # 3. E update (local)
                 _debye_arg = (debye_coeffs_dev, db_st) if has_debye else None

@@ -237,6 +237,76 @@ def _apply_pec_shmap(state: FDTDState, mesh: Mesh, n_devices: int,
     return state._replace(ex=ex, ey=ey, ez=ez)
 
 
+def _apply_pmc_shmap(state: FDTDState, mesh: Mesh, n_devices: int,
+                     nx_local_with_ghost: int,
+                     pmc_faces: frozenset) -> FDTDState:
+    """PMC (``H_tangential = 0``) for the sharded uniform scan body.
+
+    Dual of :func:`_apply_pec_shmap`. Hook point is the H-half of the
+    scan body (after H ghost exchange, before E update) — OQ9 directive.
+    PMC must fire before the next E-update reads H via curl, so it is
+    NOT placed at the E-half mirror of PEC's call site.
+
+    Y- and Z-face PMC is local to every rank; X-face PMC is rank-
+    conditional and acts on the first / last real cell, not the seam
+    ghost.
+    """
+    if not pmc_faces:
+        return state
+
+    @partial(
+        shard_map,
+        mesh=mesh,
+        in_specs=(
+            P("x"),  # hx
+            P("x"),  # hy
+            P("x"),  # hz
+        ),
+        out_specs=(
+            P("x"),
+            P("x"),
+            P("x"),
+        ),
+        check_rep=False,
+    )
+    def _pmc(hx, hy, hz):
+        ghost = 1
+
+        if "y_lo" in pmc_faces:
+            hx = hx.at[:, 0, :].set(0.0)
+            hz = hz.at[:, 0, :].set(0.0)
+        if "y_hi" in pmc_faces:
+            hx = hx.at[:, -1, :].set(0.0)
+            hz = hz.at[:, -1, :].set(0.0)
+        if "z_lo" in pmc_faces:
+            hx = hx.at[:, :, 0].set(0.0)
+            hy = hy.at[:, :, 0].set(0.0)
+        if "z_hi" in pmc_faces:
+            hx = hx.at[:, :, -1].set(0.0)
+            hy = hy.at[:, :, -1].set(0.0)
+
+        device_idx = lax.axis_index("x")
+        is_first = (device_idx == 0)
+        is_last = (device_idx == n_devices - 1)
+        last_real = nx_local_with_ghost - 1 - ghost
+
+        if "x_lo" in pmc_faces:
+            hy_new = jnp.where(is_first, 0.0, hy[ghost, :, :])
+            hz_new = jnp.where(is_first, 0.0, hz[ghost, :, :])
+            hy = hy.at[ghost, :, :].set(hy_new)
+            hz = hz.at[ghost, :, :].set(hz_new)
+        if "x_hi" in pmc_faces:
+            hy_new = jnp.where(is_last, 0.0, hy[last_real, :, :])
+            hz_new = jnp.where(is_last, 0.0, hz[last_real, :, :])
+            hy = hy.at[last_real, :, :].set(hy_new)
+            hz = hz.at[last_real, :, :].set(hz_new)
+
+        return hx, hy, hz
+
+    hx, hy, hz = _pmc(state.hx, state.hy, state.hz)
+    return state._replace(hx=hx, hy=hy, hz=hz)
+
+
 # ---------------------------------------------------------------------------
 # CPML inside shard_map
 # ---------------------------------------------------------------------------
@@ -532,6 +602,15 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
     if devices is None:
         devices = jax.devices()
     n_devices = len(devices)
+
+    # Resolve PMC faces (v1.7.4 T8). ``BoundarySpec.pmc_faces()`` returns
+    # a set; freeze it so it is safely closed-over by the traced scan
+    # bodies below.
+    _pmc_faces_frozen = frozenset(
+        sim._boundary_spec.pmc_faces()
+        if getattr(sim, "_boundary_spec", None) is not None
+        else ()
+    )
 
     # ------------------------------------------------------------------
     # Single-device fast path: skip all sharding overhead.
@@ -1203,6 +1282,12 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
             st,
         )
 
+        # 3b. PMC face (H-tangential = 0) — v1.7.4 T8. H-half hook per
+        #     OQ9: after H ghost exchange, before E update. PMC must
+        #     fire before the next E-update reads H via curl.
+        st = _apply_pmc_shmap(
+            st, mesh, n_devices, nx_local, _pmc_faces_frozen)
+
         # 4. E update
         st, db_st, lr_st = _update_e_shmap(
             st, sharded_materials,
@@ -1249,6 +1334,11 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
             lambda s: s,
             st,
         )
+
+        # 2b. PMC face (H-tangential = 0) — v1.7.4 T8. H-half hook per
+        #     OQ9: after H ghost exchange, before E update.
+        st = _apply_pmc_shmap(
+            st, mesh, n_devices, nx_local, _pmc_faces_frozen)
 
         # 3. E update
         st, db_st, lr_st = _update_e_shmap(

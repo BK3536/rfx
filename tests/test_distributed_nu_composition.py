@@ -928,3 +928,33 @@ def test_forward_distributed_nan_propagates_via_ghost_exchange():
         f"G2: NaN took {first_nan} steps to propagate; expected <= {max_allowed}. "
         f"Ghost exchange interval may be too large or exchange is not per-step."
     )
+
+
+# ---------------------------------------------------------------------------
+# v1.7.4 Bundle C.1 — distributed-CPML preflight error text names per-face
+# thickness alternative. Users hitting `cpml_layers*2 >= nx_local` may now
+# mitigate via `Boundary(lo_thickness=..., hi_thickness=...)` on the axis,
+# not only by reducing the global `cpml_layers` scalar or growing nx.
+# ---------------------------------------------------------------------------
+
+def test_distributed_cpml_preflight_error_names_per_face_thickness():
+    """Bundle C.1: preflight ValueError for CPML*2 >= nx_local on a boundary
+    rank must name both ``cpml_layers`` and the per-face
+    ``lo_thickness``/``hi_thickness`` alternative on ``Boundary``."""
+    devices = _require_two_devices()
+
+    from rfx import Simulation
+
+    # Build a CPML NU sim small enough that cpml_layers*2 dominates nx_local.
+    # nx=16 with n_devices=2 → nx_per_rank=8; default cpml_layers=8 → 16 >= 8.
+    sim = _make_nu_sim_small(nx=16, boundary="cpml", add_source=False)
+
+    with pytest.raises(ValueError) as excinfo:
+        sim.forward(n_steps=4, distributed=True, devices=devices)
+
+    msg = str(excinfo.value)
+    assert "cpml_layers" in msg, f"missing cpml_layers mitigation mention: {msg!r}"
+    assert ("lo_thickness" in msg) or ("hi_thickness" in msg), (
+        f"error text must name the per-face Boundary "
+        f"lo_thickness/hi_thickness alternative (Bundle C.1): {msg!r}"
+    )

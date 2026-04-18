@@ -770,6 +770,70 @@ def _apply_pec_face_nu_shmap(state: FDTDState, mesh, n_devices: int,
     return state._replace(ex=ex, ey=ey, ez=ez)
 
 
+def _apply_pmc_face_nu_shmap(state: FDTDState, mesh, n_devices: int,
+                             nx_local: int, pmc_faces: frozenset) -> FDTDState:
+    """Apply PMC (``H_tan = 0``) on physical domain faces using shard_map.
+
+    Electromagnetic dual of :func:`_apply_pec_face_nu_shmap`: PEC zeroes
+    tangential E, PMC zeroes tangential H. Hook point is the H-half of
+    the scan body (before the H ghost exchange) so the zero propagates
+    to neighbour ranks via the exchange — matching single-device
+    ordering at ``rfx/simulation.py:699-705``
+    (``apply_cpml_h`` -> ``apply_pmc_faces``).
+
+    Y- and Z-face PMC is local to every rank; X-face PMC is rank-
+    conditional (only rank 0 zeroes x_lo, only rank N-1 zeroes x_hi),
+    and acts on the **first real cell** (``ghost``) / **last real cell**
+    (``nx_local - 1 - ghost``) — NOT the seam ghost.
+    """
+    if not pmc_faces:
+        return state
+
+    @partial(
+        shard_map,
+        mesh=mesh,
+        in_specs=(P("x"), P("x"), P("x")),
+        out_specs=(P("x"), P("x"), P("x")),
+        check_rep=False,
+    )
+    def _pmc(hx, hy, hz):
+        ghost = 1
+
+        if "y_lo" in pmc_faces:
+            hx = hx.at[:, 0, :].set(0.0)
+            hz = hz.at[:, 0, :].set(0.0)
+        if "y_hi" in pmc_faces:
+            hx = hx.at[:, -1, :].set(0.0)
+            hz = hz.at[:, -1, :].set(0.0)
+        if "z_lo" in pmc_faces:
+            hx = hx.at[:, :, 0].set(0.0)
+            hy = hy.at[:, :, 0].set(0.0)
+        if "z_hi" in pmc_faces:
+            hx = hx.at[:, :, -1].set(0.0)
+            hy = hy.at[:, :, -1].set(0.0)
+
+        device_idx = lax.axis_index("x")
+        is_first = (device_idx == 0)
+        is_last = (device_idx == n_devices - 1)
+        last_real = nx_local - 1 - ghost
+
+        if "x_lo" in pmc_faces:
+            hy_new = jnp.where(is_first, 0.0, hy[ghost, :, :])
+            hz_new = jnp.where(is_first, 0.0, hz[ghost, :, :])
+            hy = hy.at[ghost, :, :].set(hy_new)
+            hz = hz.at[ghost, :, :].set(hz_new)
+        if "x_hi" in pmc_faces:
+            hy_new = jnp.where(is_last, 0.0, hy[last_real, :, :])
+            hz_new = jnp.where(is_last, 0.0, hz[last_real, :, :])
+            hy = hy.at[last_real, :, :].set(hy_new)
+            hz = hz.at[last_real, :, :].set(hz_new)
+
+        return hx, hy, hz
+
+    hx, hy, hz = _pmc(state.hx, state.hy, state.hz)
+    return state._replace(hx=hx, hy=hy, hz=hz)
+
+
 def _apply_pec_mask_nu_shmap(state: FDTDState, sharded_pec_mask, mesh,
                              n_devices: int, nx_local: int) -> FDTDState:
     """Apply geometry-defined PEC mask zeroing on x-sharded fields.
@@ -1852,6 +1916,7 @@ def run_nonuniform_distributed_pec(
     n_warmup: int = 0,
     sharded_design_mask=None,
     emit_time_series: bool = True,
+    pmc_faces: frozenset = frozenset(),
 ) -> dict:
     """Phase 2B/2C/2D sharded NU scan body — hard PEC, ghost exchange,
     optional CPML, and optional Debye/Lorentz dispersion on x-slabs.
@@ -2663,6 +2728,15 @@ def run_nonuniform_distributed_pec(
         # 2. Phase 2C: CPML H correction (after H, before E exchange).
         if use_cpml:
             st, cs = _apply_cpml_h_shmap(st, cs)
+
+        # 2b. PMC face (H-tangential = 0) before H ghost exchange so the
+        #     zero propagates to neighbours via the exchange. H-half hook
+        #     per OQ9 — mirrors single-device ordering in simulation.py
+        #     (apply_cpml_h -> apply_pmc_faces). NOT the E-half position
+        #     of PEC: PMC must fire before the next E-update reads H via
+        #     curl.
+        st = _apply_pmc_face_nu_shmap(
+            st, mesh, n_devices, nx_local, pmc_faces)
 
         # 3. Ghost exchange of H so the upcoming E update sees the
         #    neighbour rank's H at the seam.

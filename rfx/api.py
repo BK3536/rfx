@@ -3906,7 +3906,9 @@ class Simulation:
                         raise ValueError(
                             f"cpml_layers*2={cpml_layers * 2} >= "
                             f"nx_local={nx_local_real} on boundary rank "
-                            f"{rank}; reduce cpml_layers or increase nx."
+                            f"{rank}; reduce cpml_layers (or set per-face "
+                            f"lo_thickness/hi_thickness on the x Boundary) "
+                            f"or increase nx."
                         )
 
             # Check 5 — segmented remat overhead warning.
@@ -4110,6 +4112,7 @@ class Simulation:
             n_warmup=n_warmup,
             sharded_design_mask=sharded_design_mask,
             emit_time_series=emit_time_series,
+            pmc_faces=frozenset(self._boundary_spec.pmc_faces()),
         )
 
         # ---- Repackage into ForwardResult.
@@ -4259,17 +4262,12 @@ class Simulation:
                     "forward path; remove waveguide ports or omit "
                     "distributed=True."
                 )
-            # T7 Phase 2 PR3: PMC runtime is wired in the single-device
-            # scan body only. The sharded NU runner does not yet call
-            # apply_pmc_faces after its sharded H update.
-            _pmc_faces = self._boundary_spec.pmc_faces()
-            if _pmc_faces:
-                raise NotImplementedError(
-                    f"PMC boundary faces are not supported on the "
-                    f"distributed forward path (got {sorted(_pmc_faces)}). "
-                    f"Remove distributed=True or swap the pmc faces for "
-                    f"pec / cpml."
-                )
+            # v1.7.4 T8: PMC is now wired across all three sharded
+            # runners (distributed_nu, distributed_v2, distributed).
+            # The reject guard that used to live here (introduced in
+            # f3cab7c) has been removed. The single-device PMC runtime
+            # hook lives in rfx/simulation.py:703-705 and the sharded
+            # PMC helpers live in each runner next to their PEC analog.
             # Synthesise missing dz profile so the NU grid build always
             # sees all three axes (mirrors Simulation.run() and the
             # single-device NU forward path).
