@@ -54,7 +54,6 @@ includes a negative PEC-PEC control.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from rfx import Simulation
 from rfx.boundaries.spec import Boundary, BoundarySpec
