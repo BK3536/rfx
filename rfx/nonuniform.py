@@ -41,6 +41,12 @@ class NonUniformGrid(NamedTuple):
     legacy code that reads a scalar spacing); ``dx_arr`` / ``dy_arr`` /
     ``dz`` hold the per-cell spacings. In the uniform-xy case,
     ``dx_arr`` is ``jnp.full(nx, dx)`` and ``dy_arr`` is analogous.
+
+    ``pad_{axis}_{lo|hi}`` mirror ``rfx.grid.Grid`` per-face padding —
+    a face whose token is ``pmc``/``pec``/``periodic`` gets 0 cells on
+    that side even when the axis as a whole uses CPML. For back-compat
+    the six fields default to ``cpml_layers`` on every face (the
+    pre-v1.7.5 symmetric layout).
     """
     nx: int
     ny: int
@@ -62,34 +68,54 @@ class NonUniformGrid(NamedTuple):
     inv_dx_h: jnp.ndarray  # (nx,) — 2/(dx_arr[i]+dx_arr[i+1]) padded
     inv_dy_h: jnp.ndarray  # (ny,) — 2/(dy_arr[j]+dy_arr[j+1]) padded
     inv_dz_h: jnp.ndarray  # (nz,) — 2/(dz[k]+dz[k+1]), padded
+    # Per-face CPML padding (v1.7.5 PMC+CPML composition fix)
+    pad_x_lo: int = 0
+    pad_x_hi: int = 0
+    pad_y_lo: int = 0
+    pad_y_hi: int = 0
+    pad_z_lo: int = 0
+    pad_z_hi: int = 0
 
     @property
     def shape(self):
         """Grid shape (nx, ny, nz) — duck-typing compatible with Grid."""
         return (self.nx, self.ny, self.nz)
 
+    @property
+    def axis_pads(self):
+        """Leading (``lo``) per-axis pad — the number coordinate-offset
+        callers subtract from array indices to recover user coords."""
+        return (self.pad_x_lo, self.pad_y_lo, self.pad_z_lo)
 
 
 
-def _pad_profile(profile, cpml_layers: int):
-    """Pad a 1-D cell-size profile with CPML cells on both ends.
+
+def _pad_profile(profile, pad_lo: int, pad_hi: int | None = None):
+    """Pad a 1-D cell-size profile with CPML cells on each end.
+
+    ``pad_lo`` and ``pad_hi`` may differ (v1.7.5 per-face allocation —
+    a PMC/PEC face gets 0 cells on that side while the opposing CPML
+    face keeps its allocation). If ``pad_hi`` is omitted the symmetric
+    ``pad_lo`` count is used on both ends (pre-v1.7.5 behaviour).
 
     CPML uses constant spacing matching the boundary cell size, so the
-    padding on each end is ``cpml_layers`` copies of ``profile[0]`` and
-    ``profile[-1]``, respectively.
+    ``pad_lo`` cells on the leading side carry ``profile[0]`` and the
+    ``pad_hi`` cells on the trailing side carry ``profile[-1]``.
 
     When ``profile`` is a JAX tracer the padding stays in-trace (needed
     for ``jax.grad`` w.r.t. ``dz_profile`` — mesh-as-design-variable).
     Otherwise the numpy path is used, preserving the Python-float ``dt``
     that Simulation-level callers depend on.
     """
+    if pad_hi is None:
+        pad_hi = pad_lo
     if is_tracer(profile):
         prof = jnp.asarray(profile, dtype=jnp.float32)
-        lo_pad = jnp.full(cpml_layers, prof[0])
-        hi_pad = jnp.full(cpml_layers, prof[-1])
+        lo_pad = jnp.full(pad_lo, prof[0])
+        hi_pad = jnp.full(pad_hi, prof[-1])
         return jnp.concatenate([lo_pad, prof, hi_pad])
-    lo_pad = np.full(cpml_layers, float(profile[0]))
-    hi_pad = np.full(cpml_layers, float(profile[-1]))
+    lo_pad = np.full(pad_lo, float(profile[0]))
+    hi_pad = np.full(pad_hi, float(profile[-1]))
     return np.concatenate([lo_pad, np.asarray(profile, dtype=np.float64), hi_pad])
 
 
@@ -114,6 +140,9 @@ def make_nonuniform_grid(
     *,
     dx_profile: np.ndarray | None = None,
     dy_profile: np.ndarray | None = None,
+    pec_faces: set[str] | None = None,
+    pmc_faces: set[str] | None = None,
+    cpml_axes: str = "xyz",
 ) -> NonUniformGrid:
     """Create a non-uniform Yee grid.
 
@@ -127,12 +156,37 @@ def make_nonuniform_grid(
         Boundary cell size (also used for CPML padding and as the
         uniform-xy spacing when no xy profile is provided).
     cpml_layers : int
-        Number of CPML cells added to each face.
+        Number of CPML cells added to each face (when that face is
+        absorbing — see ``pec_faces`` / ``pmc_faces``).
     dx_profile, dy_profile : 1D arrays or None
         Optional per-cell x / y spacings for the physical (non-CPML)
         interior. When provided, the first and last values must match
         ``dx`` (they set the boundary cell size used by the CPML).
+    pec_faces, pmc_faces : set of str or None
+        Face labels (``x_lo``, ``x_hi``, ``y_lo``, ``y_hi``, ``z_lo``,
+        ``z_hi``) where the boundary is PEC / PMC. Per-face pad count
+        is forced to 0 on these faces so the reflector plane aligns
+        with the user domain edge. Added in v1.7.5 to close the
+        PMC+CPML composition gap on the non-uniform mesh path.
+    cpml_axes : str
+        Axes that participate in CPML allocation (default ``"xyz"``).
+        Per-face allocation still applies; an axis absent from
+        ``cpml_axes`` gets pad=0 on both faces.
     """
+    _pec = pec_faces or set()
+    _pmc = pmc_faces or set()
+
+    def _face_pad(axis: str, side: str) -> int:
+        face = f"{axis}_{side}"
+        if face in _pec or face in _pmc:
+            return 0
+        if axis not in cpml_axes:
+            return 0
+        return int(cpml_layers)
+
+    pad_x_lo = _face_pad("x", "lo"); pad_x_hi = _face_pad("x", "hi")
+    pad_y_lo = _face_pad("y", "lo"); pad_y_hi = _face_pad("y", "hi")
+    pad_z_lo = _face_pad("z", "lo"); pad_z_hi = _face_pad("z", "hi")
     # --- x profile (uniform or provided) ---
     if dx_profile is None:
         nx_interior = int(round(domain_xy[0] / dx))
@@ -157,7 +211,7 @@ def make_nonuniform_grid(
                 f"dx_profile[-1]={float(dx_prof_phys[-1])} must equal boundary "
                 f"dx={float(dx)}."
             )
-    dx_full = _pad_profile(dx_prof_phys, cpml_layers)
+    dx_full = _pad_profile(dx_prof_phys, pad_x_lo, pad_x_hi)
     nx = int(dx_full.shape[0])
 
     # --- y profile ---
@@ -180,11 +234,11 @@ def make_nonuniform_grid(
                 f"dy_profile boundary cells must match each other "
                 f"(got lo={dy_boundary}, hi={float(dy_prof_phys[-1])})."
             )
-    dy_full = _pad_profile(dy_prof_phys, cpml_layers)
+    dy_full = _pad_profile(dy_prof_phys, pad_y_lo, pad_y_hi)
     ny = int(dy_full.shape[0])
 
     # --- z profile ---
-    dz_full = _pad_profile(dz_profile, cpml_layers)
+    dz_full = _pad_profile(dz_profile, pad_z_lo, pad_z_hi)
     nz = int(dz_full.shape[0])
 
     # --- CFL from minimum cell size on every axis ---
@@ -220,22 +274,40 @@ def make_nonuniform_grid(
         dt=dt, cpml_layers=cpml_layers,
         inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz,
         inv_dx_h=inv_dx_h, inv_dy_h=inv_dy_h, inv_dz_h=inv_dz_h,
+        pad_x_lo=pad_x_lo, pad_x_hi=pad_x_hi,
+        pad_y_lo=pad_y_lo, pad_y_hi=pad_y_hi,
+        pad_z_lo=pad_z_lo, pad_z_hi=pad_z_hi,
     )
 
 
-def _interior_line_positions(d_arr_np: np.ndarray, cpml: int) -> np.ndarray:
+def _interior_line_positions(
+    d_arr_np: np.ndarray, pad_lo: int, pad_hi: int | None = None,
+) -> np.ndarray:
     """Return cell-edge positions (0 at first interior face) for a padded
     cell-size array. Length = n_interior + 1.
+
+    ``pad_lo`` and ``pad_hi`` may differ (v1.7.5 per-face allocation).
+    Back-compat: a single-argument call treats the value as symmetric.
     """
-    interior = d_arr_np[cpml : len(d_arr_np) - cpml]
+    if pad_hi is None:
+        pad_hi = pad_lo
+    interior = d_arr_np[pad_lo : len(d_arr_np) - pad_hi]
     edges = np.insert(np.cumsum(interior), 0, 0.0)
     return edges
 
 
 def _nominal_edges_or_actual(
-    d_arr, cpml: int, fallback_dx: float | None = None,
+    d_arr, total_pad: int,
+    *, pad_lo: int | None = None,
+    fallback_dx: float | None = None,
 ) -> np.ndarray:
     """Return concrete cell-edge positions for index lookup.
+
+    ``total_pad`` is ``pad_lo + pad_hi`` — the cells removed when
+    slicing to the interior. ``pad_lo`` (defaulting to ``total_pad/2``
+    for the symmetric pre-v1.7.5 case) is needed by the tracer path
+    to reconstruct ``n_interior`` and by the concrete path to pick
+    the right interior slice.
 
     When ``d_arr`` is a JAX tracer (mesh-as-design-variable path), we
     fall back to a uniform ``fallback_dx`` reference mesh so that
@@ -244,6 +316,9 @@ def _nominal_edges_or_actual(
     FDTD physics downstream; only the structural index is resolved
     from the nominal mesh.
     """
+    if pad_lo is None:
+        pad_lo = total_pad // 2
+    pad_hi = total_pad - pad_lo
     if is_tracer(d_arr):
         if fallback_dx is None or fallback_dx <= 0:
             raise ValueError(
@@ -251,25 +326,26 @@ def _nominal_edges_or_actual(
                 "fallback_dx for position->index resolution."
             )
         n_total = int(d_arr.shape[0])
-        n_interior = n_total - 2 * cpml
+        n_interior = n_total - total_pad
         interior = np.full(n_interior, float(fallback_dx), dtype=np.float64)
         return np.insert(np.cumsum(interior), 0, 0.0)
-    return _interior_line_positions(np.asarray(d_arr), cpml)
+    return _interior_line_positions(np.asarray(d_arr), pad_lo, pad_hi)
 
 
 def z_position_to_index(grid: NonUniformGrid, z_phys: float) -> int:
     """Convert physical z-coordinate to (cpml-offset) grid index."""
-    cpml = grid.cpml_layers
     edges = _nominal_edges_or_actual(
-        grid.dz, cpml, fallback_dx=float(grid.dx)
+        grid.dz, grid.pad_z_lo + grid.pad_z_hi,
+        pad_lo=grid.pad_z_lo, fallback_dx=float(grid.dx),
     )
     idx = int(np.argmin(np.abs(edges - float(z_phys))))
-    return idx + cpml
+    return idx + grid.pad_z_lo
 
 
 def _axis_position_to_index(
     d_arr: jnp.ndarray,
-    cpml: int,
+    pad_lo: int,
+    pad_hi: int,
     pos: float,
     fallback_dx: float | None = None,
 ) -> int:
@@ -279,24 +355,28 @@ def _axis_position_to_index(
     position 0 is the first interior face, position ``sum(interior)`` is
     the last interior face.
     """
-    edges = _nominal_edges_or_actual(d_arr, cpml, fallback_dx=fallback_dx)
+    edges = _nominal_edges_or_actual(
+        d_arr, pad_lo + pad_hi, pad_lo=pad_lo, fallback_dx=fallback_dx,
+    )
     idx = int(np.argmin(np.abs(edges - float(pos))))
-    return idx + cpml
+    return idx + pad_lo
 
 
 def position_to_index(grid: NonUniformGrid, pos: tuple[float, float, float]) -> tuple[int, int, int]:
     """Convert physical (x, y, z) to grid indices for NonUniformGrid.
 
+    Accounts for per-face CPML padding (``pad_{axis}_lo`` leading offset).
     All three axes use cumulative cell-size lookup. In the uniform-xy
     case (``dx_arr`` constant) this reduces to the legacy
-    ``round(pos[0]/dx) + cpml`` behaviour within one cell.
+    ``round(pos[0]/dx) + pad_{axis}_lo`` behaviour within one cell.
     """
-    cpml = grid.cpml_layers
     i = _axis_position_to_index(
-        grid.dx_arr, cpml, pos[0], fallback_dx=float(grid.dx),
+        grid.dx_arr, grid.pad_x_lo, grid.pad_x_hi, pos[0],
+        fallback_dx=float(grid.dx),
     )
     j = _axis_position_to_index(
-        grid.dy_arr, cpml, pos[1], fallback_dx=float(grid.dy),
+        grid.dy_arr, grid.pad_y_lo, grid.pad_y_hi, pos[1],
+        fallback_dx=float(grid.dy),
     )
     k = z_position_to_index(grid, pos[2])
     return (i, j, k)

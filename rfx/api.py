@@ -2360,6 +2360,14 @@ class Simulation:
             self._dz_profile,
             dx_profile=self._dx_profile,
             dy_profile=self._dy_profile,
+            pec_faces=self._boundary_spec.pec_faces()
+                if self._boundary_spec is not None else None,
+            pmc_faces=self._boundary_spec.pmc_faces()
+                if self._boundary_spec is not None else None,
+            cpml_axes="".join(
+                ax for ax in "xyz"
+                if ax not in (self._periodic_axes or "")
+            ),
         )
 
     def _assemble_materials_nu(
@@ -3471,45 +3479,15 @@ class Simulation:
                     stacklevel=3,
                 )
 
-        # P2.7: PMC / PEC face on an axis where CPML is also allocated,
-        # on the NON-UNIFORM mesh path. The uniform Grid (v1.7.5) allocates
-        # per-face padding — a PMC/PEC face gets pad=0 on that side even
-        # when the other face of the same axis uses CPML/UPML, so the
-        # wall aligns with the user domain edge and there is no offset.
-        # The NonUniformGrid still allocates padding symmetrically per
-        # axis, so the architectural gap only survives on the NU path.
-        # See docs/research_notes/2026-04-19_v175_t10_half_symmetric_pmc.md.
-        _on_nu_path = (self._dx_profile is not None
-                       or self._dy_profile is not None
-                       or self._dz_profile is not None)
-        if (_on_nu_path and self._boundary_spec is not None
-                and self._cpml_layers > 0):
-            _bsx = self._boundary_spec.x
-            _bsy = self._boundary_spec.y
-            _bsz = self._boundary_spec.z
-            for _axis, _bnd in (("x", _bsx), ("y", _bsy), ("z", _bsz)):
-                if _axis in (self._periodic_axes or ""):
-                    continue
-                _has_reflector = (_bnd.lo in ("pmc", "pec")
-                                  or _bnd.hi in ("pmc", "pec"))
-                _has_absorber = (_bnd.lo in ("cpml", "upml")
-                                 or _bnd.hi in ("cpml", "upml"))
-                if not (_has_reflector and _has_absorber):
-                    continue
-                _offset_mm = self._cpml_layers * dx * 1e3
-                _w.warn(
-                    f"[P2.7] Non-uniform mesh boundary on {_axis}-axis "
-                    f"mixes a reflector (PMC/PEC on one face) with "
-                    f"CPML/UPML on the other face. The NU grid allocates "
-                    f"pad_{_axis}={self._cpml_layers} cells "
-                    f"({_offset_mm:.2f} mm) on BOTH sides of the axis, "
-                    f"so the reflector plane is offset from the user "
-                    f"domain edge by that much. The uniform-mesh path "
-                    f"got per-face allocation in v1.7.5; the NU path is "
-                    f"still symmetric. Workaround: drop the dx/dy/dz "
-                    f"profile for this simulation, or use cpml_layers=0.",
-                    UserWarning, stacklevel=3,
-                )
+        # P2.7 (obsolete): PMC / PEC + CPML on the same axis used to emit
+        # a warning for the architectural offset between the reflector
+        # plane and the user domain edge. v1.7.5 closed that gap on both
+        # the uniform (rfx/grid.py) and non-uniform (rfx/nonuniform.py)
+        # paths via per-face ``pad_{axis}_{lo,hi}`` allocation. The
+        # warning is retained as a no-op anchor so external references
+        # ("[P2.7]") don't break and as a reminder that the fix is
+        # regression-locked via tests/test_silent_drop_warnings.py and
+        # tests/test_boundary_pmc_hi_faces.py.
 
     def _validate_adi_configuration(self, materials: MaterialArrays, debye_spec, lorentz_spec) -> None:
         """Validate that the current simulation is compatible with the ADI path."""

@@ -21,12 +21,16 @@ def build_nonuniform_grid(
     *,
     dx_profile: np.ndarray | None = None,
     dy_profile: np.ndarray | None = None,
+    pec_faces: set[str] | None = None,
+    pmc_faces: set[str] | None = None,
+    cpml_axes: str = "xyz",
 ) -> NonUniformGrid:
     """Build a NonUniformGrid from per-axis profiles.
 
     ``dx_profile`` / ``dy_profile`` are optional; when omitted the
     corresponding axis is uniform with spacing ``dx`` across
-    ``domain``.
+    ``domain``. ``pec_faces`` / ``pmc_faces`` force per-face pad=0 on
+    the listed faces (v1.7.5 PMC+CPML composition fix on the NU path).
     """
     if dx is None:
         dx = C0 / freq_max / 20.0
@@ -34,6 +38,7 @@ def build_nonuniform_grid(
     return make_nonuniform_grid(
         domain_xy, dz_profile, dx, cpml_layers,
         dx_profile=dx_profile, dy_profile=dy_profile,
+        pec_faces=pec_faces, pmc_faces=pmc_faces, cpml_axes=cpml_axes,
     )
 
 
@@ -96,19 +101,21 @@ def _build_waveguide_port_config_nu(sim, entry, grid: NonUniformGrid,
     pos_vec[axis_idx] = entry.x_position
     x_index = pos_to_nu_index(grid, tuple(pos_vec))[axis_idx]
 
-    cpml = grid.cpml_layers
-    # axis-pad mirrors Grid.axis_pads convention: 0 if no CPML on that axis,
-    # else cpml. NU runner uses CPML on all axes when boundary='cpml'/'upml'.
-    axis_pads_nu = (cpml, cpml, cpml)
+    # v1.7.5 per-face NU allocation: pass (pad_lo, pad_hi) for each axis.
+    pads_lo_hi = {
+        "x": (grid.pad_x_lo, grid.pad_x_hi),
+        "y": (grid.pad_y_lo, grid.pad_y_hi),
+        "z": (grid.pad_z_lo, grid.pad_z_hi),
+    }
 
-    def _range_to_slice_nu(value_range, d_arr_jnp, n_axis, pad):
+    def _range_to_slice_nu(value_range, d_arr_jnp, n_axis, pad_lo, pad_hi):
         d_np = np.asarray(d_arr_jnp)
         # Cell-edge positions in physical coords (interior only, edge=0 at first
         # interior face). Length = n_interior + 1.
-        interior = d_np[pad : n_axis - pad]
+        interior = d_np[pad_lo : n_axis - pad_hi]
         edges = np.insert(np.cumsum(interior), 0, 0.0)
         if value_range is None:
-            return (pad, n_axis - pad), float(edges[-1])
+            return (pad_lo, n_axis - pad_hi), float(edges[-1])
         lo, hi = value_range
         lo_local = int(np.argmin(np.abs(edges - float(lo))))
         hi_local = int(np.argmin(np.abs(edges - float(hi))))
@@ -116,8 +123,8 @@ def _build_waveguide_port_config_nu(sim, entry, grid: NonUniformGrid,
             raise ValueError(
                 f"range {value_range!r} does not resolve to a valid aperture on the NU grid"
             )
-        lo_idx = lo_local + pad
-        hi_idx = hi_local + pad + 1
+        lo_idx = lo_local + pad_lo
+        hi_idx = hi_local + pad_lo + 1
         actual_span = float(edges[hi_local] - edges[lo_local])
         if actual_span <= 0.0:
             raise ValueError(
@@ -126,14 +133,14 @@ def _build_waveguide_port_config_nu(sim, entry, grid: NonUniformGrid,
         return (lo_idx, hi_idx), actual_span
 
     if normal_axis == "x":
-        u_slice, a_span = _range_to_slice_nu(entry.y_range, grid.dy_arr, grid.ny, axis_pads_nu[1])
-        v_slice, b_span = _range_to_slice_nu(entry.z_range, grid.dz, grid.nz, axis_pads_nu[2])
+        u_slice, a_span = _range_to_slice_nu(entry.y_range, grid.dy_arr, grid.ny, *pads_lo_hi["y"])
+        v_slice, b_span = _range_to_slice_nu(entry.z_range, grid.dz, grid.nz, *pads_lo_hi["z"])
     elif normal_axis == "y":
-        u_slice, a_span = _range_to_slice_nu(entry.x_range, grid.dx_arr, grid.nx, axis_pads_nu[0])
-        v_slice, b_span = _range_to_slice_nu(entry.z_range, grid.dz, grid.nz, axis_pads_nu[2])
+        u_slice, a_span = _range_to_slice_nu(entry.x_range, grid.dx_arr, grid.nx, *pads_lo_hi["x"])
+        v_slice, b_span = _range_to_slice_nu(entry.z_range, grid.dz, grid.nz, *pads_lo_hi["z"])
     else:
-        u_slice, a_span = _range_to_slice_nu(entry.x_range, grid.dx_arr, grid.nx, axis_pads_nu[0])
-        v_slice, b_span = _range_to_slice_nu(entry.y_range, grid.dy_arr, grid.ny, axis_pads_nu[1])
+        u_slice, a_span = _range_to_slice_nu(entry.x_range, grid.dx_arr, grid.nx, *pads_lo_hi["x"])
+        v_slice, b_span = _range_to_slice_nu(entry.y_range, grid.dy_arr, grid.ny, *pads_lo_hi["y"])
 
     # Snapped source-plane physical coordinate (for waveguide_plane_positions).
     # Use the cumulative cell-edge position corresponding to the snapped cell
@@ -232,6 +239,14 @@ def run_nonuniform_path(sim, *, n_steps, compute_s_params=None, s_param_freqs=No
     grid = build_nonuniform_grid(
         sim._freq_max, sim._domain, sim._dx, sim._cpml_layers, sim._dz_profile,
         dx_profile=sim._dx_profile, dy_profile=sim._dy_profile,
+        pec_faces=sim._boundary_spec.pec_faces()
+            if sim._boundary_spec is not None else None,
+        pmc_faces=sim._boundary_spec.pmc_faces()
+            if sim._boundary_spec is not None else None,
+        cpml_axes="".join(
+            ax for ax in "xyz"
+            if ax not in (sim._periodic_axes or "")
+        ),
     )
     materials, debye_spec, lorentz_spec, pec_mask = assemble_materials_nu(sim, grid)
 

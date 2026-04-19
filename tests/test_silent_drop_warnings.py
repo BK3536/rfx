@@ -165,36 +165,6 @@ def test_nu_path_subpixel_does_not_warn():
 # P2.7 preflight: PMC/PEC face + CPML on the same axis.
 # --------------------------------------------------------------------
 
-def test_preflight_warns_on_pmc_plus_cpml_nu_path():
-    """Non-uniform mesh y-axis with PMC + CPML triggers P2.7 because
-    NonUniformGrid still allocates padding symmetrically per axis
-    (the uniform-mesh path got per-face allocation in v1.7.5)."""
-    spec = BoundarySpec(
-        x="periodic",
-        y=Boundary(lo="cpml", hi="pmc"),
-        z="periodic",
-    )
-    sim = Simulation(
-        freq_max=10e9,
-        domain=(4e-3, 8e-3, 4e-3),
-        dx=1e-3,
-        boundary=spec,
-        cpml_layers=4,
-    )
-    sim._dz_profile = np.full(4, 1e-3)  # force NU path
-    sim.add_source((2e-3, 4e-3, 2e-3), "ex")
-    sim.add_probe((2e-3, 6e-3, 2e-3), "ex")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        issues = sim.preflight()
-    assert any("P2.7" in s for s in issues) or any(
-        "P2.7" in str(w.message) for w in caught
-    ), (
-        f"expected P2.7 warning for PMC+CPML on NU path. Issues: {issues}. "
-        f"Caught: {[str(w.message) for w in caught]}"
-    )
-
-
 def test_preflight_silent_on_pmc_plus_cpml_uniform_path():
     """Uniform mesh with PMC+CPML composition: after v1.7.5 per-face
     grid allocation the reflector wall aligns with the user domain
@@ -218,6 +188,50 @@ def test_preflight_silent_on_pmc_plus_cpml_uniform_path():
         f"P2.7 must not fire on uniform path (v1.7.5 per-face padding "
         f"closes the gap). Got: {issues}"
     )
+
+
+def test_preflight_silent_on_pmc_plus_cpml_nu_path():
+    """NU path: v1.7.5 extended per-face allocation to NonUniformGrid,
+    so P2.7 is silent on NU too (gap closed on both paths)."""
+    spec = BoundarySpec(
+        x="periodic",
+        y=Boundary(lo="cpml", hi="pmc"),
+        z="periodic",
+    )
+    sim = Simulation(
+        freq_max=10e9,
+        domain=(4e-3, 8e-3, 4e-3),
+        dx=1e-3,
+        boundary=spec,
+        cpml_layers=4,
+    )
+    sim._dz_profile = np.full(4, 1e-3)  # force NU path
+    sim.add_source((2e-3, 4e-3, 2e-3), "ex")
+    sim.add_probe((2e-3, 6e-3, 2e-3), "ex")
+    issues = sim.preflight()
+    assert not any("P2.7" in s for s in issues), (
+        f"P2.7 must not fire on NU path after v1.7.5. Got: {issues}"
+    )
+
+
+def test_nu_grid_asymmetric_pmc_allocation():
+    """NonUniformGrid.pad_y_lo must be 0 when y_lo is a PMC face."""
+    from rfx.nonuniform import make_nonuniform_grid
+    dz_profile = np.full(8, 1e-3)
+    g = make_nonuniform_grid(
+        domain_xy=(8e-3, 8e-3),
+        dz_profile=dz_profile,
+        dx=1e-3,
+        cpml_layers=4,
+        pmc_faces={"y_lo"},
+    )
+    assert g.pad_y_lo == 0, f"expected pad_y_lo=0, got {g.pad_y_lo}"
+    assert g.pad_y_hi == 4
+    assert g.pad_x_lo == 4 and g.pad_x_hi == 4
+    # ny = interior + pad_y_hi (no lo padding) = 8 + 4 = 12.
+    assert g.ny == 12, f"expected ny=12, got {g.ny}"
+    # axis_pads property carries the leading (lo) pad per axis.
+    assert g.axis_pads == (4, 0, 4)
 
 
 def test_preflight_silent_on_cpml_without_reflector():
