@@ -120,22 +120,31 @@ def test_preflight_passes_on_clean_setup():
 
 
 def test_waveguide_resolution_warns():
-    """WR-90 narrow wall (10.16mm) at dx=2mm → ~5 cells for dielectric
-    air inside a WR-90-shaped dielectric box should trip the ≥10-cell
-    dielectric threshold."""
-    # We emulate the "narrow wall" as a dielectric box of the narrow-wall
-    # size so the dielectric ≥10 cells rule fires.
+    """Dielectric block whose ``cells_per_λ_eff`` is below the P1.5
+    threshold (10) should warn — the rule fires on per-axis effective
+    wavelength, not on per-dimension cell count.
+
+    Original WR-90 setup (eps_r=2.2 / freq_max=10 GHz / dx=2 mm) gave
+    ~10.1 cells/λ_eff, marginally above the threshold; the warning was
+    silent and the assertion never tested the rule. Bumped eps_r to 3.0
+    so cells_per_λ_eff ≈ 8.7 and P1.5 actually fires.
+    """
     freq_max = 10e9
     dx = 2e-3
     sim = Simulation(freq_max=freq_max, domain=(0.05, 0.05, 0.05),
                      boundary="cpml", cpml_layers=6, dx=dx)
-    sim.add_material("diel", eps_r=2.2)
-    # 10.16mm narrow-wall × 22.86mm broad-wall × 30mm length
+    sim.add_material("diel", eps_r=3.0)
     sim.add(Box((0.010, 0.010, 0.010),
                          (0.010 + 0.01016, 0.010 + 0.02286, 0.040)),
                      material="diel")
     sim.add_port((0.015, 0.020, 0.025), "ez")
     sim.add_probe((0.018, 0.020, 0.025), "ez")
     issues = sim.preflight(strict=False)
-    assert any("under-resolved" in s and "dielectric" in s for s in issues), \
-        "Expected a dielectric under-resolution warning: " + "\n".join(issues)
+    # P1.5 wording was reworded from "under-resolved" to "Need ≥10 for
+    # phase-accurate propagation"; pin the substantive content
+    # (dielectric + cells/λ_eff threshold) rather than the old wording.
+    assert any(
+        "dielectric" in s
+        and ("cells per λ_eff" in s or "phase-accurate" in s)
+        for s in issues
+    ), "Expected a dielectric resolution warning: " + "\n".join(issues)
