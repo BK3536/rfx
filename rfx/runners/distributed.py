@@ -593,22 +593,27 @@ def _apply_pmc_local(state, n_devices, nx_local_with_ghost, axis_name,
 
     hx, hy, hz = state.hx, state.hy, state.hz
 
+    # Yee-grid convention (see rfx/boundaries/pmc.py): _hi PMC acts on
+    # index -2 (0.5·dx INSIDE the wall), not -1 (ghost 0.5·dx OUTSIDE).
+    # For x_hi in distributed, the physical wall is local index last_real;
+    # the INSIDE half-cell is last_real - 1.
     if "y_lo" in pmc_faces:
         hx = hx.at[:, 0, :].set(0.0)
         hz = hz.at[:, 0, :].set(0.0)
     if "y_hi" in pmc_faces:
-        hx = hx.at[:, -1, :].set(0.0)
-        hz = hz.at[:, -1, :].set(0.0)
+        hx = hx.at[:, -2, :].set(0.0)
+        hz = hz.at[:, -2, :].set(0.0)
     if "z_lo" in pmc_faces:
         hx = hx.at[:, :, 0].set(0.0)
         hy = hy.at[:, :, 0].set(0.0)
     if "z_hi" in pmc_faces:
-        hx = hx.at[:, :, -1].set(0.0)
-        hy = hy.at[:, :, -1].set(0.0)
+        hx = hx.at[:, :, -2].set(0.0)
+        hy = hy.at[:, :, -2].set(0.0)
 
     is_first = (device_idx == 0)
     is_last = (device_idx == n_devices - 1)
     last_real = nx_local_with_ghost - 1 - ghost
+    last_inside = last_real - 1
 
     if "x_lo" in pmc_faces:
         hy_new = jnp.where(is_first, 0.0, hy[ghost, :, :])
@@ -616,10 +621,10 @@ def _apply_pmc_local(state, n_devices, nx_local_with_ghost, axis_name,
         hy = hy.at[ghost, :, :].set(hy_new)
         hz = hz.at[ghost, :, :].set(hz_new)
     if "x_hi" in pmc_faces:
-        hy_new = jnp.where(is_last, 0.0, hy[last_real, :, :])
-        hz_new = jnp.where(is_last, 0.0, hz[last_real, :, :])
-        hy = hy.at[last_real, :, :].set(hy_new)
-        hz = hz.at[last_real, :, :].set(hz_new)
+        hy_new = jnp.where(is_last, 0.0, hy[last_inside, :, :])
+        hz_new = jnp.where(is_last, 0.0, hz[last_inside, :, :])
+        hy = hy.at[last_inside, :, :].set(hy_new)
+        hz = hz.at[last_inside, :, :].set(hz_new)
 
     return state._replace(hx=hx, hy=hy, hz=hz)
 
