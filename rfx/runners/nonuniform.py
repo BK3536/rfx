@@ -151,9 +151,10 @@ def _build_waveguide_port_config_nu(sim, entry, grid: NonUniformGrid,
         d_axis_np = np.asarray(grid.dy_arr)
     else:
         d_axis_np = np.asarray(grid.dz)
-    _interior = d_axis_np[cpml : len(d_axis_np) - cpml]
+    _pad_lo_axis, _pad_hi_axis = pads_lo_hi[normal_axis]
+    _interior = d_axis_np[_pad_lo_axis : len(d_axis_np) - _pad_hi_axis]
     _edges_axis = np.insert(np.cumsum(_interior), 0, 0.0)
-    _local_axis = max(0, min(x_index - cpml, len(_edges_axis) - 1))
+    _local_axis = max(0, min(x_index - _pad_lo_axis, len(_edges_axis) - 1))
     snapped_source_plane = float(_edges_axis[_local_axis])
 
     port = WaveguidePort(
