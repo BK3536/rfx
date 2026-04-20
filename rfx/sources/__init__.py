@@ -14,6 +14,8 @@ from rfx.sources.waveguide_port import (
     WaveguidePortConfig,
     init_waveguide_port,
     inject_waveguide_port,
+    apply_waveguide_port_h,
+    apply_waveguide_port_e,
     update_waveguide_port_probe,
     extract_waveguide_port_waves,
     extract_waveguide_s_matrix,

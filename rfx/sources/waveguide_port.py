@@ -140,6 +140,18 @@ class WaveguidePortConfig(NamedTuple):
     v_inc_dft: jnp.ndarray     # (n_freqs,) complex — source waveform DFT
     freqs: jnp.ndarray         # (n_freqs,) float
 
+    # Precomputed TFSF-style injection waveforms. Both are the source
+    # pulse bandpass-filtered to the propagating band |ω| ≥ ω_c — the
+    # raw differentiated Gaussian has large sub-cutoff DC content that
+    # would only excite evanescent modes, so the filter is essential.
+    #
+    # e_inc_table[n] is the filtered E-amplitude scalar at (x_src, n·dt);
+    # h_inc_table[n] is the companion H-amplitude scalar at (x_src − 0.5·dx,
+    # (n+0.5)·dt). Used by ``apply_waveguide_port_h`` and
+    # ``apply_waveguide_port_e`` to inject a unidirectional mode wave.
+    e_inc_table: jnp.ndarray   # (n_steps,) float
+    h_inc_table: jnp.ndarray   # (n_steps,) float
+
 
 def _te_mode_profiles(a: float, b: float, m: int, n: int,
                       y_coords: np.ndarray, z_coords: np.ndarray,
@@ -248,6 +260,7 @@ def init_waveguide_port(
     dft_total_steps: int = 0,
     dft_window: str = "tukey",
     dft_window_alpha: float = 0.25,
+    dt: float = 0.0,
 ) -> WaveguidePortConfig:
     """Initialize a waveguide port with precomputed mode profiles.
 
@@ -390,6 +403,73 @@ def init_waveguide_port(
     nf = len(freqs)
     zeros_c = jnp.zeros(nf, dtype=jnp.complex64)
 
+    # Precompute companion H waveform for TFSF-style E correction.
+    # For a forward-only wave whose E-amplitude at x_src matches the source
+    # pulse, we need h_inc(t + dt/2) at (x_src − 0.5·dx). Computed in the
+    # frequency domain: h_spec(ω) = e_spec(ω) · e^{−jβ(ω)·dx/2 − jω·dt/2} /
+    # Z_mode(ω), filtered to propagating frequencies |ω| ≥ ω_c.
+    n_steps_aux = int(dft_total_steps) if dft_total_steps > 0 else 0
+    if n_steps_aux > 1 and dt > 0.0:
+        t_arr = np.arange(n_steps_aux, dtype=np.float64) * float(dt)
+        arg_arr = (t_arr - t0) / tau
+        # Compute tables with unit amplitude; ``apply_waveguide_port_h/e``
+        # scale by ``cfg.src_amp`` at runtime so ``_reset_cfg(drive=False)``
+        # zeros both corrections together.
+        e_inc_raw = (-2.0 * arg_arr) * np.exp(-(arg_arr ** 2))
+        e_spec_raw = np.fft.rfft(e_inc_raw)
+        freqs_spec = np.fft.rfftfreq(n_steps_aux, d=float(dt))
+        omega = 2.0 * np.pi * freqs_spec
+        kc = 2.0 * np.pi * f_c / C0_LOCAL
+        k_arr = omega / C0_LOCAL
+        propagating = omega > (2.0 * np.pi * f_c)
+        beta_arr = np.where(
+            propagating,
+            np.sqrt(np.maximum(k_arr ** 2 - kc ** 2, 0.0)),
+            0.0,
+        )
+        if port.mode_type == "TE":
+            z_mode_arr = np.where(
+                propagating,
+                omega * MU_0 / np.maximum(beta_arr, 1e-30),
+                np.inf,
+            )
+        else:  # TM
+            z_mode_arr = np.where(
+                propagating,
+                beta_arr / np.maximum(omega * EPS_0, 1e-30),
+                0.0,
+            )
+        # Bandpass-filter the source to propagating-mode content only.
+        # The raw differentiated-Gaussian spectrum spans DC → ~3·f0; in a
+        # guided structure, sub-cutoff content cannot propagate and just
+        # excites evanescent near-field if injected. A smooth raised-
+        # cosine taper across [f_c, 1.2·f_c] avoids Gibbs ringing that a
+        # hard cutoff would leave in e_inc_time.
+        f_c_arr = np.full_like(freqs_spec, f_c)
+        f_taper_hi = 1.2 * f_c
+        taper_ratio = np.clip((freqs_spec - f_c_arr) / (f_taper_hi - f_c),
+                              0.0, 1.0)
+        filt_weight = 0.5 * (1.0 - np.cos(np.pi * taper_ratio))
+        e_spec_filt = e_spec_raw * filt_weight
+        e_inc_time = np.fft.irfft(e_spec_filt, n_steps_aux)
+        # Forward wave in rfx's engineering convention exp(j(ωt − βx)):
+        # shifting from (x_src, t) to (x_src − dx/2, t + dt/2) multiplies
+        # the spectrum by exp(+jβ·dx/2 + jω·dt/2).
+        phase_shift = np.exp(+1j * beta_arr * 0.5 * float(dx)
+                             + 1j * omega * 0.5 * float(dt))
+        h_spec = np.where(
+            propagating,
+            e_spec_filt / z_mode_arr * phase_shift,
+            0.0,
+        )
+        h_inc_time = np.fft.irfft(h_spec, n_steps_aux)
+        e_inc_table = jnp.asarray(e_inc_time, dtype=jnp.float32)
+        h_inc_table = jnp.asarray(h_inc_time, dtype=jnp.float32)
+    else:
+        # Empty tables: runtime code short-circuits.
+        e_inc_table = jnp.zeros((max(n_steps_aux, 1),), dtype=jnp.float32)
+        h_inc_table = jnp.zeros((max(n_steps_aux, 1),), dtype=jnp.float32)
+
     return WaveguidePortConfig(
         x_index=port.x_index,
         ref_x=ref_x,
@@ -431,6 +511,8 @@ def init_waveguide_port(
         i_ref_dft=zeros_c,
         v_inc_dft=zeros_c,
         freqs=freqs,
+        e_inc_table=e_inc_table,
+        h_inc_table=h_inc_table,
     )
 
 
@@ -462,7 +544,14 @@ def _plane_h_field(field, cfg: WaveguidePortConfig, plane_index: int):
 
 def inject_waveguide_port(state, cfg: WaveguidePortConfig,
                           t: float, dt: float, dx: float):
-    """Inject mode-shaped E-field at the port plane. Call AFTER update_e."""
+    """Legacy soft-E source (superseded by TFSF-style pair in scan body).
+
+    Retained for backwards compatibility — direct callers still get a soft
+    E source. The simulation scan body no longer invokes this function;
+    it now uses ``apply_waveguide_port_h`` and ``apply_waveguide_port_e``
+    together, which form a one-sided TFSF boundary and launch a
+    unidirectional mode wave (no spurious backward emission).
+    """
     arg = (t - cfg.src_t0) / cfg.src_tau
     src_val = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
 
@@ -474,6 +563,112 @@ def inject_waveguide_port(state, cfg: WaveguidePortConfig,
     field_v = field_v.at[indexer].add(src_val * cfg.ez_profile)
 
     return state._replace(**{cfg.e_u_component: field_u, cfg.e_v_component: field_v})
+
+
+def apply_waveguide_port_h(state, cfg: WaveguidePortConfig,
+                            step, dt: float, dx: float):
+    """TFSF-style H correction at the port's upstream half-cell.
+
+    Half of the one-sided TFSF boundary for a waveguide-mode source.
+    Reads the bandpass-filtered source amplitude from ``cfg.e_inc_table``
+    (not the raw differentiated Gaussian) so sub-cutoff DC content — which
+    cannot propagate in the guide anyway — never reaches the 3D grid.
+
+    Same pattern as ``apply_tfsf_h`` in ``rfx/sources/tfsf.py``.
+    """
+    table = cfg.e_inc_table
+    table_size = table.shape[0]
+    if table_size <= 1:
+        # Init did not receive a positive dt / num_steps; fall back to the
+        # raw soft-source formula so the port still emits something.
+        t_fallback = jnp.asarray(step, dtype=jnp.float32) * dt
+        arg = (t_fallback - cfg.src_t0) / cfg.src_tau
+        src_val = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
+    else:
+        safe_step = jnp.clip(jnp.asarray(step, dtype=jnp.int32),
+                             0, table_size - 1)
+        src_val = cfg.src_amp * table[safe_step]
+    coeff = dt / (MU_0 * dx)
+
+    # For a "+axis" port the source's backward emission travels in "−axis";
+    # the Yee H-curl stencil that reads the injected E lives one half-cell
+    # on the −axis side of the source plane, at H-index x_src − 1.
+    # For a "−axis" port the mirrored H-plane is at x_src.
+    if cfg.direction.startswith("+"):
+        h_plane_index = cfg.x_index - 1
+        sign = -1.0
+    else:
+        h_plane_index = cfg.x_index
+        sign = +1.0
+
+    indexer_h = _plane_indexer(cfg, h_plane_index)
+
+    h_u_field = getattr(state, cfg.h_u_component)
+    h_v_field = getattr(state, cfg.h_v_component)
+
+    # H_u is driven by E_v (ez); H_v by E_u (ey) with opposite curl sign.
+    h_u_field = h_u_field.at[indexer_h].add(sign * coeff * src_val * cfg.ez_profile)
+    h_v_field = h_v_field.at[indexer_h].add(-sign * coeff * src_val * cfg.ey_profile)
+
+    return state._replace(**{
+        cfg.h_u_component: h_u_field,
+        cfg.h_v_component: h_v_field,
+    })
+
+
+def apply_waveguide_port_e(state, cfg: WaveguidePortConfig,
+                            step, dt: float, dx: float):
+    """TFSF-style E correction at the port source plane.
+
+    Other half of the one-sided TFSF boundary. Adds the incident H-side
+    contribution that the Yee curl-H stencil at ``x_src`` expects from a
+    forward-only wave; reading from the precomputed ``cfg.h_inc_table``
+    so the correction is broadband-accurate with only an O((β·dx)²)
+    numerical-dispersion residue.
+
+    Same pattern as ``apply_tfsf_e`` in ``rfx/sources/tfsf.py``. Call AFTER
+    ``update_e``, along with the paired ``apply_waveguide_port_h``.
+    """
+    coeff = dt / (EPS_0 * dx)
+
+    # h_inc_table is empty (shape (1,)) when dt or dft_total_steps was not
+    # supplied at init time; in that case the E correction is a no-op and
+    # the port reverts to a plain soft E source.
+    table = cfg.h_inc_table
+    table_size = table.shape[0]
+    if table_size <= 1:
+        return state
+
+    safe_step = jnp.clip(jnp.asarray(step, dtype=jnp.int32), 0, table_size - 1)
+    # Table stores the unit-amplitude response; scale by cfg.src_amp so the
+    # passive-port convention (``src_amp=0``) cleanly disables this
+    # correction alongside ``apply_waveguide_port_h``.
+    h_inc_scalar = cfg.src_amp * table[safe_step]
+
+    if cfg.direction.startswith("+"):
+        e_plane_index = cfg.x_index
+        sign = -1.0
+    else:
+        # "−axis" port emits toward −axis; TFSF boundary sits at x_src + 1.
+        e_plane_index = cfg.x_index + 1
+        sign = +1.0
+
+    indexer_e = _plane_indexer(cfg, e_plane_index)
+
+    e_u_field = getattr(state, cfg.e_u_component)
+    e_v_field = getattr(state, cfg.e_v_component)
+
+    # E_v is corrected by H_u (hy_profile); E_u by H_v (hz_profile) with
+    # opposite curl sign. The modal H amplitude (positive for positive
+    # forward E) multiplies the stored h*_profile which already carries
+    # the mode-specific sign relative to its e_*_profile counterpart.
+    e_v_field = e_v_field.at[indexer_e].add(sign * coeff * h_inc_scalar * cfg.hy_profile)
+    e_u_field = e_u_field.at[indexer_e].add(-sign * coeff * h_inc_scalar * cfg.hz_profile)
+
+    return state._replace(**{
+        cfg.e_u_component: e_u_field,
+        cfg.e_v_component: e_v_field,
+    })
 
 
 def _aperture_dA(cfg: WaveguidePortConfig) -> jnp.ndarray:
@@ -1115,6 +1310,7 @@ def init_multimode_waveguide_port(
     dft_total_steps: int = 0,
     dft_window: str = "tukey",
     dft_window_alpha: float = 0.25,
+    dt: float = 0.0,
 ) -> list[WaveguidePortConfig]:
     """Initialize a multi-mode waveguide port.
 
@@ -1160,6 +1356,7 @@ def init_multimode_waveguide_port(
             amplitude=amplitude, probe_offset=probe_offset,
             ref_offset=ref_offset, dft_total_steps=dft_total_steps,
             dft_window=dft_window, dft_window_alpha=dft_window_alpha,
+            dt=dt,
         )
         return [cfg]
 
@@ -1191,6 +1388,7 @@ def init_multimode_waveguide_port(
             amplitude=mode_amplitude, probe_offset=probe_offset,
             ref_offset=ref_offset, dft_total_steps=dft_total_steps,
             dft_window=dft_window, dft_window_alpha=dft_window_alpha,
+            dt=dt,
         )
         cfgs.append(cfg)
 

@@ -696,6 +696,10 @@ def run(
                 st = update_h(st, materials, dt, dx, periodic=periodic)
             if use_tfsf:
                 st = apply_tfsf_h(st, tfsf_cfg, carry["tfsf"], dx, dt)
+            if use_waveguide_ports:
+                from rfx.sources.waveguide_port import apply_waveguide_port_h as _apply_wg_h_early
+                for cfg_meta in waveguide_meta:
+                    st = _apply_wg_h_early(st, cfg_meta, _step_idx, dt, dx)
             if use_cpml:
                 st, cpml_new = apply_cpml_h(
                     st, cpml_params, carry["cpml"], grid, cpml_axes,
@@ -733,6 +737,10 @@ def run(
 
             if use_tfsf:
                 st = apply_tfsf_e(st, tfsf_cfg, tfsf_h_state, dx, dt)
+            if use_waveguide_ports:
+                from rfx.sources.waveguide_port import apply_waveguide_port_e as _apply_wg_e_early
+                for cfg_meta in waveguide_meta:
+                    st = _apply_wg_e_early(st, cfg_meta, _step_idx, dt, dx)
             if use_cpml:
                 st, cpml_new = apply_cpml_e(
                     st, cpml_params, cpml_new, grid, cpml_axes,
@@ -802,7 +810,6 @@ def run(
 
         if use_waveguide_ports:
             from rfx.sources.waveguide_port import (
-                inject_waveguide_port,
                 update_waveguide_port_probe,
             )
 
@@ -815,7 +822,8 @@ def run(
                     i_ref_dft=accs[3],
                     v_inc_dft=accs[4],
                 )
-                st = inject_waveguide_port(st, cfg_meta, t, dt, dx)
+                # TFSF-style H and E corrections are applied earlier in
+                # their respective Yee sub-steps (canonical TFSF slots).
                 cfg_updated = update_waveguide_port_probe(cfg, st, dt, dx)
                 new_waveguide_port_accs.append(
                     (
@@ -1237,6 +1245,10 @@ def run_until_decay(
             st = update_h(st, materials, dt, dx, periodic=periodic)
         if use_tfsf:
             st = apply_tfsf_h(st, tfsf_cfg, carry_in["tfsf"], dx, dt)
+        if use_waveguide_ports:
+            from rfx.sources.waveguide_port import apply_waveguide_port_h as _apply_wg_h_slow
+            for cfg_meta in waveguide_meta:
+                st = _apply_wg_h_slow(st, cfg_meta, step_idx, dt, dx)
         if use_cpml:
             st, cpml_new = apply_cpml_h(
                 st, cpml_params, carry_in["cpml"], grid, cpml_axes,
@@ -1271,6 +1283,10 @@ def run_until_decay(
 
         if use_tfsf:
             st = apply_tfsf_e(st, tfsf_cfg, tfsf_h_state, dx, dt)
+        if use_waveguide_ports:
+            from rfx.sources.waveguide_port import apply_waveguide_port_e as _apply_wg_e_slow
+            for cfg_meta in waveguide_meta:
+                st = _apply_wg_e_slow(st, cfg_meta, step_idx, dt, dx)
         if use_cpml:
             st, cpml_new = apply_cpml_e(
                 st, cpml_params, cpml_new, grid, cpml_axes,
@@ -1315,7 +1331,6 @@ def run_until_decay(
 
         if use_waveguide_ports:
             from rfx.sources.waveguide_port import (
-                inject_waveguide_port,
                 update_waveguide_port_probe,
             )
             new_waveguide_port_accs = []
@@ -1325,7 +1340,8 @@ def run_until_decay(
                     i_probe_dft=accs[2], i_ref_dft=accs[3],
                     v_inc_dft=accs[4],
                 )
-                st = inject_waveguide_port(st, cfg_meta, t, dt, dx)
+                # TFSF-style H/E corrections applied earlier in canonical
+                # Yee sub-steps (see L1247-L1288 region).
                 cfg_updated = update_waveguide_port_probe(cfg, st, dt, dx)
                 new_waveguide_port_accs.append((
                     cfg_updated.v_probe_dft, cfg_updated.v_ref_dft,

@@ -2051,6 +2051,7 @@ class Simulation:
                 probe_offset=entry.probe_offset,
                 ref_offset=entry.ref_offset,
                 dft_total_steps=n_steps,
+                dt=float(grid.dt),
             )
             return cfgs
         cfg = init_waveguide_port(
@@ -2063,6 +2064,7 @@ class Simulation:
             probe_offset=entry.probe_offset,
             ref_offset=entry.ref_offset,
             dft_total_steps=n_steps,
+            dt=float(grid.dt),
         )
         return cfg
 

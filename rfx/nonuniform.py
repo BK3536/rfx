@@ -866,6 +866,10 @@ def run_nonuniform(
         if use_tfsf:
             from rfx.sources.tfsf import apply_tfsf_h
             st = apply_tfsf_h(st, tfsf_cfg, carry["tfsf"], grid.dx, dt)
+        if use_waveguide_ports:
+            from rfx.sources.waveguide_port import apply_waveguide_port_h as _apply_wg_h_nu
+            for cfg_meta in waveguide_meta:
+                st = _apply_wg_h_nu(st, cfg_meta, step_idx, dt, grid.dx)
         if use_cpml:
             st, cpml_new = apply_cpml_h(st, cpml_params, carry["cpml"],
                                          cpml_grid, "xyz")
@@ -900,6 +904,10 @@ def run_nonuniform(
         if use_tfsf:
             from rfx.sources.tfsf import apply_tfsf_e
             st = apply_tfsf_e(st, tfsf_cfg, tfsf_h_state, grid.dx, dt)
+        if use_waveguide_ports:
+            from rfx.sources.waveguide_port import apply_waveguide_port_e as _apply_wg_e_nu
+            for cfg_meta in waveguide_meta:
+                st = _apply_wg_e_nu(st, cfg_meta, step_idx, dt, grid.dx)
         if use_cpml:
             st, cpml_new = apply_cpml_e(st, cpml_params, cpml_new,
                                          cpml_grid, "xyz")
@@ -933,10 +941,8 @@ def run_nonuniform(
         new_waveguide_port_accs = None
         if use_waveguide_ports:
             from rfx.sources.waveguide_port import (
-                inject_waveguide_port,
                 update_waveguide_port_probe,
             )
-            t_wg = step_idx.astype(jnp.float32) * dt
             new_waveguide_port_accs = []
             for accs, cfg_meta in zip(
                 carry["waveguide_port_accs"], waveguide_meta
@@ -948,7 +954,7 @@ def run_nonuniform(
                     i_ref_dft=accs[3],
                     v_inc_dft=accs[4],
                 )
-                st = inject_waveguide_port(st, cfg_meta, t_wg, dt, grid.dx)
+                # TFSF-style corrections applied earlier at canonical slots.
                 cfg_updated = update_waveguide_port_probe(cfg, st, dt, grid.dx)
                 new_waveguide_port_accs.append((
                     cfg_updated.v_probe_dft,
