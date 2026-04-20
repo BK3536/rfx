@@ -3243,40 +3243,108 @@ class Simulation:
                         )
                         break
 
-        # P1.6: Source / port placed ON a PMC face plane. ``apply_pmc_faces``
-        # zeros the tangential H right after each H update, which kills the
-        # outgoing wave from any source that sits exactly on the plane — the
-        # probe then records silent zero field. Offsetting the source by one
-        # cell lets the image method double the effective amplitude
-        # automatically. See the T10 half-symmetric patch post-mortem in
-        # docs/research_notes/2026-04-20*.
-        if _pmc_faces_set:
+        # P1.6: Source / port placed ON a PEC or PMC face plane. Both
+        # reflectors zero specific field components at the plane every
+        # time step (PEC: tangential E; PMC: tangential H); a source
+        # that drives a zeroed component is silently discarded. A
+        # source that drives a component forced to zero by the mirror
+        # image (e.g. normal E on a PMC face) fights the symmetry and
+        # yields numerically inconsistent results.
+        #
+        # Component-specific rule:
+        #   PEC face (axis = ax_name): tangential E (Ex/Ey/Ez with
+        #     component axis != ax_name) is zeroed every E update.
+        #     Normal E (component axis == ax_name) is the legitimate
+        #     way to drive a PEC mirror.
+        #   PMC face (axis = ax_name): tangential H (Hx/Hy/Hz with
+        #     component axis != ax_name) is zeroed; the outgoing
+        #     wave from an on-plane tangential E source is killed via
+        #     this H zeroing. Normal E (component axis == ax_name) is
+        #     odd-symmetric and must be zero at the plane by image,
+        #     so injecting it fights the mirror.
+        #
+        # See docs/research_notes/2026-04-20_source_on_symmetry_plane_industry_survey.md
+        # for the industry survey behind this rule (Meep / OpenEMS /
+        # Tidy3D all follow the same convention).
+        _all_reflector_faces = set(self._pec_faces) | set(_pmc_faces_set)
+        if _all_reflector_faces:
             _dx_axis = [float(dx), float(dx), float(dx)]
             if (self._dz_profile is not None
                     and not is_tracer(self._dz_profile)):
                 _dx_axis[2] = float(self._dz_profile[0])
-            for face in _pmc_faces_set:
+            for face in _all_reflector_faces:
                 ax_name = face[0]
                 side = face[2:]
                 ax_i = "xyz".index(ax_name)
+                face_kind = "PMC" if face in _pmc_faces_set else "PEC"
                 d_ext = self._domain[ax_i] if ax_i < len(self._domain) else self._domain[-1]
                 plane_coord = 0.0 if side == "lo" else float(d_ext)
                 tol = 0.5 * _dx_axis[ax_i]
                 for pe in self._ports:
                     pos = pe.position
                     coord = pos[ax_i]
-                    if abs(coord - plane_coord) <= tol:
-                        _w.warn(
-                            f"Source/port at {pos} lies on the PMC {face} "
-                            f"plane. PMC zeros the tangential H right after "
-                            f"every H update, so a source on the plane cannot "
-                            f"radiate — the probe will record silent zero "
-                            f"field. Offset the source by one cell "
-                            f"({_dx_axis[ax_i]*1e3:.3g} mm) off the plane; "
-                            f"the image method then supplies the factor-of-2 "
-                            f"amplitude automatically.",
-                            stacklevel=3,
-                        )
+                    if abs(coord - plane_coord) > tol:
+                        continue
+                    # Classify the source component vs. the face axis.
+                    comp = pe.component.lower()
+                    comp_field = comp[0]       # 'e' or 'h'
+                    comp_axis = comp[1:]       # 'x' / 'y' / 'z'
+                    is_tangential = (comp_axis != ax_name)
+                    if face_kind == "PMC":
+                        if comp_field == "e" and is_tangential:
+                            msg = (
+                                f"Source/port at {pos} (component={pe.component}) "
+                                f"sits on the PMC {face} plane. The outgoing "
+                                f"tangential H is zeroed every step by "
+                                f"apply_pmc_faces, so no wave radiates — the "
+                                f"probe records silent zero field. Offset by "
+                                f"one cell ({_dx_axis[ax_i]*1e3:.3g} mm) off "
+                                f"the plane to let the Yee curl run normally."
+                            )
+                        elif comp_field == "e" and not is_tangential:
+                            msg = (
+                                f"Source/port at {pos} (component={pe.component}) "
+                                f"sits on the PMC {face} plane and drives the "
+                                f"NORMAL E component. PMC imposes odd symmetry "
+                                f"on normal E (it must be zero at the plane), "
+                                f"so the source fights the mirror image. Use a "
+                                f"tangential E source offset by one cell "
+                                f"({_dx_axis[ax_i]*1e3:.3g} mm) off the plane."
+                            )
+                        elif comp_field == "h" and is_tangential:
+                            msg = (
+                                f"Source/port at {pos} (component={pe.component}) "
+                                f"sits on the PMC {face} plane and drives a "
+                                f"tangential H. apply_pmc_faces zeros this "
+                                f"component at the plane every step, so the "
+                                f"source has no effect."
+                            )
+                        else:
+                            msg = None      # normal H on PMC plane is legit
+                    else:                    # PEC
+                        if comp_field == "e" and is_tangential:
+                            msg = (
+                                f"Source/port at {pos} (component={pe.component}) "
+                                f"sits on the PEC {face} plane and drives a "
+                                f"tangential E. PEC zeros E_tan at the plane "
+                                f"every step, so the source is silently "
+                                f"discarded. Use a normal E source at this "
+                                f"face, or offset by one cell "
+                                f"({_dx_axis[ax_i]*1e3:.3g} mm) off the plane."
+                            )
+                        elif comp_field == "h" and not is_tangential:
+                            msg = (
+                                f"Source/port at {pos} (component={pe.component}) "
+                                f"sits on the PEC {face} plane and drives the "
+                                f"NORMAL H component. PEC imposes odd symmetry "
+                                f"on normal H (it must be zero at the plane). "
+                                f"Use a tangential H source or offset by one "
+                                f"cell ({_dx_axis[ax_i]*1e3:.3g} mm) off the plane."
+                            )
+                        else:
+                            msg = None      # tangential H or normal E on PEC is legit
+                    if msg is not None:
+                        _w.warn(msg, stacklevel=3)
 
         # P1.4: NTFF box overlap with absorber
         if self._ntff is not None and cpml_thickness > 0:
