@@ -342,7 +342,6 @@ class _WaveguidePortEntry:
     n_modes: int = 1
     waveform: str = "differentiated_gaussian"
     mode_profile: str = "analytic"
-    use_aux_grid: bool = False
 
 
 @dataclass(frozen=True)
@@ -1203,7 +1202,6 @@ class Simulation:
         n_modes: int = 1,
         waveform: str = "differentiated_gaussian",
         mode_profile: str = "analytic",
-        use_aux_grid: bool = False,
     ) -> "Simulation":
         """Add a rectangular waveguide port.
 
@@ -1423,7 +1421,6 @@ class Simulation:
             n_modes=n_modes,
             waveform=waveform,
             mode_profile=mode_profile,
-            use_aux_grid=use_aux_grid,
         ))
         return self
 
@@ -2096,7 +2093,6 @@ class Simulation:
             dt=float(grid.dt),
             waveform=entry.waveform,
             mode_profile=entry.mode_profile,
-            use_aux_grid=entry.use_aux_grid,
         )
         return cfg
 
