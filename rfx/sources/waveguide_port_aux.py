@@ -79,11 +79,12 @@ def _build_cpml_profile(n_cpml: int, dx_1d: float, dt: float,
                          ) -> tuple[np.ndarray, np.ndarray]:
     """Standard polynomial-graded CPML coefficients for the 1D aux.
 
-    Caveat: Klein-Gordon propagation has frequency-dependent phase
-    velocity v_phase(ω) = c²·β(ω)/ω > c, and group velocity
-    v_g(ω) = c²·β(ω)/ω < c. A CPML tuned for v = c may absorb with
-    degraded VSWR for guided propagation. Acceptable for initial P4
-    implementation; retune only if aux reflection exceeds 1 %.
+    Tried KG-impedance retune (Codex hypothesis, 2026-04-21 follow-up):
+    swapping η_0 for η_TE=η·f/√(f²−f_c²) made directionality WORSE
+    (3.72% → 4.05%). CPML absorption depends on the σ·η product which
+    is η-invariant under the σ_max = 0.8(m+1)/(η·dx) rule, so the
+    retune just scales σ without improving impedance match. Root-cause
+    floor is elsewhere (see architect review, 57e4329 follow-up).
     """
     eta = np.sqrt(MU_0 / EPS_0)
     sigma_max = sigma_scale * (order + 1) / (eta * dx_1d)

@@ -1162,8 +1162,25 @@ def overlap_modal_amplitude(
 
 
 def update_waveguide_port_probe(cfg: WaveguidePortConfig, state,
-                                dt: float, dx: float) -> WaveguidePortConfig:
-    """Accumulate DFT of modal V and I at ref and probe planes."""
+                                dt: float, dx: float,
+                                aux_state=None) -> WaveguidePortConfig:
+    """Accumulate DFT of modal V and I at ref and probe planes.
+
+    ``v_inc`` is the incident modal voltage used by the S-matrix
+    de-embedding path (``normalize=True``). It dispatches on:
+
+    - P4 aux path (``cfg.aux_enabled`` and ``aux_state`` provided):
+      read ``aux_state.e1d[aux_config.i0]`` directly — this is the
+      Yee-discrete amplitude the 1D FDTD actually emitted and matches
+      what the 3D grid receives through the TFSF pair. Omitting this
+      dispatch was a bug — the de-embedding reference was the hardcoded
+      differentiated-Gaussian formula, which differs from what the aux
+      emits and shows up as 10× energy-conservation degradation on
+      obstacle-scattering scenarios.
+    - Modulated Gaussian waveform: use the Meep-style
+      ``cos(2πf·tt)·exp(-(tt/τ)²)`` with hard cutoff at ±5·width (= ±t0).
+    - Differentiated Gaussian (legacy): ``-2·arg·exp(-arg²)``.
+    """
     t = state.step * dt
 
     v_ref = modal_voltage(state, cfg, cfg.ref_x, dx)
@@ -1171,8 +1188,18 @@ def update_waveguide_port_probe(cfg: WaveguidePortConfig, state,
     i_ref = modal_current(state, cfg, cfg.ref_x, dx)
     i_probe = modal_current(state, cfg, cfg.probe_x, dx)
 
-    arg = (t - cfg.src_t0) / cfg.src_tau
-    v_inc = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
+    if cfg.aux_enabled and aux_state is not None:
+        v_inc = cfg.src_amp * aux_state.e1d[cfg.aux_config.i0]
+    else:
+        arg = (t - cfg.src_t0) / cfg.src_tau
+        if cfg.waveform == "modulated_gaussian":
+            tt = t - cfg.src_t0
+            v_inc = cfg.src_amp * jnp.cos(
+                2.0 * jnp.pi * cfg.src_fcen * tt
+            ) * jnp.exp(-(arg ** 2))
+            v_inc = jnp.where(jnp.abs(tt) > cfg.src_t0, 0.0, v_inc)
+        else:
+            v_inc = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
 
     phase = jnp.exp(-1j * 2.0 * jnp.pi * cfg.freqs * t)
     weight = _dft_window_weight(state.step, cfg.dft_total_steps, cfg.dft_window, cfg.dft_window_alpha)
@@ -1382,6 +1409,15 @@ def extract_waveguide_s_matrix(
 
     def _reset_cfg(cfg: WaveguidePortConfig, drive_enabled: bool) -> WaveguidePortConfig:
         zeros = jnp.zeros_like(cfg.v_probe_dft)
+        # P4 aux path: aux_config carries its own src_amp that drives the
+        # 1D FDTD inside update_wg_aux_1d_e. For passive ports we must
+        # zero this too, else the aux keeps emitting independently of
+        # cfg.src_amp and corrupts S-matrix extraction (matched-load
+        # |S11| blew up to 1.06, energy=2.1 because both ports' aux
+        # grids emitted during single-drive runs).
+        new_aux_config = cfg.aux_config
+        if cfg.aux_enabled and not drive_enabled and cfg.aux_config is not None:
+            new_aux_config = cfg.aux_config._replace(src_amp=0.0)
         return cfg._replace(
             src_amp=cfg.src_amp if drive_enabled else 0.0,
             v_probe_dft=zeros,
@@ -1389,6 +1425,7 @@ def extract_waveguide_s_matrix(
             i_probe_dft=zeros,
             i_ref_dft=zeros,
             v_inc_dft=zeros,
+            aux_config=new_aux_config,
         )
 
     for drive_idx in range(n_ports):
@@ -1510,6 +1547,15 @@ def extract_waveguide_s_params_normalized(
 
     def _reset_cfg(cfg: WaveguidePortConfig, drive_enabled: bool) -> WaveguidePortConfig:
         zeros = jnp.zeros_like(cfg.v_probe_dft)
+        # P4 aux path: aux_config carries its own src_amp that drives the
+        # 1D FDTD inside update_wg_aux_1d_e. For passive ports we must
+        # zero this too, else the aux keeps emitting independently of
+        # cfg.src_amp and corrupts S-matrix extraction (matched-load
+        # |S11| blew up to 1.06, energy=2.1 because both ports' aux
+        # grids emitted during single-drive runs).
+        new_aux_config = cfg.aux_config
+        if cfg.aux_enabled and not drive_enabled and cfg.aux_config is not None:
+            new_aux_config = cfg.aux_config._replace(src_amp=0.0)
         return cfg._replace(
             src_amp=cfg.src_amp if drive_enabled else 0.0,
             v_probe_dft=zeros,
@@ -1517,6 +1563,7 @@ def extract_waveguide_s_params_normalized(
             i_probe_dft=zeros,
             i_ref_dft=zeros,
             v_inc_dft=zeros,
+            aux_config=new_aux_config,
         )
 
     common_run_kw = dict(
@@ -1889,6 +1936,15 @@ def extract_multimode_s_matrix(
 
     def _reset_cfg(cfg: WaveguidePortConfig, drive_enabled: bool) -> WaveguidePortConfig:
         zeros = jnp.zeros_like(cfg.v_probe_dft)
+        # P4 aux path: aux_config carries its own src_amp that drives the
+        # 1D FDTD inside update_wg_aux_1d_e. For passive ports we must
+        # zero this too, else the aux keeps emitting independently of
+        # cfg.src_amp and corrupts S-matrix extraction (matched-load
+        # |S11| blew up to 1.06, energy=2.1 because both ports' aux
+        # grids emitted during single-drive runs).
+        new_aux_config = cfg.aux_config
+        if cfg.aux_enabled and not drive_enabled and cfg.aux_config is not None:
+            new_aux_config = cfg.aux_config._replace(src_amp=0.0)
         return cfg._replace(
             src_amp=cfg.src_amp if drive_enabled else 0.0,
             v_probe_dft=zeros,
@@ -1896,6 +1952,7 @@ def extract_multimode_s_matrix(
             i_probe_dft=zeros,
             i_ref_dft=zeros,
             v_inc_dft=zeros,
+            aux_config=new_aux_config,
         )
 
     # Drive each mode one at a time
