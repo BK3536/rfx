@@ -43,6 +43,7 @@ from rfx.boundaries.cpml import (
     init_cpml,
 )
 from rfx.boundaries.pec import apply_pec, apply_pec_faces
+from rfx.farfield import NTFFData, init_ntff_data, accumulate_ntff
 from rfx.grid import Grid
 from rfx.materials.debye import DebyeCoeffs, DebyeState, init_debye, update_e_debye
 from rfx.materials.lorentz import LorentzCoeffs, LorentzPole, LorentzState, init_lorentz, update_e_lorentz
@@ -112,15 +113,27 @@ class Phase1HybridPreparedRunnerState:
         )
 
 
-def phase1_forward_result(grid: Grid, time_series: jnp.ndarray) -> "ForwardResult":
+class _Phase1HybridObservables(NamedTuple):
+    """Array-only observable bundle for hybrid custom_vjp branches."""
+
+    time_series: jnp.ndarray
+    ntff_data: NTFFData | None = None
+
+
+def phase1_forward_result(
+    grid: Grid,
+    time_series: jnp.ndarray,
+    ntff_data: object = None,
+    ntff_box: object = None,
+) -> "ForwardResult":
     """Build the minimal ForwardResult for the Phase 1 seam."""
 
     from rfx.api import ForwardResult
 
     return ForwardResult(
         time_series=time_series,
-        ntff_data=None,
-        ntff_box=None,
+        ntff_data=ntff_data,
+        ntff_box=ntff_box,
         grid=grid,
         s_params=None,
         freqs=None,
@@ -145,6 +158,7 @@ class Phase1HybridContext:
     pec_axes: str
     pec_faces: tuple[str, ...]
     cpml_params: CPMLAxisParams | None
+    ntff_box: object | None
     src_waveforms_raw: jnp.ndarray
     src_meta: tuple[tuple[int, int, int, str], ...]
     prb_meta: tuple[tuple[int, int, int, str], ...]
@@ -211,6 +225,15 @@ class Phase1HybridContext:
             )
             replay_inputs.extend(("cpml_params", "pec_faces"))
             replay_outputs.append("final_cpml_state")
+        ntff_box = inputs.ntff_box
+        if ntff_box is not None:
+            initial_ntff = init_ntff_data(ntff_box)
+            carry_arrays.extend(
+                (f"ntff.{name}", arr)
+                for name, arr in zip(initial_ntff._fields, initial_ntff)
+            )
+            replay_inputs.append("ntff_box")
+            replay_outputs.append("final_ntff_data")
         carry_bytes = tuple(
             (name, int(arr.size * arr.dtype.itemsize))
             for name, arr in carry_arrays
@@ -237,6 +260,7 @@ class Phase1HybridContext:
             pec_axes=inputs.pec_axes,
             pec_faces=pec_faces,
             cpml_params=cpml_params,
+            ntff_box=ntff_box,
             src_waveforms_raw=src_waveforms_raw,
             src_meta=src_meta,
             prb_meta=prb_meta,
@@ -294,7 +318,15 @@ class Phase1HybridContext:
         return run_phase1_forward_time_series(self, self.resolved_eps_r(eps_override))
 
     def forward_result(self, eps_override: jnp.ndarray | None = None) -> "ForwardResult":
-        return phase1_forward_result(self.grid, self.run_time_series(eps_override))
+        if self.ntff_box is None:
+            return phase1_forward_result(self.grid, self.run_time_series(eps_override))
+        observables = _make_phase1_hybrid_observable_forward(self)(self.resolved_eps_r(eps_override))
+        return phase1_forward_result(
+            self.grid,
+            observables.time_series,
+            ntff_data=observables.ntff_data,
+            ntff_box=self.ntff_box,
+        )
 
 
 @dataclass(frozen=True)
@@ -792,8 +824,6 @@ def phase1_hybrid_support_reasons(
         lorentz_poles, _ = lorentz_spec
         if any(getattr(pole, "omega_0", None) == 0.0 for pole in lorentz_poles):
             reasons.append("Drude-shaped Lorentz poles are unsupported")
-    if ntff_box is not None:
-        reasons.append("NTFF accumulation is unsupported")
     if waveguide_ports:
         reasons.append("waveguide/wire/floquet port accumulation is unsupported")
     if pec_mask is not None:
@@ -1156,6 +1186,7 @@ def build_phase1_hybrid_context(
     pec_axes: str,
     debye_spec: tuple | None = None,
     lorentz_spec: tuple | None = None,
+    ntff_box: object | None = None,
     boundary: str = "pec",
     cpml_axes: str | None = None,
     pec_faces: tuple[str, ...] | None = None,
@@ -1173,7 +1204,7 @@ def build_phase1_hybrid_context(
             debye=None,
             lorentz_spec=lorentz_spec,
             lorentz=None,
-            ntff_box=None,
+            ntff_box=ntff_box,
             waveguide_ports=None,
             pec_mask=None,
             pec_occupancy=None,
@@ -1611,6 +1642,477 @@ def make_phase1_hybrid_forward(context: Phase1HybridContext) -> Callable[[jnp.nd
 
     _forward_time_series.defvjp(_forward_fwd, _forward_bwd)
     return _forward_time_series
+
+
+def _run_phase1_forward_observables(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+) -> _Phase1HybridObservables:
+    materials = _materials_from_eps(context, eps_r)
+    src_waveforms = _source_waveforms_from_eps(context, eps_r)
+    _, _, _, observables = _run_phase1_trace_for_observables(context, materials, src_waveforms)
+    return observables
+
+
+def _run_phase1_trace_for_observables(
+    context: Phase1HybridContext,
+    materials: MaterialArrays,
+    src_waveforms: jnp.ndarray,
+):
+    if context.debye_spec is not None and context.lorentz_spec is not None:
+        raise ValueError("mixed Debye+Lorentz dispersion is unsupported")
+
+    if context.debye_spec is not None:
+        debye_coeffs, debye_state = _runtime_debye(context.dt, materials, context.debye_spec)
+        if context.boundary == "cpml":
+            (
+                final_state,
+                _final_cpml_state,
+                _final_debye_state,
+                time_series,
+                states_before,
+                cpml_states_before,
+                debye_states_before,
+            ) = _run_uniform_debye_cpml_time_series(
+                context,
+                materials,
+                debye_coeffs,
+                debye_state,
+                src_waveforms,
+                return_trace=True,
+            )
+            aux_states_before = (cpml_states_before, debye_states_before)
+        elif context.boundary == "pec":
+            final_state, _final_debye_state, time_series, states_before, debye_states_before = (
+                _run_uniform_debye_pec_time_series(
+                    context,
+                    materials,
+                    debye_coeffs,
+                    debye_state,
+                    src_waveforms,
+                    return_trace=True,
+                )
+            )
+            aux_states_before = debye_states_before
+        else:
+            raise ValueError(f"boundary={context.boundary!r} is unsupported")
+    elif context.lorentz_spec is not None:
+        lorentz_coeffs, lorentz_state = _runtime_lorentz(context.dt, materials, context.lorentz_spec)
+        if context.boundary == "cpml":
+            (
+                final_state,
+                _final_cpml_state,
+                _final_lorentz_state,
+                time_series,
+                states_before,
+                cpml_states_before,
+                lorentz_states_before,
+            ) = _run_uniform_lorentz_cpml_time_series(
+                context,
+                materials,
+                lorentz_coeffs,
+                lorentz_state,
+                src_waveforms,
+                return_trace=True,
+            )
+            aux_states_before = (cpml_states_before, lorentz_states_before)
+        elif context.boundary == "pec":
+            final_state, _final_lorentz_state, time_series, states_before, lorentz_states_before = (
+                _run_uniform_lorentz_pec_time_series(
+                    context,
+                    materials,
+                    lorentz_coeffs,
+                    lorentz_state,
+                    src_waveforms,
+                    return_trace=True,
+                )
+            )
+            aux_states_before = lorentz_states_before
+        else:
+            raise ValueError(f"boundary={context.boundary!r} is unsupported")
+    elif context.boundary == "cpml":
+        final_state, _final_cpml_state, time_series, states_before, cpml_states_before = (
+            _run_uniform_lossless_cpml_time_series(
+                context,
+                materials,
+                src_waveforms,
+                return_trace=True,
+            )
+        )
+        aux_states_before = cpml_states_before
+    elif context.boundary == "pec":
+        final_state, time_series, states_before = _run_uniform_lossless_pec_time_series(
+            context,
+            _coeffs_from_materials(context, materials),
+            src_waveforms,
+            return_trace=True,
+        )
+        aux_states_before = None
+    else:
+        raise ValueError(f"boundary={context.boundary!r} is unsupported")
+
+    ntff_data = None
+    if context.ntff_box is not None:
+        ntff_data = _accumulate_ntff_from_post_states(
+            context,
+            _states_after_from_trace(states_before, final_state),
+        )
+
+    return final_state, states_before, aux_states_before, _Phase1HybridObservables(
+        time_series=time_series,
+        ntff_data=ntff_data,
+    )
+
+
+def _reverse_phase1_trace_from_observables(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    states_before: Phase1FieldState,
+    aux_states_before,
+    raw_src_waveforms: jnp.ndarray,
+    time_series_bar: jnp.ndarray,
+    post_state_bars: Phase1FieldState,
+) -> jnp.ndarray:
+    if context.debye_spec is not None and context.boundary == "cpml":
+        cpml_states_before, debye_states_before = aux_states_before
+        zero_state = _zeros_like_state(context.initial_state)
+        zero_cpml = _zero_cpml_state(context.grid)
+        zero_debye = _zero_debye_state(
+            _runtime_debye(context.dt, _materials_from_eps(context, eps_r), context.debye_spec)[1]
+        )
+        zero_eps = jnp.zeros_like(eps_r)
+
+        def reverse_step(carry, xs):
+            lambda_next, lambda_cpml_next, lambda_debye_next, grad_eps = carry
+            state_before, cpml_before, debye_before, raw_src_vals, probe_cot, state_bar = xs
+
+            def step_from_eps(state, cpml_state, debye_state, eps_local):
+                materials_local = _materials_from_eps(context, eps_local)
+                debye_coeffs, _ = _runtime_debye(context.dt, materials_local, context.debye_spec)
+                return _uniform_debye_cpml_step(
+                    state,
+                    cpml_state,
+                    debye_state,
+                    _source_values_from_eps(context, eps_local, raw_src_vals),
+                    materials_local,
+                    debye_coeffs,
+                    context.grid,
+                    context.cpml_params,
+                    context.cpml_axes,
+                    context.pec_axes,
+                    context.pec_faces,
+                    context.src_meta,
+                    context.prb_meta,
+                )
+
+            _, step_vjp = jax.vjp(step_from_eps, state_before, cpml_before, debye_before, eps_r)
+            lambda_before, lambda_cpml_before, lambda_debye_before, grad_eps_step = step_vjp(
+                (_add_field_states(lambda_next, state_bar), lambda_cpml_next, lambda_debye_next, probe_cot)
+            )
+            return (lambda_before, lambda_cpml_before, lambda_debye_before, grad_eps + grad_eps_step), None
+
+        (_, _, _, grad_eps), _ = jax.lax.scan(
+            reverse_step,
+            (zero_state, zero_cpml, zero_debye, zero_eps),
+            (states_before, cpml_states_before, debye_states_before, raw_src_waveforms, time_series_bar, post_state_bars),
+            reverse=True,
+        )
+        return grad_eps
+
+    if context.debye_spec is not None and context.boundary == "pec":
+        debye_states_before = aux_states_before
+        zero_state = _zeros_like_state(context.initial_state)
+        zero_debye = _zero_debye_state(
+            _runtime_debye(context.dt, _materials_from_eps(context, eps_r), context.debye_spec)[1]
+        )
+        zero_eps = jnp.zeros_like(eps_r)
+
+        def reverse_step(carry, xs):
+            lambda_next, lambda_debye_next, grad_eps = carry
+            state_before, debye_before, raw_src_vals, probe_cot, state_bar = xs
+
+            def step_from_eps(state, debye_state, eps_local):
+                materials_local = _materials_from_eps(context, eps_local)
+                debye_coeffs, _ = _runtime_debye(context.dt, materials_local, context.debye_spec)
+                return _uniform_debye_pec_step(
+                    state,
+                    debye_state,
+                    _source_values_from_eps(context, eps_local, raw_src_vals),
+                    materials_local,
+                    debye_coeffs,
+                    context.grid,
+                    context.pec_axes,
+                    context.pec_faces,
+                    context.src_meta,
+                    context.prb_meta,
+                )
+
+            _, step_vjp = jax.vjp(step_from_eps, state_before, debye_before, eps_r)
+            lambda_before, lambda_debye_before, grad_eps_step = step_vjp(
+                (_add_field_states(lambda_next, state_bar), lambda_debye_next, probe_cot)
+            )
+            return (lambda_before, lambda_debye_before, grad_eps + grad_eps_step), None
+
+        (_, _, grad_eps), _ = jax.lax.scan(
+            reverse_step,
+            (zero_state, zero_debye, zero_eps),
+            (states_before, debye_states_before, raw_src_waveforms, time_series_bar, post_state_bars),
+            reverse=True,
+        )
+        return grad_eps
+
+    if context.lorentz_spec is not None and context.boundary == "cpml":
+        cpml_states_before, lorentz_states_before = aux_states_before
+        zero_state = _zeros_like_state(context.initial_state)
+        zero_cpml = _zero_cpml_state(context.grid)
+        zero_lorentz = _zero_lorentz_state(
+            _runtime_lorentz(context.dt, _materials_from_eps(context, eps_r), context.lorentz_spec)[1]
+        )
+        zero_eps = jnp.zeros_like(eps_r)
+
+        def reverse_step(carry, xs):
+            lambda_next, lambda_cpml_next, lambda_lorentz_next, grad_eps = carry
+            state_before, cpml_before, lorentz_before, raw_src_vals, probe_cot, state_bar = xs
+
+            def step_from_eps(state, cpml_state, lorentz_state, eps_local):
+                materials_local = _materials_from_eps(context, eps_local)
+                lorentz_coeffs, _ = _runtime_lorentz(context.dt, materials_local, context.lorentz_spec)
+                return _uniform_lorentz_cpml_step(
+                    state,
+                    cpml_state,
+                    lorentz_state,
+                    _source_values_from_eps(context, eps_local, raw_src_vals),
+                    materials_local,
+                    lorentz_coeffs,
+                    context.grid,
+                    context.cpml_params,
+                    context.cpml_axes,
+                    context.pec_axes,
+                    context.pec_faces,
+                    context.src_meta,
+                    context.prb_meta,
+                )
+
+            _, step_vjp = jax.vjp(step_from_eps, state_before, cpml_before, lorentz_before, eps_r)
+            lambda_before, lambda_cpml_before, lambda_lorentz_before, grad_eps_step = step_vjp(
+                (_add_field_states(lambda_next, state_bar), lambda_cpml_next, lambda_lorentz_next, probe_cot)
+            )
+            return (lambda_before, lambda_cpml_before, lambda_lorentz_before, grad_eps + grad_eps_step), None
+
+        (_, _, _, grad_eps), _ = jax.lax.scan(
+            reverse_step,
+            (zero_state, zero_cpml, zero_lorentz, zero_eps),
+            (states_before, cpml_states_before, lorentz_states_before, raw_src_waveforms, time_series_bar, post_state_bars),
+            reverse=True,
+        )
+        return grad_eps
+
+    if context.lorentz_spec is not None and context.boundary == "pec":
+        lorentz_states_before = aux_states_before
+        zero_state = _zeros_like_state(context.initial_state)
+        zero_lorentz = _zero_lorentz_state(
+            _runtime_lorentz(context.dt, _materials_from_eps(context, eps_r), context.lorentz_spec)[1]
+        )
+        zero_eps = jnp.zeros_like(eps_r)
+
+        def reverse_step(carry, xs):
+            lambda_next, lambda_lorentz_next, grad_eps = carry
+            state_before, lorentz_before, raw_src_vals, probe_cot, state_bar = xs
+
+            def step_from_eps(state, lorentz_state, eps_local):
+                materials_local = _materials_from_eps(context, eps_local)
+                lorentz_coeffs, _ = _runtime_lorentz(context.dt, materials_local, context.lorentz_spec)
+                return _uniform_lorentz_pec_step(
+                    state,
+                    lorentz_state,
+                    _source_values_from_eps(context, eps_local, raw_src_vals),
+                    materials_local,
+                    lorentz_coeffs,
+                    context.grid,
+                    context.pec_axes,
+                    context.pec_faces,
+                    context.src_meta,
+                    context.prb_meta,
+                )
+
+            _, step_vjp = jax.vjp(step_from_eps, state_before, lorentz_before, eps_r)
+            lambda_before, lambda_lorentz_before, grad_eps_step = step_vjp(
+                (_add_field_states(lambda_next, state_bar), lambda_lorentz_next, probe_cot)
+            )
+            return (lambda_before, lambda_lorentz_before, grad_eps + grad_eps_step), None
+
+        (_, _, grad_eps), _ = jax.lax.scan(
+            reverse_step,
+            (zero_state, zero_lorentz, zero_eps),
+            (states_before, lorentz_states_before, raw_src_waveforms, time_series_bar, post_state_bars),
+            reverse=True,
+        )
+        return grad_eps
+
+    if context.boundary == "cpml":
+        cpml_states_before = aux_states_before
+        zero_state = _zeros_like_state(context.initial_state)
+        zero_cpml = _zero_cpml_state(context.grid)
+        zero_eps = jnp.zeros_like(eps_r)
+
+        def reverse_step(carry, xs):
+            lambda_next, lambda_cpml_next, grad_eps = carry
+            state_before, cpml_before, raw_src_vals, probe_cot, state_bar = xs
+
+            def step_from_eps(state, cpml_state, eps_local):
+                return _uniform_lossless_cpml_step(
+                    state,
+                    cpml_state,
+                    _source_values_from_eps(context, eps_local, raw_src_vals),
+                    _materials_from_eps(context, eps_local),
+                    context.grid,
+                    context.cpml_params,
+                    context.cpml_axes,
+                    context.pec_axes,
+                    context.pec_faces,
+                    context.src_meta,
+                    context.prb_meta,
+                )
+
+            _, step_vjp = jax.vjp(step_from_eps, state_before, cpml_before, eps_r)
+            lambda_before, lambda_cpml_before, grad_eps_step = step_vjp(
+                (_add_field_states(lambda_next, state_bar), lambda_cpml_next, probe_cot)
+            )
+            return (lambda_before, lambda_cpml_before, grad_eps + grad_eps_step), None
+
+        (_, _, grad_eps), _ = jax.lax.scan(
+            reverse_step,
+            (zero_state, zero_cpml, zero_eps),
+            (states_before, cpml_states_before, raw_src_waveforms, time_series_bar, post_state_bars),
+            reverse=True,
+        )
+        return grad_eps
+
+    zero_state = _zeros_like_state(context.initial_state)
+    zero_eps = jnp.zeros_like(eps_r)
+
+    def reverse_step(carry, xs):
+        lambda_next, grad_eps = carry
+        state_before, raw_src_vals, probe_cot, state_bar = xs
+
+        def step_from_eps(state, eps_local):
+            return _uniform_lossless_pec_step(
+                state,
+                _source_values_from_eps(context, eps_local, raw_src_vals),
+                _coeffs_from_eps(context, eps_local),
+                context.src_meta,
+                context.prb_meta,
+            )
+
+        _, step_vjp = jax.vjp(step_from_eps, state_before, eps_r)
+        lambda_before, grad_eps_step = step_vjp((_add_field_states(lambda_next, state_bar), probe_cot))
+        return (lambda_before, grad_eps + grad_eps_step), None
+
+    (_, grad_eps), _ = jax.lax.scan(
+        reverse_step,
+        (zero_state, zero_eps),
+        (states_before, raw_src_waveforms, time_series_bar, post_state_bars),
+        reverse=True,
+    )
+    return grad_eps
+
+
+def _states_after_from_trace(
+    states_before: Phase1FieldState,
+    final_state: Phase1FieldState,
+) -> Phase1FieldState:
+    return Phase1FieldState(
+        *(
+            jnp.concatenate([field_trace[1:], final_field[None]], axis=0)
+            for field_trace, final_field in zip(states_before, final_state)
+        )
+    )
+
+
+def _accumulate_ntff_from_post_states(
+    context: Phase1HybridContext,
+    post_states: Phase1FieldState,
+) -> NTFFData:
+    assert context.ntff_box is not None
+
+    def body(ntff_state, xs):
+        step_idx, post_state = xs
+        next_ntff = accumulate_ntff(
+            ntff_state,
+            _to_fdtd(post_state),
+            context.ntff_box,
+            context.dt,
+            step_idx,
+        )
+        return next_ntff, None
+
+    final_ntff, _ = jax.lax.scan(
+        body,
+        init_ntff_data(context.ntff_box),
+        (jnp.arange(context.n_steps, dtype=jnp.int32), post_states),
+    )
+    return final_ntff
+
+
+def _ntff_post_state_cotangents(
+    context: Phase1HybridContext,
+    states_before: Phase1FieldState,
+    final_state: Phase1FieldState,
+    ntff_state_bar: NTFFData,
+) -> Phase1FieldState:
+    post_states = _states_after_from_trace(states_before, final_state)
+    _, vjp = jax.vjp(
+        lambda stacked_states: _accumulate_ntff_from_post_states(context, stacked_states),
+        post_states,
+    )
+    (post_state_bars,) = vjp(ntff_state_bar)
+    return post_state_bars
+
+
+def _zeros_like_state_trace(states: Phase1FieldState) -> Phase1FieldState:
+    return Phase1FieldState(*(jnp.zeros_like(field) for field in states))
+
+
+def _make_phase1_hybrid_observable_forward(
+    context: Phase1HybridContext,
+) -> Callable[[jnp.ndarray], _Phase1HybridObservables]:
+    """Create a custom_vjp forward op for hybrid observable bundles."""
+
+    @jax.custom_vjp
+    def _forward_observables(eps_r: jnp.ndarray) -> _Phase1HybridObservables:
+        return _run_phase1_forward_observables(context, eps_r)
+
+    def _forward_fwd(eps_r: jnp.ndarray):
+        materials = _materials_from_eps(context, eps_r)
+        src_waveforms = _source_waveforms_from_eps(context, eps_r)
+        final_state, states_before, aux_states_before, observables = _run_phase1_trace_for_observables(
+            context,
+            materials,
+            src_waveforms,
+        )
+        return observables, (eps_r, final_state, states_before, aux_states_before, context.src_waveforms_raw)
+
+    def _forward_bwd(res, observables_bar: _Phase1HybridObservables):
+        eps_r, final_state, states_before, aux_states_before, raw_src_waveforms = res
+        ntff_state_bar = observables_bar.ntff_data
+        post_state_bars = (
+            _ntff_post_state_cotangents(context, states_before, final_state, ntff_state_bar)
+            if context.ntff_box is not None and ntff_state_bar is not None
+            else None
+        )
+        grad_eps = _reverse_phase1_trace_from_observables(
+            context,
+            eps_r,
+            states_before,
+            aux_states_before,
+            raw_src_waveforms,
+            observables_bar.time_series,
+            post_state_bars,
+        )
+        return (grad_eps,)
+
+    _forward_observables.defvjp(_forward_fwd, _forward_bwd)
+    return _forward_observables
 
 
 def _run_uniform_lossless_pec_time_series(
@@ -2231,6 +2733,10 @@ def _from_fdtd(state: FDTDState) -> Phase1FieldState:
 
 def _zeros_like_state(state: Phase1FieldState) -> Phase1FieldState:
     return Phase1FieldState(*(jnp.zeros_like(field) for field in state))
+
+
+def _add_field_states(lhs: Phase1FieldState, rhs: Phase1FieldState) -> Phase1FieldState:
+    return Phase1FieldState(*(left + right for left, right in zip(lhs, rhs)))
 
 
 def _zero_cpml_state(grid: Grid) -> CPMLState:

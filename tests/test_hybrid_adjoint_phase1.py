@@ -13,9 +13,13 @@ import jax.numpy as jnp
 from rfx import Box, DebyePole, GaussianPulse, drude_pole, lorentz_pole
 from rfx.api import Simulation
 from rfx.hybrid_adjoint import phase1_forward_result
+from rfx.optimize_objectives import maximize_directivity
 
 _DISP_BOX_LO = (0.006, 0.006, 0.006)
 _DISP_BOX_HI = (0.009, 0.009, 0.009)
+_NTFF_BOX_LO = (0.004, 0.004, 0.004)
+_NTFF_BOX_HI = (0.011, 0.011, 0.011)
+_NTFF_FREQS = jnp.array([3e9], dtype=jnp.float32)
 
 
 def _make_phase1_sim(
@@ -152,6 +156,14 @@ def _make_cpml_supported_phase1_sim_with_pec_face() -> Simulation:
     return _make_phase1_sim(boundary="cpml", pec_faces={"z_lo"})
 
 
+def _make_pec_ntff_supported_phase1_sim() -> Simulation:
+    return _add_ntff_box(_make_phase1_sim())
+
+
+def _make_cpml_ntff_supported_phase1_sim() -> Simulation:
+    return _add_ntff_box(_make_cpml_supported_phase1_sim())
+
+
 def _make_cpml_lossy_unsupported_phase1_sim() -> Simulation:
     sim = _make_phase1_sim(boundary="cpml")
     return _add_boxed_material(sim, "lossy", eps_r=2.0, sigma=5.0)
@@ -160,6 +172,11 @@ def _make_cpml_lossy_unsupported_phase1_sim() -> Simulation:
 def _add_boxed_material(sim: Simulation, name: str, **material_kwargs) -> Simulation:
     sim.add_material(name, **material_kwargs)
     sim.add(Box(_DISP_BOX_LO, _DISP_BOX_HI), material=name)
+    return sim
+
+
+def _add_ntff_box(sim: Simulation) -> Simulation:
+    sim.add_ntff_box(_NTFF_BOX_LO, _NTFF_BOX_HI, freqs=_NTFF_FREQS)
     return sim
 
 
@@ -181,6 +198,10 @@ def _make_cpml_debye_supported_phase1_sim() -> Simulation:
     return _make_debye_supported_phase1_sim(boundary="cpml")
 
 
+def _make_debye_ntff_supported_phase1_sim() -> Simulation:
+    return _add_ntff_box(_make_debye_supported_phase1_sim())
+
+
 def _make_lorentz_supported_phase1_sim(
     *,
     boundary: str = "pec",
@@ -197,6 +218,10 @@ def _make_lorentz_supported_phase1_sim(
 
 def _make_cpml_lorentz_supported_phase1_sim() -> Simulation:
     return _make_lorentz_supported_phase1_sim(boundary="cpml")
+
+
+def _make_lorentz_ntff_supported_phase1_sim() -> Simulation:
+    return _add_ntff_box(_make_lorentz_supported_phase1_sim())
 
 
 def _make_drude_unsupported_phase1_sim() -> Simulation:
@@ -229,6 +254,14 @@ def _make_lorentz_lossy_unsupported_phase1_sim() -> Simulation:
         sigma=5.0,
         lorentz_poles=[lorentz_pole(delta_eps=1.0, omega_0=2.0e10, delta=1.0e9)],
     )
+
+
+def _make_nonuniform_ntff_unsupported_phase1_sim() -> Simulation:
+    return _add_ntff_box(_make_nonuniform_unsupported_phase1_sim())
+
+
+def _make_lumped_port_ntff_unsupported_phase1_sim() -> Simulation:
+    return _add_ntff_box(_make_lumped_port_unsupported_phase1_sim())
 
 
 
@@ -511,6 +544,97 @@ def _assert_hybrid_forward_matches_pure_forward(sim: Simulation, *, n_steps: int
         rtol=1e-6,
         atol=1e-12,
     )
+    if baseline.ntff_data is not None or hybrid.ntff_data is not None:
+        assert baseline.ntff_data is not None and hybrid.ntff_data is not None
+        assert baseline.ntff_box == hybrid.ntff_box
+        _assert_ntff_data_allclose(hybrid.ntff_data, baseline.ntff_data)
+
+
+def _assert_ntff_data_allclose(lhs, rhs, *, rtol: float = 1e-5, atol: float = 1e-6):
+    for field_name in lhs._fields:
+        np.testing.assert_allclose(
+            np.asarray(getattr(lhs, field_name)),
+            np.asarray(getattr(rhs, field_name)),
+            rtol=rtol,
+            atol=atol,
+        )
+
+
+def _assert_ntff_data_nonzero(ntff_data):
+    assert ntff_data is not None
+    face_max = max(
+        float(jnp.max(jnp.abs(getattr(ntff_data, field_name))))
+        for field_name in ("x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi")
+    )
+    assert face_max > 0.0
+
+
+def _assert_ntff_hybrid_gradient_matches_pure_ad(
+    sim: Simulation,
+    grid,
+    *,
+    n_steps: int,
+    use_observable_primitive: bool = False,
+):
+    objective = maximize_directivity(theta_target=np.pi / 2, phi_target=0.0)
+    base_materials, _, _, _, _, _ = sim._assemble_materials(grid)
+
+    def pure_loss(alpha):
+        eps = base_materials.eps_r * alpha
+        result = sim.forward(eps_override=eps, n_steps=n_steps, checkpoint=True)
+        return objective(result)
+
+    def hybrid_loss(alpha):
+        eps = base_materials.eps_r * alpha
+        if use_observable_primitive:
+            from rfx.hybrid_adjoint import _make_phase1_hybrid_observable_forward
+
+            context = sim.build_hybrid_phase1_context(n_steps=n_steps)
+            observables = _make_phase1_hybrid_observable_forward(context)(eps)
+            result = phase1_forward_result(
+                context.grid,
+                observables.time_series,
+                ntff_data=observables.ntff_data,
+                ntff_box=context.ntff_box,
+            )
+        else:
+            result = sim.forward_hybrid_phase1(eps_override=eps, n_steps=n_steps, fallback="raise")
+        return objective(result)
+
+    alpha0 = jnp.float32(1.2)
+    pure_value = pure_loss(alpha0)
+    hybrid_value = hybrid_loss(alpha0)
+    grad_pure = jax.grad(pure_loss)(alpha0)
+    grad_hybrid = jax.grad(hybrid_loss)(alpha0)
+    rel_err = float(jnp.abs(grad_hybrid - grad_pure) / jnp.maximum(jnp.abs(grad_pure), 1e-12))
+
+    assert np.isfinite(float(pure_value))
+    assert np.isfinite(float(hybrid_value))
+    assert float(pure_value) < 0.0
+    assert float(hybrid_value) < 0.0
+    assert np.isfinite(float(grad_pure))
+    assert np.isfinite(float(grad_hybrid))
+    assert rel_err <= 1e-4, (
+        f"hybrid NTFF gradient drifted from pure AD: pure={float(grad_pure):.6e}, "
+        f"hybrid={float(grad_hybrid):.6e}, rel_err={rel_err:.6e}"
+    )
+
+
+def _assert_hybrid_ntff_supported_surface(sim: Simulation, *, n_steps: int = 18):
+    report = sim.inspect_hybrid_phase1(n_steps=n_steps)
+    inputs = sim.build_hybrid_phase1_inputs(n_steps=n_steps)
+    prepared = sim.prepare_hybrid_phase1(n_steps=n_steps)
+    context = sim.build_hybrid_phase1_context(n_steps=n_steps)
+    result = sim.forward_hybrid_phase1(n_steps=n_steps, fallback="raise")
+
+    assert report.supported
+    assert inputs.supported
+    assert prepared.supported
+    assert prepared.context is not None
+    assert context.ntff_box is not None
+    assert result.ntff_data is not None
+    assert result.ntff_box == context.ntff_box
+    _assert_ntff_data_nonzero(result.ntff_data)
 
 
 def _assert_single_cell_hybrid_gradient_matches_pure_ad(
@@ -4570,6 +4694,34 @@ def test_phase1_lorentz_inputs_require_lorentz_spec_metadata():
     assert prepared.context is None
 
 
+def test_phase1_ntff_lumped_port_fallback_matches_pure_forward():
+    sim = _make_lumped_port_ntff_unsupported_phase1_sim()
+    n_steps = 12
+
+    with pytest.raises(ValueError, match="add_source"):
+        sim.forward_hybrid_phase1(n_steps=n_steps, fallback="raise")
+
+    fallback = sim.forward_hybrid_phase1(n_steps=n_steps, fallback="pure_ad")
+    baseline = sim.forward(n_steps=n_steps, checkpoint=True)
+    np.testing.assert_allclose(np.asarray(fallback.time_series), np.asarray(baseline.time_series), rtol=1e-6, atol=1e-12)
+    assert fallback.ntff_box == baseline.ntff_box
+    _assert_ntff_data_allclose(fallback.ntff_data, baseline.ntff_data)
+
+
+def test_phase1_ntff_nonuniform_fallback_matches_pure_forward():
+    sim = _make_nonuniform_ntff_unsupported_phase1_sim()
+    n_steps = 12
+
+    with pytest.raises(ValueError, match="non-uniform grids are unsupported"):
+        sim.forward_hybrid_phase1(n_steps=n_steps, fallback="raise")
+
+    fallback = sim.forward_hybrid_phase1(n_steps=n_steps, fallback="pure_ad")
+    baseline = sim.forward(n_steps=n_steps, checkpoint=True)
+    np.testing.assert_allclose(np.asarray(fallback.time_series), np.asarray(baseline.time_series), rtol=1e-6, atol=1e-12)
+    assert fallback.ntff_box == baseline.ntff_box
+    _assert_ntff_data_allclose(fallback.ntff_data, baseline.ntff_data)
+
+
 def test_phase1_hybrid_drude_remains_unsupported():
     sim = _make_drude_unsupported_phase1_sim()
     with pytest.raises(ValueError, match="Drude"):
@@ -4580,6 +4732,187 @@ def test_phase1_hybrid_mixed_dispersion_remains_unsupported():
     sim = _make_mixed_dispersion_unsupported_phase1_sim()
     with pytest.raises(ValueError, match="mixed Debye\\+Lorentz"):
         sim.forward_hybrid_phase1(n_steps=12, fallback="raise")
+
+
+@pytest.mark.parametrize(
+    "sim_factory",
+    [
+        _make_pec_ntff_supported_phase1_sim,
+        _make_cpml_ntff_supported_phase1_sim,
+        _make_lorentz_ntff_supported_phase1_sim,
+    ],
+)
+def test_phase1_ntff_supported_surfaces(sim_factory):
+    _assert_hybrid_ntff_supported_surface(sim_factory())
+
+
+def test_phase1_hybrid_pec_ntff_forward_matches_pure_forward():
+    _assert_hybrid_forward_matches_pure_forward(_make_pec_ntff_supported_phase1_sim())
+
+
+def test_phase1_hybrid_cpml_ntff_forward_matches_pure_forward():
+    _assert_hybrid_forward_matches_pure_forward(_make_cpml_ntff_supported_phase1_sim())
+
+
+def test_phase1_hybrid_lorentz_ntff_forward_matches_pure_forward():
+    _assert_hybrid_forward_matches_pure_forward(_make_lorentz_ntff_supported_phase1_sim())
+
+
+def test_phase1_ntff_inventory_includes_ntff_carry_fields():
+    sim = _make_pec_ntff_supported_phase1_sim()
+    report = sim.inspect_hybrid_phase1(n_steps=18)
+
+    assert report.supported
+    assert report.inventory is not None
+    assert {
+        "ntff.x_lo",
+        "ntff.x_hi",
+        "ntff.y_lo",
+        "ntff.y_hi",
+        "ntff.z_lo",
+        "ntff.z_hi",
+        "ntff.c_x_lo",
+        "ntff.c_x_hi",
+        "ntff.c_y_lo",
+        "ntff.c_y_hi",
+        "ntff.c_z_lo",
+        "ntff.c_z_hi",
+    } <= set(report.inventory.carry_fields)
+    assert "ntff_box" in report.inventory.replay_inputs
+    assert "final_ntff_data" in report.inventory.replay_outputs
+
+
+def test_phase1_ntff_forward_result_helper_matches_context_method():
+    sim = _make_pec_ntff_supported_phase1_sim()
+    context = sim.build_hybrid_phase1_context(n_steps=18)
+    top_level = sim.forward_hybrid_phase1(n_steps=18, fallback="raise")
+    via_helper = phase1_forward_result(
+        context.grid,
+        top_level.time_series,
+        ntff_data=top_level.ntff_data,
+        ntff_box=top_level.ntff_box,
+    )
+    via_method = context.forward_result()
+
+    np.testing.assert_allclose(
+        np.asarray(via_helper.time_series),
+        np.asarray(via_method.time_series),
+        rtol=1e-6,
+        atol=1e-12,
+    )
+    _assert_ntff_data_allclose(via_helper.ntff_data, via_method.ntff_data)
+    assert via_helper.ntff_box == via_method.ntff_box
+
+
+def test_phase1_ntff_observable_custom_vjp_directivity_gradient_matches_pure_ad():
+    sim = _make_lorentz_ntff_supported_phase1_sim()
+    grid = sim._build_grid()
+    _assert_ntff_hybrid_gradient_matches_pure_ad(
+        sim,
+        grid,
+        n_steps=18,
+        use_observable_primitive=True,
+    )
+
+
+def test_phase1_hybrid_ntff_observable_custom_vjp_matches_top_level_forward():
+    sim = _make_pec_ntff_supported_phase1_sim()
+    context = sim.build_hybrid_phase1_context(n_steps=18)
+
+    from rfx.hybrid_adjoint import _make_phase1_hybrid_observable_forward
+
+    via_observable = _make_phase1_hybrid_observable_forward(context)(context.eps_r)
+    via_top_level = sim.forward_hybrid_phase1(n_steps=18, fallback="raise")
+
+    np.testing.assert_allclose(
+        np.asarray(via_observable.time_series),
+        np.asarray(via_top_level.time_series),
+        rtol=1e-6,
+        atol=1e-12,
+    )
+    _assert_ntff_data_allclose(via_observable.ntff_data, via_top_level.ntff_data)
+
+
+@pytest.mark.parametrize(
+    "sim_factory",
+    [
+        _make_pec_ntff_supported_phase1_sim,
+        _make_cpml_ntff_supported_phase1_sim,
+    ],
+)
+def test_phase1_ntff_prepared_runner_forward_surface_matches_public_forward(sim_factory):
+    sim = sim_factory()
+    grid, prepared_runner, report = sim._inspect_hybrid_phase1_prepared(n_steps=18)
+
+    assert prepared_runner is not None
+    assert report.supported
+
+    via_api = sim.forward_hybrid_phase1_from_prepared_runner_state(
+        grid,
+        prepared_runner,
+        n_steps=18,
+    )
+    via_public = sim.forward_hybrid_phase1(n_steps=18, fallback="raise")
+
+    np.testing.assert_allclose(
+        np.asarray(via_api.time_series),
+        np.asarray(via_public.time_series),
+        rtol=1e-6,
+        atol=1e-12,
+    )
+    _assert_ntff_data_allclose(via_api.ntff_data, via_public.ntff_data)
+    assert via_api.ntff_box == via_public.ntff_box
+
+
+@pytest.mark.parametrize(
+    "sim_factory",
+    [
+        _make_pec_ntff_supported_phase1_sim,
+        _make_cpml_ntff_supported_phase1_sim,
+    ],
+)
+def test_phase1_ntff_inspected_runner_forward_surface_matches_public_forward(sim_factory):
+    sim = sim_factory()
+    grid, prepared_runner, report = sim._inspect_hybrid_phase1_prepared(n_steps=18)
+
+    assert prepared_runner is not None
+    assert report.supported
+
+    via_api = sim.forward_hybrid_phase1_from_inspected_runner_state(
+        grid,
+        prepared_runner,
+        report,
+        n_steps=18,
+    )
+    via_public = sim.forward_hybrid_phase1(n_steps=18, fallback="raise")
+
+    np.testing.assert_allclose(
+        np.asarray(via_api.time_series),
+        np.asarray(via_public.time_series),
+        rtol=1e-6,
+        atol=1e-12,
+    )
+    _assert_ntff_data_allclose(via_api.ntff_data, via_public.ntff_data)
+    assert via_api.ntff_box == via_public.ntff_box
+
+
+def test_phase1_ntff_prepared_runner_inspect_surface_matches_public_surface():
+    sim = _make_cpml_ntff_supported_phase1_sim()
+    grid, prepared_runner, report = sim._inspect_hybrid_phase1_prepared(n_steps=18)
+
+    assert prepared_runner is not None
+    assert report.supported
+
+    via_api = sim.inspect_hybrid_phase1_from_prepared_runner_state(
+        grid,
+        prepared_runner,
+        n_steps=18,
+    )
+    via_public = sim.inspect_hybrid_phase1(n_steps=18)
+
+    assert via_api == via_public
+    assert via_api.inventory is not None
+    assert "ntff_box" in via_api.inventory.replay_inputs
 
 
 def test_phase1_nonuniform_unsupported_classmethods_match_helper_functions():

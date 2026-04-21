@@ -3954,10 +3954,12 @@ class Simulation:
         num_periods: float = 20.0,
         fallback: str = "pure_ad",
     ) -> ForwardResult:
-        """Experimental Phase 1 hybrid-adjoint forward for time-series objectives.
+        """Experimental Phase 1 hybrid-adjoint forward for seam observables.
 
         This is an explicit, non-default execution lane for the approved
-        uniform / lossless / PEC-only proof-of-concept. Unsupported
+        uniform hybrid seam. Supported cases currently cover time-series
+        objectives plus optional NTFF accumulation on the current
+        uniform / zero-conductivity seam. Unsupported
         physics routes back to ``forward()`` when ``fallback="pure_ad"``
         and raises when ``fallback="raise"``.
         """
