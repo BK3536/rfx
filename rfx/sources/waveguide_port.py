@@ -127,10 +127,15 @@ class WaveguidePortConfig(NamedTuple):
     dft_window: str
     dft_window_alpha: float
 
-    # Source waveform parameters (differentiated Gaussian)
+    # Source waveform parameters. ``waveform`` selects the pulse shape:
+    # ``"differentiated_gaussian"`` (legacy, src = -2·arg·exp(-arg²)) or
+    # ``"modulated_gaussian"`` (Meep-style, src = cos(2π·f₀·(t-t₀))·exp(-arg²)).
+    # ``src_fcen`` is only used by the modulated-Gaussian dispatch.
     src_amp: float
     src_t0: float
     src_tau: float
+    src_fcen: float
+    waveform: str
 
     # DFT accumulators for S-parameter extraction
     v_probe_dft: jnp.ndarray   # (n_freqs,) complex — modal voltage at probe
@@ -248,6 +253,217 @@ def cutoff_frequency(a: float, b: float, m: int, n: int) -> float:
     return kc * C0_LOCAL / (2 * np.pi)
 
 
+def _second_diff_1d(widths: np.ndarray, *, bc: str) -> np.ndarray:
+    """Cell-centred finite-volume ∂²/∂u² operator with PEC-like BC.
+
+    bc="neumann" uses ghost = same-as-boundary reflection (TE Hx, ∂Hx/∂n = 0).
+    bc="dirichlet" uses ghost = negative-of-boundary (TM Ex / TE Ez tangential,
+    field = 0 at wall, so for cell-centred values ghost[-1] = -cell[0] about
+    a wall at the cell-face at u=0).
+
+    The operator is symmetric-negative-semidefinite (Neumann) or symmetric-
+    negative-definite (Dirichlet) so `eigh(-L)` yields non-negative kc².
+    """
+    n = len(widths)
+    D = np.zeros((n, n), dtype=np.float64)
+    w = np.asarray(widths, dtype=np.float64)
+    for j in range(n):
+        if j > 0:
+            d_left = 0.5 * (w[j - 1] + w[j])
+            coeff = 1.0 / (d_left * w[j])
+            D[j, j - 1] += coeff
+            D[j, j] -= coeff
+        elif bc == "dirichlet":
+            # Ghost cell beyond the wall reflects with opposite sign; the
+            # wall lives at the outer face (u = 0). Face-spacing to the
+            # mirrored ghost is w[0], and ghost value = -cell[0]:
+            #   flux = (cell[0] - ghost) / w[0] = 2·cell[0] / w[0]
+            coeff = 2.0 / (w[0] * w[0])
+            D[j, j] -= coeff
+        if j < n - 1:
+            d_right = 0.5 * (w[j] + w[j + 1])
+            coeff = 1.0 / (d_right * w[j])
+            D[j, j + 1] += coeff
+            D[j, j] -= coeff
+        elif bc == "dirichlet":
+            coeff = 2.0 / (w[-1] * w[-1])
+            D[j, j] -= coeff
+    return D
+
+
+def _cell_centred_gradient(field: np.ndarray, widths: np.ndarray,
+                            axis: int, *, bc: str) -> np.ndarray:
+    """∂field/∂u at cell centres for cell-centred values with PEC-like BC.
+
+    Uses face-derivatives averaged back to cell centres. Boundary handling:
+      bc="neumann"   → face-derivative at the wall is 0 (mirrored-equal ghost)
+      bc="dirichlet" → ghost value is -cell[0], face-derivative is
+                       2·cell[0]/w[0] (signed)
+
+    Returns an array the same shape as `field`.
+    """
+    n = field.shape[axis]
+    w = np.asarray(widths, dtype=np.float64)
+    field64 = np.asarray(field, dtype=np.float64)
+    field_swap = np.moveaxis(field64, axis, 0)
+    face = np.zeros_like(field_swap)
+    face_spacing = 0.5 * (w[:-1] + w[1:])  # (n-1,)
+    face[1:n, ...] = (field_swap[1:n, ...] - field_swap[:n - 1, ...]) \
+        / face_spacing.reshape((-1,) + (1,) * (field_swap.ndim - 1))
+    # Boundary faces (j = 0 and j = n) lie on the PEC walls.
+    if bc == "dirichlet":
+        # Ghost = -cell[0], face derivative = (cell[0] - (-cell[0])) / w[0]
+        #                                    = 2·cell[0] / w[0]
+        face0 = 2.0 * field_swap[0, ...] / w[0]
+        face_n = -2.0 * field_swap[-1, ...] / w[-1]
+    else:  # neumann
+        face0 = np.zeros_like(field_swap[0, ...])
+        face_n = np.zeros_like(field_swap[-1, ...])
+    # Cell-centre gradient = half-width-weighted mean of two face values.
+    grad_swap = np.zeros_like(field_swap)
+    grad_swap[0, ...] = 0.5 * (face0 + face[1, ...])
+    grad_swap[-1, ...] = 0.5 * (face[-1, ...] + face_n)
+    if n > 2:
+        grad_swap[1:n - 1, ...] = 0.5 * (face[1:n - 1, ...] + face[2:n, ...])
+    return np.moveaxis(grad_swap, 0, axis)
+
+
+def _pick_eigenmode_by_overlap(evecs: np.ndarray,
+                                evals: np.ndarray,
+                                analytic_flat: np.ndarray,
+                                num_candidates: int = 40,
+                                ) -> int:
+    """Pick the eigenvector with the largest |overlap| with an analytic shape.
+
+    Rank-based picking breaks when discrete kc² ordering swaps nearly-
+    degenerate analytic modes (e.g. TE30 vs TE21 on a WR-90 grid). Overlap
+    picks from the lowest `num_candidates` eigenvectors and returns the
+    index with the largest absolute projection onto `analytic_flat`.
+    """
+    n = min(num_candidates, evecs.shape[1])
+    analytic_unit = analytic_flat / max(float(np.linalg.norm(analytic_flat)),
+                                         1e-30)
+    overlaps = np.abs(evecs[:, :n].T @ analytic_unit)
+    return int(np.argmax(overlaps))
+
+
+def _discrete_te_mode_profiles(a: float, b: float, m: int, n: int,
+                                u_widths: np.ndarray,
+                                v_widths: np.ndarray,
+                                ) -> tuple[np.ndarray, np.ndarray,
+                                           np.ndarray, np.ndarray, float]:
+    """Discrete Yee-grid TE_mn mode profile.
+
+    Solves (∇_t² + kc²) Hx = 0 on the cell-centred transverse grid with
+    Neumann BC (PEC walls, ∂Hx/∂n = 0). Transverse E is obtained by
+    cell-centred FD of the discrete Hx, giving profiles that are
+    eigenvectors of the *exact* Yee finite-difference operator — the
+    residual directional leakage from analytic-vs-discrete mode mismatch
+    vanishes by construction.
+
+    Returns `(ey, ez, hy, hz, kc_num)` matching `_te_mode_profiles`'s
+    shape, amplitude-normalized so that `∫(ey²+ez²) dA = 1`.
+    """
+    nu = len(u_widths)
+    nv = len(v_widths)
+    D_uu = _second_diff_1d(u_widths, bc="neumann")
+    D_vv = _second_diff_1d(v_widths, bc="neumann")
+    lap = np.kron(D_uu, np.eye(nv)) + np.kron(np.eye(nu), D_vv)
+
+    evals, evecs = np.linalg.eigh(-lap)  # eigenvalues = kc² ≥ 0, ascending
+
+    # Pick eigenvector by overlap with analytic Hx = cos(mπy/a)·cos(nπz/b).
+    # Rank picking fails when discrete kc² ordering swaps nearly-degenerate
+    # analytic modes (e.g. TE30 ↔ TE21 on WR-90).
+    u_c = np.cumsum(u_widths) - 0.5 * np.asarray(u_widths)
+    v_c = np.cumsum(v_widths) - 0.5 * np.asarray(v_widths)
+    hx_ana = (np.cos(m * np.pi * u_c / a)[:, None]
+              * np.cos(n * np.pi * v_c / b)[None, :])
+    rank = _pick_eigenmode_by_overlap(evecs, evals, hx_ana.ravel())
+    kc2 = float(max(evals[rank], 0.0))
+    hx = evecs[:, rank].reshape(nu, nv)
+
+    # Align sign (eigh returns arbitrary sign).
+    if float(np.sum(hx * hx_ana)) < 0.0:
+        hx = -hx
+
+    dHxdu = _cell_centred_gradient(hx, u_widths, axis=0, bc="neumann")
+    dHxdv = _cell_centred_gradient(hx, v_widths, axis=1, bc="neumann")
+
+    # Match _te_mode_profiles sign convention for Hx = cos(mπy/a)·cos(nπz/b):
+    #   Analytic ey = -(nπ/b) cos(mπy/a) sin(nπz/b).
+    #   Since ∂Hx/∂v = -(nπ/b) cos(mπy/a) sin(nπz/b), we have ey = +∂Hx/∂v.
+    #   Analytic ez = +(mπ/a) sin(mπy/a) cos(nπz/b) = -∂Hx/∂u.
+    ey = dHxdv
+    ez = -dHxdu
+    # For forward +x propagation and Poynting x̂·P = Ey·Hz − Ez·Hy > 0:
+    hy = -ez.copy()
+    hz = ey.copy()
+
+    dA = np.asarray(u_widths)[:, None] * np.asarray(v_widths)[None, :]
+    power = float(np.sum((ey ** 2 + ez ** 2) * dA))
+    if power > 0:
+        norm = np.sqrt(power)
+        ey /= norm
+        ez /= norm
+        hy /= norm
+        hz /= norm
+    return ey, ez, hy, hz, float(np.sqrt(kc2))
+
+
+def _discrete_tm_mode_profiles(a: float, b: float, m: int, n: int,
+                                u_widths: np.ndarray,
+                                v_widths: np.ndarray,
+                                ) -> tuple[np.ndarray, np.ndarray,
+                                           np.ndarray, np.ndarray, float]:
+    """Discrete Yee-grid TM_mn mode profile.
+
+    Solves (∇_t² + kc²) Ex = 0 on the cell-centred transverse grid with
+    Dirichlet BC (PEC walls, Ex = 0). TM requires m,n ≥ 1.
+    """
+    if m < 1 or n < 1:
+        raise ValueError(f"TM modes require m >= 1 and n >= 1, got ({m}, {n})")
+    nu = len(u_widths)
+    nv = len(v_widths)
+    D_uu = _second_diff_1d(u_widths, bc="dirichlet")
+    D_vv = _second_diff_1d(v_widths, bc="dirichlet")
+    lap = np.kron(D_uu, np.eye(nv)) + np.kron(np.eye(nu), D_vv)
+
+    evals, evecs = np.linalg.eigh(-lap)
+
+    # Overlap-pick eigenvector against analytic Ex = sin(mπy/a)·sin(nπz/b).
+    u_c = np.cumsum(u_widths) - 0.5 * np.asarray(u_widths)
+    v_c = np.cumsum(v_widths) - 0.5 * np.asarray(v_widths)
+    ex_ana = (np.sin(m * np.pi * u_c / a)[:, None]
+              * np.sin(n * np.pi * v_c / b)[None, :])
+    rank = _pick_eigenmode_by_overlap(evecs, evals, ex_ana.ravel())
+    kc2 = float(max(evals[rank], 0.0))
+    ex = evecs[:, rank].reshape(nu, nv)
+
+    if float(np.sum(ex * ex_ana)) < 0.0:
+        ex = -ex
+
+    dExdu = _cell_centred_gradient(ex, u_widths, axis=0, bc="dirichlet")
+    dExdv = _cell_centred_gradient(ex, v_widths, axis=1, bc="dirichlet")
+
+    # Analytic convention: ey = (mπ/a)·cos(mπy/a)·sin(nπz/b) = ∂Ex/∂u
+    #                     ez = (nπ/b)·sin(mπy/a)·cos(nπz/b) = ∂Ex/∂v
+    ey = dExdu
+    ez = dExdv
+    hy = -ez.copy()
+    hz = ey.copy()
+
+    dA = np.asarray(u_widths)[:, None] * np.asarray(v_widths)[None, :]
+    power = float(np.sum((ey ** 2 + ez ** 2) * dA))
+    if power > 0:
+        norm = np.sqrt(power)
+        ey /= norm
+        ez /= norm
+        hy /= norm
+        hz /= norm
+    return ey, ez, hy, hz, float(np.sqrt(kc2))
+
+
 def init_waveguide_port(
     port: WaveguidePort,
     dx,
@@ -261,6 +477,8 @@ def init_waveguide_port(
     dft_window: str = "tukey",
     dft_window_alpha: float = 0.25,
     dt: float = 0.0,
+    waveform: str = "differentiated_gaussian",
+    mode_profile: str = "analytic",
 ) -> WaveguidePortConfig:
     """Initialize a waveguide port with precomputed mode profiles.
 
@@ -333,21 +551,56 @@ def init_waveguide_port(
     u_coords = np.cumsum(u_widths_np) - 0.5 * u_widths_np
     v_coords = np.cumsum(v_widths_np) - 0.5 * v_widths_np
 
-    if port.mode_type == "TE":
-        ey, ez, hy, hz = _te_mode_profiles(
-            port.a, port.b, m, n, u_coords, v_coords,
-            u_widths=u_widths_np, v_widths=v_widths_np,
+    if mode_profile not in ("analytic", "discrete"):
+        raise ValueError(
+            "mode_profile must be 'analytic' or 'discrete', "
+            f"got {mode_profile!r}"
         )
+    if mode_profile == "discrete":
+        if port.mode_type == "TE":
+            ey, ez, hy, hz, kc_num = _discrete_te_mode_profiles(
+                port.a, port.b, m, n, u_widths_np, v_widths_np,
+            )
+        else:
+            ey, ez, hy, hz, kc_num = _discrete_tm_mode_profiles(
+                port.a, port.b, m, n, u_widths_np, v_widths_np,
+            )
+        # Use the discrete eigenvalue's kc for f_c so h_inc_table's
+        # β(ω) = √(k² − kc_num²) matches the Yee-grid mode exactly.
+        f_c = kc_num * C0_LOCAL / (2.0 * np.pi)
     else:
-        ey, ez, hy, hz = _tm_mode_profiles(
-            port.a, port.b, m, n, u_coords, v_coords,
-            u_widths=u_widths_np, v_widths=v_widths_np,
+        if port.mode_type == "TE":
+            ey, ez, hy, hz = _te_mode_profiles(
+                port.a, port.b, m, n, u_coords, v_coords,
+                u_widths=u_widths_np, v_widths=v_widths_np,
+            )
+        else:
+            ey, ez, hy, hz = _tm_mode_profiles(
+                port.a, port.b, m, n, u_coords, v_coords,
+                u_widths=u_widths_np, v_widths=v_widths_np,
+            )
+        f_c = cutoff_frequency(port.a, port.b, m, n)
+
+    if waveform not in ("differentiated_gaussian", "modulated_gaussian"):
+        raise ValueError(
+            "waveform must be 'differentiated_gaussian' or 'modulated_gaussian', "
+            f"got {waveform!r}"
         )
-
-    f_c = cutoff_frequency(port.a, port.b, m, n)
-
-    tau = 1.0 / (f0 * bandwidth * np.pi)
-    t0 = 3.0 * tau
+    if waveform == "modulated_gaussian":
+        # Meep gaussian_src_time convention: width = 1/fwidth,
+        # peak_time = cutoff = 5·width. In rfx's exp(-(tt/τ)²) form this
+        # is τ = √2·width = √2/fwidth (so exp(-tt²/τ²) matches Meep's
+        # exp(-tt²/(2·width²))), and t0 = 5·width = 5/fwidth. Using the
+        # π·fwidth convention would make the pulse π× narrower in time
+        # (π× broader in spectrum) — the spectrum then straddles the
+        # TE-mode cutoff and drives excess directional leakage.
+        fwidth = f0 * bandwidth
+        width = 1.0 / fwidth
+        tau = np.sqrt(2.0) * width
+        t0 = 5.0 * width
+    else:
+        tau = 1.0 / (f0 * bandwidth * np.pi)
+        t0 = 3.0 * tau
 
     step_sign = 1 if port.direction.startswith("+") else -1
     ref_x = port.x_index + step_sign * ref_offset
@@ -415,18 +668,43 @@ def init_waveguide_port(
         # Compute tables with unit amplitude; ``apply_waveguide_port_h/e``
         # scale by ``cfg.src_amp`` at runtime so ``_reset_cfg(drive=False)``
         # zeros both corrections together.
-        e_inc_raw = (-2.0 * arg_arr) * np.exp(-(arg_arr ** 2))
+        if waveform == "modulated_gaussian":
+            # Meep's GaussianSource shape. No DC content — no sub-cutoff
+            # filter needed, which eliminates the raised-cosine filter tail
+            # that drives directional leakage in the differentiated-Gaussian
+            # path. The hard ±5·width cutoff (= ±t0) matches Meep's
+            # gaussian_src_time::dipole and kills any residual early/late
+            # envelope numerics.
+            tt = t_arr - t0
+            e_inc_raw = np.cos(2.0 * np.pi * f0 * tt) * np.exp(-(arg_arr ** 2))
+            e_inc_raw = np.where(np.abs(tt) > t0, 0.0, e_inc_raw)
+        else:
+            e_inc_raw = (-2.0 * arg_arr) * np.exp(-(arg_arr ** 2))
         e_spec_raw = np.fft.rfft(e_inc_raw)
         freqs_spec = np.fft.rfftfreq(n_steps_aux, d=float(dt))
         omega = 2.0 * np.pi * freqs_spec
         kc = 2.0 * np.pi * f_c / C0_LOCAL
         k_arr = omega / C0_LOCAL
         propagating = omega > (2.0 * np.pi * f_c)
-        beta_arr = np.where(
-            propagating,
-            np.sqrt(np.maximum(k_arr ** 2 - kc ** 2, 0.0)),
-            0.0,
-        )
+        if mode_profile == "discrete":
+            # Invert the 3D Yee dispersion relation along the port-normal axis
+            # for the given transverse kc_num:
+            #   (sin(ω·dt/2)/(c·dt/2))² = (sin(β·dx/2)/(dx/2))² + kc_num².
+            # Using the discrete β in the half-cell phase shift eliminates the
+            # O((β·dx)²) continuous-vs-Yee dispersion residue in h_inc_table.
+            s_t = np.sin(omega * 0.5 * float(dt)) / (0.5 * float(dt))
+            s_x_sq = np.maximum(
+                (s_t / C0_LOCAL) ** 2 - kc ** 2, 0.0,
+            ) * (0.5 * float(dx)) ** 2
+            s_x = np.sqrt(np.minimum(s_x_sq, 1.0))
+            beta_arr = np.where(propagating,
+                                (2.0 / float(dx)) * np.arcsin(s_x), 0.0)
+        else:
+            beta_arr = np.where(
+                propagating,
+                np.sqrt(np.maximum(k_arr ** 2 - kc ** 2, 0.0)),
+                0.0,
+            )
         if port.mode_type == "TE":
             z_mode_arr = np.where(
                 propagating,
@@ -445,12 +723,21 @@ def init_waveguide_port(
         # excites evanescent near-field if injected. A smooth raised-
         # cosine taper across [f_c, 1.2·f_c] avoids Gibbs ringing that a
         # hard cutoff would leave in e_inc_time.
-        f_c_arr = np.full_like(freqs_spec, f_c)
-        f_taper_hi = 1.2 * f_c
-        taper_ratio = np.clip((freqs_spec - f_c_arr) / (f_taper_hi - f_c),
-                              0.0, 1.0)
-        filt_weight = 0.5 * (1.0 - np.cos(np.pi * taper_ratio))
-        e_spec_filt = e_spec_raw * filt_weight
+        #
+        # The modulated-Gaussian pulse has effectively zero DC content and
+        # its spectrum is naturally bandpassed around f₀, so the taper is
+        # skipped — the raised-cosine tail is the dominant directional
+        # leakage driver for the differentiated source.
+        if waveform == "modulated_gaussian":
+            e_spec_filt = e_spec_raw
+        else:
+            f_c_arr = np.full_like(freqs_spec, f_c)
+            f_taper_hi = 1.2 * f_c
+            taper_ratio = np.clip(
+                (freqs_spec - f_c_arr) / (f_taper_hi - f_c), 0.0, 1.0,
+            )
+            filt_weight = 0.5 * (1.0 - np.cos(np.pi * taper_ratio))
+            e_spec_filt = e_spec_raw * filt_weight
         e_inc_time = np.fft.irfft(e_spec_filt, n_steps_aux)
         # Forward wave in rfx's engineering convention exp(j(ωt − βx)):
         # shifting from (x_src, t) to (x_src − dx/2, t + dt/2) multiplies
@@ -466,9 +753,10 @@ def init_waveguide_port(
         e_inc_table = jnp.asarray(e_inc_time, dtype=jnp.float32)
         h_inc_table = jnp.asarray(h_inc_time, dtype=jnp.float32)
     else:
-        # Empty tables: runtime code short-circuits.
-        e_inc_table = jnp.zeros((max(n_steps_aux, 1),), dtype=jnp.float32)
-        h_inc_table = jnp.zeros((max(n_steps_aux, 1),), dtype=jnp.float32)
+        # Tables unavailable (dt=0 at init). Size-1 sentinel triggers the
+        # legacy soft-E source fallback inside apply_waveguide_port_e.
+        e_inc_table = jnp.zeros((1,), dtype=jnp.float32)
+        h_inc_table = jnp.zeros((1,), dtype=jnp.float32)
 
     return WaveguidePortConfig(
         x_index=port.x_index,
@@ -505,6 +793,8 @@ def init_waveguide_port(
         src_amp=float(amplitude),
         src_t0=float(t0),
         src_tau=float(tau),
+        src_fcen=float(f0),
+        waveform=str(waveform),
         v_probe_dft=zeros_c,
         v_ref_dft=zeros_c,
         i_probe_dft=zeros_c,
@@ -551,9 +841,21 @@ def inject_waveguide_port(state, cfg: WaveguidePortConfig,
     it now uses ``apply_waveguide_port_h`` and ``apply_waveguide_port_e``
     together, which form a one-sided TFSF boundary and launch a
     unidirectional mode wave (no spurious backward emission).
+
+    Dispatches on ``cfg.waveform`` so a user who built the port with
+    ``waveform="modulated_gaussian"`` sees a consistent pulse shape
+    whether they call this helper manually or rely on the scan-body pair.
     """
     arg = (t - cfg.src_t0) / cfg.src_tau
-    src_val = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
+    if cfg.waveform == "modulated_gaussian":
+        tt = t - cfg.src_t0
+        src_val = cfg.src_amp * jnp.cos(
+            2.0 * jnp.pi * cfg.src_fcen * tt
+        ) * jnp.exp(-(arg ** 2))
+        # Meep-style hard cutoff at ±5·width (= ±t0 for s=5).
+        src_val = jnp.where(jnp.abs(tt) > cfg.src_t0, 0.0, src_val)
+    else:
+        src_val = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
 
     field_u = getattr(state, cfg.e_u_component)
     field_v = getattr(state, cfg.e_v_component)
@@ -575,19 +877,22 @@ def apply_waveguide_port_h(state, cfg: WaveguidePortConfig,
     cannot propagate in the guide anyway — never reaches the 3D grid.
 
     Same pattern as ``apply_tfsf_h`` in ``rfx/sources/tfsf.py``.
+
+    When ``cfg.e_inc_table`` is empty (init was called without ``dt``),
+    the TFSF pair cannot be computed — this function is a no-op and
+    ``apply_waveguide_port_e`` handles source emission via the legacy
+    soft-E path instead. This keeps low-level callers that predate the
+    TFSF pair working without API changes.
     """
     table = cfg.e_inc_table
     table_size = table.shape[0]
     if table_size <= 1:
-        # Init did not receive a positive dt / num_steps; fall back to the
-        # raw soft-source formula so the port still emits something.
-        t_fallback = jnp.asarray(step, dtype=jnp.float32) * dt
-        arg = (t_fallback - cfg.src_t0) / cfg.src_tau
-        src_val = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
-    else:
-        safe_step = jnp.clip(jnp.asarray(step, dtype=jnp.int32),
-                             0, table_size - 1)
-        src_val = cfg.src_amp * table[safe_step]
+        # Tables unavailable — delegate source emission to the legacy
+        # soft-E fallback inside apply_waveguide_port_e. No-op here.
+        return state
+    safe_step = jnp.clip(jnp.asarray(step, dtype=jnp.int32),
+                         0, table_size - 1)
+    src_val = cfg.src_amp * table[safe_step]
     coeff = dt / (MU_0 * dx)
 
     # For a "+axis" port the source's backward emission travels in "−axis";
@@ -632,12 +937,32 @@ def apply_waveguide_port_e(state, cfg: WaveguidePortConfig,
     coeff = dt / (EPS_0 * dx)
 
     # h_inc_table is empty (shape (1,)) when dt or dft_total_steps was not
-    # supplied at init time; in that case the E correction is a no-op and
-    # the port reverts to a plain soft E source.
+    # supplied at init time. In that case the paired H correction is also
+    # disabled (see apply_waveguide_port_h) and we emit via the legacy
+    # soft-E source so low-level callers that never knew about the TFSF
+    # pair keep working unchanged.
     table = cfg.h_inc_table
     table_size = table.shape[0]
     if table_size <= 1:
-        return state
+        t = jnp.asarray(step, dtype=jnp.float32) * dt
+        arg = (t - cfg.src_t0) / cfg.src_tau
+        if cfg.waveform == "modulated_gaussian":
+            tt = t - cfg.src_t0
+            src_val = cfg.src_amp * jnp.cos(
+                2.0 * jnp.pi * cfg.src_fcen * tt
+            ) * jnp.exp(-(arg ** 2))
+            src_val = jnp.where(jnp.abs(tt) > cfg.src_t0, 0.0, src_val)
+        else:
+            src_val = cfg.src_amp * (-2.0 * arg) * jnp.exp(-(arg ** 2))
+        field_u = getattr(state, cfg.e_u_component)
+        field_v = getattr(state, cfg.e_v_component)
+        indexer = _plane_indexer(cfg)
+        field_u = field_u.at[indexer].add(src_val * cfg.ey_profile)
+        field_v = field_v.at[indexer].add(src_val * cfg.ez_profile)
+        return state._replace(**{
+            cfg.e_u_component: field_u,
+            cfg.e_v_component: field_v,
+        })
 
     safe_step = jnp.clip(jnp.asarray(step, dtype=jnp.int32), 0, table_size - 1)
     # Table stores the unit-amplitude response; scale by cfg.src_amp so the
@@ -1311,6 +1636,8 @@ def init_multimode_waveguide_port(
     dft_window: str = "tukey",
     dft_window_alpha: float = 0.25,
     dt: float = 0.0,
+    waveform: str = "differentiated_gaussian",
+    mode_profile: str = "analytic",
 ) -> list[WaveguidePortConfig]:
     """Initialize a multi-mode waveguide port.
 
@@ -1356,7 +1683,7 @@ def init_multimode_waveguide_port(
             amplitude=amplitude, probe_offset=probe_offset,
             ref_offset=ref_offset, dft_total_steps=dft_total_steps,
             dft_window=dft_window, dft_window_alpha=dft_window_alpha,
-            dt=dt,
+            dt=dt, waveform=waveform, mode_profile=mode_profile,
         )
         return [cfg]
 
@@ -1388,7 +1715,7 @@ def init_multimode_waveguide_port(
             amplitude=mode_amplitude, probe_offset=probe_offset,
             ref_offset=ref_offset, dft_total_steps=dft_total_steps,
             dft_window=dft_window, dft_window_alpha=dft_window_alpha,
-            dt=dt,
+            dt=dt, waveform=waveform, mode_profile=mode_profile,
         )
         cfgs.append(cfg)
 

@@ -577,9 +577,12 @@ def test_compiled_runner_waveguide_port_matches_manual_loop():
         state = update_h(state, materials, grid.dt, grid.dx)
         state, cs = apply_cpml_h(state, cp, cs, grid, axes="x")
         state = update_e(state, materials, grid.dt, grid.dx)
+        # Source injection before cpml_e/pec to match the compiled scan-body
+        # ordering introduced in 15c6a13 (waveguide-port TFSF-pair / soft-E
+        # fallback both run between update_e and apply_cpml_e).
+        state = inject_waveguide_port(state, manual_cfg, t, grid.dt, grid.dx)
         state, cs = apply_cpml_e(state, cp, cs, grid, axes="x")
         state = apply_pec(state, axes="yz")
-        state = inject_waveguide_port(state, manual_cfg, t, grid.dt, grid.dx)
         manual_cfg = update_waveguide_port_probe(manual_cfg, state, grid.dt, grid.dx)
 
     s21_compiled = np.array(extract_waveguide_s21(compiled_cfg))
