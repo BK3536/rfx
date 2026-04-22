@@ -101,22 +101,27 @@ SemVer — **BREAKING** entries are flagged in upper-case.
   locally via `dx_profile=` cuts this by ~30%.  Meep at equivalent
   resolution shows a comparable ~0.05 floor, so this is a
   shared-FDTD discretization limit, not an rfx-specific bug.
-- rfx vs Meep `∠S21` residual of ~90° on
-  `examples/crossval/11_waveguide_port_wr90.py` decomposes via a
-  linear-in-β fit (`scripts/phase_offset_beta_sweep.py`) into **two
-  characterised components** measured on the WR-90 slab case
-  (2026-04-22 run): a ~**−5.9 mm equivalent reference-plane
-  misalignment** (β-dependent) and a ~**−57° constant offset**
-  (β-independent, likely source-pulse t0 or mode-normalization sign
-  convention).  Fit RMS residual is 2.3°, so ~100% of the 90° is
-  captured by those two parameters.  Neither is a correctness bug in
-  the extractor — they are convention shifts between rfx and this
-  Meep reference script (`microwave-energy/meep_simulation/
-  wr90_sparam_reference.py`).  Magnitude agreement (|S21|) remains
-  3–5% across the band.  Users comparing rfx to an external Meep
-  setup should align monitor positions and source pulse conventions
-  explicitly; the 5.9 mm shift is specific to the present reference
-  script and is NOT a property of rfx.
+- rfx vs Meep `∠S21` residual on the WR-90 crossval slab case
+  (`examples/crossval/11_waveguide_port_wr90.py`) fits a linear
+  `Δφ(rad) = slope·β + intercept` model to RMS 2.3° with
+  slope ≈ −5.9 mm and intercept ≈ −57°
+  (`scripts/phase_offset_beta_sweep.py`).  Applying this correction
+  back to the slab rfx S21 reduces the RMS phase diff from 113° to
+  2.3° — VERIFIED.  **However**, the same (slope, intercept) does
+  NOT transfer to the PEC-short case (`|S11|` RMS stays 104° → 103°;
+  see `scripts/verify_phase_alignment.py`).  The offset is therefore
+  **geometry-dependent**, not a universal convention shift: the
+  intercept ≈ −57° is close in magnitude to the slab's own
+  `exp(−j(β_slab − β_empty)·L_slab)` phase (ranges −56° to −69° over
+  the band) that appears in the two-run normalization when device and
+  reference runs have different propagation constants inside the
+  device region.  Root cause is either rfx or Meep (or both) handling
+  that slab-boundary phase subtly differently — still under
+  investigation.  Magnitude agreement (|S21|) remains within 3–5%.
+  Practical guidance for users: do not expect bit-level phase
+  agreement with an external Meep script that has its own monitor /
+  source pulse conventions; compare per-geometry against analytic
+  Airy (which rfx matches in |S21| within ≈ 5% on the slab).
 
 ### Do-not-repeat log (carry-over from diagnosis)
 
