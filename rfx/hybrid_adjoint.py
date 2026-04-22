@@ -80,6 +80,7 @@ class Phase1HybridPreparedRunnerState:
     sources: list | tuple
     raw_phase1_sources: tuple[tuple[int, int, int, str, jnp.ndarray], ...]
     probes: list | tuple
+    port_metadata: object | None
     debye_spec: tuple | None
     debye: tuple | None
     lorentz_spec: tuple | None
@@ -99,6 +100,7 @@ class Phase1HybridPreparedRunnerState:
             sources=prepared.sources,
             raw_phase1_sources=prepared.raw_phase1_sources,
             probes=prepared.probes,
+            port_metadata=prepared.port_metadata,
             debye_spec=prepared.debye_spec,
             debye=prepared.debye,
             lorentz_spec=prepared.lorentz_spec,
@@ -151,7 +153,7 @@ class Phase1HybridContext:
     dx: float
     eps_r: jnp.ndarray
     mu_r: jnp.ndarray
-    zero_sigma: jnp.ndarray
+    sigma: jnp.ndarray
     debye_spec: tuple | None
     lorentz_spec: tuple | None
     cpml_axes: str
@@ -191,6 +193,10 @@ class Phase1HybridContext:
         carry_arrays: list[tuple[str, jnp.ndarray]] = list(zip(carry_fields, initial_state))
         replay_inputs = ["eps_r", "mu_r", "source_waveforms_raw"]
         replay_outputs = ["time_series", "final_fields"]
+        if np.any(np.abs(np.asarray(inputs.materials.sigma)) > 0.0):
+            replay_inputs.append("sigma")
+        if inputs.port_metadata is not None and _supports_one_excited_lumped_port(inputs.port_metadata):
+            replay_inputs.append("port_metadata")
         debye_spec = inputs.debye_spec
         lorentz_spec = inputs.lorentz_spec
         if debye_spec is not None and lorentz_spec is not None:
@@ -253,7 +259,7 @@ class Phase1HybridContext:
             dx=inputs.grid.dx,
             eps_r=inputs.materials.eps_r,
             mu_r=inputs.materials.mu_r,
-            zero_sigma=jnp.zeros_like(inputs.materials.sigma),
+            sigma=inputs.materials.sigma,
             debye_spec=debye_spec,
             lorentz_spec=lorentz_spec,
             cpml_axes=cpml_axes,
@@ -338,6 +344,7 @@ class Phase1HybridInputs:
     materials: MaterialArrays | None
     raw_sources: list[tuple[int, int, int, str, jnp.ndarray]] | tuple[tuple[int, int, int, str, jnp.ndarray], ...]
     probes: list[ProbeSpec] | tuple[ProbeSpec, ...]
+    port_metadata: object | None
     debye_spec: tuple | None
     debye: tuple | None
     lorentz_spec: tuple | None
@@ -367,6 +374,7 @@ class Phase1HybridInputs:
             materials=None,
             raw_sources=(),
             probes=(),
+            port_metadata=None,
             debye_spec=None,
             debye=None,
             lorentz_spec=None,
@@ -407,6 +415,7 @@ class Phase1HybridInputs:
             materials=prepared.materials,
             raw_sources=prepared.raw_phase1_sources,
             probes=prepared.probes,
+            port_metadata=prepared.port_metadata,
             debye_spec=prepared.debye_spec,
             debye=prepared.debye,
             lorentz_spec=prepared.lorentz_spec,
@@ -514,6 +523,7 @@ class Phase1HybridInspection:
     probe_count: int
     boundary: str
     periodic: tuple[bool, bool, bool]
+    port_metadata: object | None = None
 
     @classmethod
     def unsupported(
@@ -524,6 +534,7 @@ class Phase1HybridInspection:
         probe_count: int,
         boundary: str,
         periodic: tuple[bool, bool, bool],
+        port_metadata: object | None = None,
     ) -> Phase1HybridInspection:
         return cls(
             supported=False,
@@ -533,6 +544,7 @@ class Phase1HybridInspection:
             probe_count=probe_count,
             boundary=boundary,
             periodic=periodic,
+            port_metadata=port_metadata,
         )
 
     @classmethod
@@ -551,6 +563,7 @@ class Phase1HybridInspection:
             lorentz=inputs.lorentz,
             ntff_box=inputs.ntff_box,
             waveguide_ports=inputs.waveguide_ports,
+            port_metadata=inputs.port_metadata,
             pec_mask=inputs.pec_mask,
             pec_occupancy=inputs.pec_occupancy,
             grid=inputs.grid,
@@ -571,6 +584,7 @@ class Phase1HybridInspection:
                 probe_count=report.probe_count,
                 boundary=report.boundary,
                 periodic=report.periodic,
+                port_metadata=inputs.port_metadata,
             )
         return report
 
@@ -587,6 +601,7 @@ class Phase1HybridInspection:
             probe_count=probe_count,
             boundary=boundary,
             periodic=(False, False, False),
+            port_metadata=None,
         )
 
     @classmethod
@@ -789,6 +804,46 @@ def unsupported_phase1_hybrid_nonuniform_inputs(*, probe_count: int, boundary: s
     )
 
 
+def _supports_one_excited_lumped_port(port_metadata: object | None) -> bool:
+    if port_metadata is None:
+        return False
+    return bool(
+        port_metadata.total_ports == 1
+        and port_metadata.excited_ports == 1
+        and port_metadata.passive_ports == 0
+        and port_metadata.wire_ports == 0
+        and port_metadata.waveguide_ports == 0
+        and port_metadata.floquet_ports == 0
+        and port_metadata.soft_source_count == 0
+        and port_metadata.excited_lumped_port_cell is not None
+        and port_metadata.excited_lumped_port_component is not None
+        and port_metadata.excited_lumped_port_sigma is not None
+        and not port_metadata.excited_port_had_pec
+    )
+
+
+def _sigma_matches_supported_one_port_subset(
+    sigma: np.ndarray,
+    port_metadata: object | None,
+) -> bool:
+    if not _supports_one_excited_lumped_port(port_metadata):
+        return False
+    nonzero = np.argwhere(np.abs(sigma) > 0.0)
+    if nonzero.shape[0] != 1:
+        return False
+    cell = tuple(int(v) for v in nonzero[0])
+    if cell != tuple(port_metadata.excited_lumped_port_cell):
+        return False
+    return bool(
+        np.isclose(
+            float(sigma[cell]),
+            float(port_metadata.excited_lumped_port_sigma),
+            rtol=1e-6,
+            atol=1e-8,
+        )
+    )
+
+
 def phase1_hybrid_support_reasons(
     *,
     boundary: str,
@@ -802,8 +857,9 @@ def phase1_hybrid_support_reasons(
     lorentz: tuple | None,
     ntff_box: object | None,
     waveguide_ports: list | tuple | None,
-    pec_mask: jnp.ndarray | None,
-    pec_occupancy: jnp.ndarray | None,
+    port_metadata: object | None = None,
+    pec_mask: jnp.ndarray | None = None,
+    pec_occupancy: jnp.ndarray | None = None,
     n_warmup: int = 0,
     checkpoint_every: int | None = None,
 ) -> tuple[str, ...]:
@@ -824,6 +880,13 @@ def phase1_hybrid_support_reasons(
         lorentz_poles, _ = lorentz_spec
         if any(getattr(pole, "omega_0", None) == 0.0 for pole in lorentz_poles):
             reasons.append("Drude-shaped Lorentz poles are unsupported")
+    if port_metadata is not None and port_metadata.total_ports > 0:
+        if port_metadata.soft_source_count > 0:
+            reasons.append("mixed add_source()-style J-sources and port excitation are unsupported")
+        if not _supports_one_excited_lumped_port(port_metadata):
+            reasons.append("only one excited lumped port is supported in Phase 1 hybrid mode")
+        if port_metadata.excited_port_had_pec:
+            reasons.append("pre-existing PEC at the excited port cell is unsupported")
     if waveguide_ports:
         reasons.append("waveguide/wire/floquet port accumulation is unsupported")
     if pec_mask is not None:
@@ -839,9 +902,9 @@ def phase1_hybrid_support_reasons(
     if not probes:
         reasons.append("at least one probe is required")
     sigma = np.asarray(materials.sigma)
-    if np.any(np.abs(sigma) > 0.0):
+    if np.any(np.abs(sigma) > 0.0) and not _sigma_matches_supported_one_port_subset(sigma, port_metadata):
         reasons.append("lossy materials / port-loaded conductivity are unsupported")
-    return tuple(reasons)
+    return tuple(dict.fromkeys(reasons))
 
 
 def prepare_phase1_hybrid_from_inspected_runner_state(
@@ -1028,6 +1091,7 @@ def inspect_phase1_hybrid(
     materials: MaterialArrays,
     raw_sources: list[tuple[int, int, int, str, jnp.ndarray]] | tuple[tuple[int, int, int, str, jnp.ndarray], ...],
     probes: list[ProbeSpec] | tuple[ProbeSpec, ...],
+    port_metadata: object | None,
     debye_spec: tuple | None,
     debye: tuple | None,
     lorentz_spec: tuple | None,
@@ -1058,6 +1122,7 @@ def inspect_phase1_hybrid(
         lorentz=lorentz,
         ntff_box=ntff_box,
         waveguide_ports=waveguide_ports,
+        port_metadata=port_metadata,
         pec_mask=pec_mask,
         pec_occupancy=pec_occupancy,
         n_warmup=n_warmup,
@@ -1072,6 +1137,7 @@ def inspect_phase1_hybrid(
                 materials=materials,
                 raw_sources=raw_sources,
                 probes=probes,
+                port_metadata=port_metadata,
                 debye_spec=debye_spec,
                 debye=debye,
                 lorentz_spec=lorentz_spec,
@@ -1097,6 +1163,7 @@ def inspect_phase1_hybrid(
         probe_count=len(probes),
         boundary=boundary,
         periodic=periodic,
+        port_metadata=port_metadata,
     )
 
 
@@ -1200,6 +1267,7 @@ def build_phase1_hybrid_context(
             materials=materials,
             raw_sources=raw_sources,
             probes=probes,
+            port_metadata=None,
             debye_spec=debye_spec,
             debye=None,
             lorentz_spec=lorentz_spec,
@@ -2617,7 +2685,7 @@ def _coeffs_from_eps(context: Phase1HybridContext, eps_r: jnp.ndarray) -> Update
 def _materials_from_eps(context: Phase1HybridContext, eps_r: jnp.ndarray) -> MaterialArrays:
     return MaterialArrays(
         eps_r=eps_r,
-        sigma=context.zero_sigma,
+        sigma=context.sigma,
         mu_r=context.mu_r,
     )
 
@@ -2669,7 +2737,9 @@ def _source_values_from_eps(
     if src_index is not None:
         i, j, k, _ = context.src_meta[src_index]
         eps = eps_r[i, j, k] * jnp.float32(EPS_0)
-        cb = jnp.float32(context.dt) / eps
+        sigma = context.sigma[i, j, k]
+        loss = sigma * jnp.float32(context.dt) / (jnp.float32(2.0) * eps)
+        cb = (jnp.float32(context.dt) / eps) / (jnp.float32(1.0) + loss)
         return raw_src_vals * cb
 
     if raw_src_vals.shape[0] == 0:
@@ -2678,7 +2748,9 @@ def _source_values_from_eps(
     scaled = []
     for idx, (i, j, k, _) in enumerate(context.src_meta):
         eps = eps_r[i, j, k] * jnp.float32(EPS_0)
-        cb = jnp.float32(context.dt) / eps
+        sigma = context.sigma[i, j, k]
+        loss = sigma * jnp.float32(context.dt) / (jnp.float32(2.0) * eps)
+        cb = (jnp.float32(context.dt) / eps) / (jnp.float32(1.0) + loss)
         scaled.append(raw_src_vals[idx] * cb)
     return jnp.stack(scaled)
 

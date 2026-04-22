@@ -20,7 +20,7 @@ Example
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import jax
@@ -79,12 +79,26 @@ def _call_optimize_objective(
     return objective(result)
 
 
+def _design_bounds_overlap_cell(
+    design_bounds: tuple[tuple[int, int, int], tuple[int, int, int]],
+    cell: tuple[int, int, int],
+) -> bool:
+    """Return whether a design-region index box contains a specific cell."""
+    lo_idx, hi_idx = design_bounds
+    return (
+        lo_idx[0] <= cell[0] <= hi_idx[0]
+        and lo_idx[1] <= cell[1] <= hi_idx[1]
+        and lo_idx[2] <= cell[2] <= hi_idx[2]
+    )
+
+
 def _resolve_optimize_hybrid_context(
     sim,
     *,
     eps_r: jnp.ndarray,
     n_steps: int,
     adjoint_mode: str,
+    design_bounds: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
 ):
     """Build the supported hybrid replay context once when optimize opts in."""
     if adjoint_mode not in {"pure_ad", "hybrid", "auto"}:
@@ -94,13 +108,52 @@ def _resolve_optimize_hybrid_context(
     if adjoint_mode == "pure_ad":
         return None
 
-    inputs = sim.build_hybrid_phase1_inputs(eps_override=eps_r, n_steps=n_steps)
-    report = sim.inspect_hybrid_phase1_from_inputs(inputs)
+    inputs, report = _inspect_optimize_hybrid_support(
+        sim,
+        eps_r=eps_r,
+        n_steps=n_steps,
+        design_bounds=design_bounds,
+    )
     if report.supported:
         return sim.build_hybrid_phase1_context_from_inputs(inputs)
     if adjoint_mode == "hybrid":
         raise ValueError(report.reason_text)
     return None
+
+
+def _inspect_optimize_hybrid_support(
+    sim,
+    *,
+    eps_r: jnp.ndarray,
+    n_steps: int,
+    design_bounds: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
+):
+    """Inspect hybrid support for optimize(), including one-port overlap fencing."""
+    inputs = sim.build_hybrid_phase1_inputs(eps_override=eps_r, n_steps=n_steps)
+    report = sim.inspect_hybrid_phase1_from_inputs(inputs)
+    if (
+        design_bounds is None
+        or report.port_metadata is None
+        or report.port_metadata.excited_lumped_port_cell is None
+    ):
+        return inputs, report
+
+    overlaps = _design_bounds_overlap_cell(
+        design_bounds,
+        tuple(report.port_metadata.excited_lumped_port_cell),
+    )
+    port_metadata = report.port_metadata._replace(
+        design_region_overlaps_excited_port_cell=overlaps,
+    )
+    report = replace(report, port_metadata=port_metadata)
+    if report.supported and overlaps:
+        report = replace(
+            report,
+            supported=False,
+            reasons=report.reasons + ("design region overlaps the excited lumped-port cell",),
+            inventory=None,
+        )
+    return inputs, report
 
 
 def optimize(
@@ -191,6 +244,7 @@ def optimize(
         eps_r=base_eps_r,
         n_steps=_n_steps,
         adjoint_mode=adjoint_mode,
+        design_bounds=(lo_idx, hi_idx),
     )
 
     # Adam state

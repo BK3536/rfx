@@ -264,8 +264,7 @@ def _make_lumped_port_ntff_unsupported_phase1_sim() -> Simulation:
     return _add_ntff_box(_make_lumped_port_unsupported_phase1_sim())
 
 
-
-def _make_lumped_port_unsupported_phase1_sim() -> Simulation:
+def _make_lumped_port_supported_phase1_sim() -> Simulation:
     sim = Simulation(freq_max=5e9, domain=(0.015, 0.015, 0.015), boundary="pec")
     sim.add_port(
         (0.005, 0.0075, 0.0075),
@@ -274,6 +273,71 @@ def _make_lumped_port_unsupported_phase1_sim() -> Simulation:
         waveform=GaussianPulse(f0=3e9, bandwidth=0.5),
     )
     sim.add_probe((0.01, 0.0075, 0.0075), "ez")
+    return sim
+
+
+
+def _make_lumped_port_unsupported_phase1_sim() -> Simulation:
+    sim = _make_lumped_port_supported_phase1_sim()
+    sim.add_port(
+        (0.01, 0.0075, 0.0075),
+        "ez",
+        impedance=50.0,
+        excite=False,
+    )
+    return sim
+
+
+def _make_passive_lumped_port_unsupported_phase1_sim() -> Simulation:
+    sim = Simulation(freq_max=5e9, domain=(0.015, 0.015, 0.015), boundary="pec")
+    sim.add_port(
+        (0.005, 0.0075, 0.0075),
+        "ez",
+        impedance=50.0,
+        excite=False,
+    )
+    sim.add_probe((0.01, 0.0075, 0.0075), "ez")
+    return sim
+
+
+def _make_wire_port_unsupported_phase1_sim() -> Simulation:
+    sim = Simulation(freq_max=5e9, domain=(0.015, 0.015, 0.015), boundary="pec")
+    sim.add_port(
+        (0.005, 0.0075, 0.0075),
+        "ez",
+        impedance=50.0,
+        waveform=GaussianPulse(f0=3e9, bandwidth=0.5),
+        extent=0.0025,
+    )
+    sim.add_probe((0.01, 0.0075, 0.01), "ez")
+    return sim
+
+
+def _make_preexisting_pec_lumped_port_unsupported_phase1_sim() -> Simulation:
+    sim = _make_lumped_port_supported_phase1_sim()
+    sim.add(Box((0.004, 0.006, 0.006), (0.006, 0.009, 0.009)), material="pec")
+    return sim
+
+
+def _make_waveguide_port_unsupported_phase1_sim() -> Simulation:
+    sim = Simulation(freq_max=5e9, domain=(0.03, 0.02, 0.02), boundary="cpml")
+    sim.add_waveguide_port(
+        0.015,
+        y_range=(0.004, 0.016),
+        z_range=(0.004, 0.016),
+        direction="+x",
+        f0=3e9,
+        probe_offset=1,
+        ref_offset=1,
+    )
+    sim.add_probe((0.015, 0.01, 0.01), "ez")
+    return sim
+
+
+def _make_floquet_port_unsupported_phase1_sim() -> Simulation:
+    sim = Simulation(freq_max=5e9, domain=(0.03, 0.02, 0.02), boundary="cpml")
+    sim.add_floquet_port(0.005, axis="z", f0=3e9)
+    sim.add_probe((0.015, 0.01, 0.01), "ez")
     return sim
 
 
@@ -355,7 +419,7 @@ def _resolved_n_steps(sim: Simulation, *, num_periods: float = 8.0) -> int:
 
 def _unsupported_phase1_cases() -> list[tuple[Simulation, str]]:
     return [
-        (_make_lumped_port_unsupported_phase1_sim(), "add_source"),
+        (_make_lumped_port_unsupported_phase1_sim(), "one excited lumped port"),
         (_make_cpml_lossy_unsupported_phase1_sim(), "lossy materials"),
         (_make_lorentz_lossy_unsupported_phase1_sim(), "lossy materials"),
         (_make_drude_unsupported_phase1_sim(), "Drude"),
@@ -4698,7 +4762,7 @@ def test_phase1_ntff_lumped_port_fallback_matches_pure_forward():
     sim = _make_lumped_port_ntff_unsupported_phase1_sim()
     n_steps = 12
 
-    with pytest.raises(ValueError, match="add_source"):
+    with pytest.raises(ValueError, match="one excited lumped port"):
         sim.forward_hybrid_phase1(n_steps=n_steps, fallback="raise")
 
     fallback = sim.forward_hybrid_phase1(n_steps=n_steps, fallback="pure_ad")
@@ -5025,7 +5089,7 @@ def test_phase1_top_level_nonuniform_public_family_matches_explicit_n_steps_when
 def test_phase1_top_level_lumped_port_public_family_matches_explicit_n_steps_when_omitted():
     _assert_top_level_unsupported_public_family_matches_explicit_n_steps_when_omitted(
         _make_lumped_port_unsupported_phase1_sim(),
-        expected_error="add_source",
+        expected_error="one excited lumped port",
     )
 
 
@@ -5131,13 +5195,96 @@ def test_phase1_prepare_bundle_reports_nonuniform_unsupported():
 
 
 
+
+def test_phase1_hybrid_inspection_reports_one_excited_lumped_port_supported():
+    sim = _make_lumped_port_supported_phase1_sim()
+
+    report = sim.inspect_hybrid_phase1(n_steps=12)
+    assert report.supported
+    assert report.inventory is not None
+    assert report.port_metadata is not None
+    assert report.port_metadata.total_ports == 1
+    assert report.port_metadata.excited_ports == 1
+    assert report.port_metadata.passive_ports == 0
+    assert report.port_metadata.wire_ports == 0
+    assert report.port_metadata.soft_source_count == 0
+    assert report.port_metadata.excited_lumped_port_cell is not None
+    assert report.port_metadata.excited_lumped_port_sigma is not None
+    assert not report.port_metadata.excited_port_had_pec
+
+
+def test_phase1_input_builder_preserves_supported_one_excited_lumped_port_case():
+    sim = _make_lumped_port_supported_phase1_sim()
+    inputs = sim.build_hybrid_phase1_inputs(n_steps=12)
+    prepared = inputs.prepare()
+
+    assert inputs.supported
+    assert inputs.port_metadata is not None
+    assert inputs.port_metadata.total_ports == 1
+    assert prepared.supported
+    assert prepared.context is not None
+
+
+def test_phase1_prepare_bundle_builds_context_for_supported_one_excited_lumped_port_case():
+    sim = _make_lumped_port_supported_phase1_sim()
+    prepared = sim.prepare_hybrid_phase1(n_steps=12)
+
+    assert prepared.supported
+    assert prepared.context is not None
+    assert prepared.report.port_metadata is not None
+    assert "sigma" in prepared.report.inventory.replay_inputs
+    assert "port_metadata" in prepared.report.inventory.replay_inputs
+
+
+def test_phase1_forward_one_excited_lumped_port_matches_pure_ad():
+    sim = _make_lumped_port_supported_phase1_sim()
+    hybrid = sim.forward_hybrid_phase1(n_steps=12, fallback="raise")
+    baseline = sim.forward(n_steps=12, checkpoint=True)
+
+    np.testing.assert_allclose(
+        np.asarray(hybrid.time_series),
+        np.asarray(baseline.time_series),
+        rtol=1e-6,
+        atol=1e-12,
+    )
+
+
+@pytest.mark.parametrize(
+    ("sim_factory", "expected_reason"),
+    [
+        (_make_passive_lumped_port_unsupported_phase1_sim, "one excited lumped port"),
+        (_make_wire_port_unsupported_phase1_sim, "one excited lumped port"),
+        (_make_preexisting_pec_lumped_port_unsupported_phase1_sim, "pre-existing PEC"),
+        (_make_waveguide_port_unsupported_phase1_sim, "waveguide/wire/floquet"),
+        (_make_floquet_port_unsupported_phase1_sim, "periodic axes"),
+    ],
+)
+def test_phase1_hybrid_inspection_rejects_explicit_port_boundary_variants(sim_factory, expected_reason):
+    sim = sim_factory()
+
+    report = sim.inspect_hybrid_phase1(n_steps=12)
+    assert not report.supported
+    assert report.port_metadata is not None
+    assert any(expected_reason in reason for reason in report.reasons)
+
+
+def test_phase1_hybrid_inspection_reports_lumped_port_metadata_for_unsupported_multi_port_case():
+    sim = _make_lumped_port_unsupported_phase1_sim()
+    report = sim.inspect_hybrid_phase1(n_steps=12)
+
+    assert not report.supported
+    assert report.port_metadata is not None
+    assert report.port_metadata.total_ports == 2
+    assert report.port_metadata.excited_ports == 1
+    assert report.port_metadata.passive_ports == 1
+
 def test_phase1_hybrid_inspection_reports_lumped_port_unsupported():
     sim = _make_lumped_port_unsupported_phase1_sim()
 
     report = sim.inspect_hybrid_phase1(n_steps=12)
     assert not report.supported
     assert report.inventory is None
-    assert any("add_source()" in reason for reason in report.reasons)
+    assert any("one excited lumped port" in reason for reason in report.reasons)
 
 
 
@@ -5166,7 +5313,7 @@ def test_phase1_context_resolved_eps_r_with_eps_override_matches_explicit_n_step
 def test_phase1_forward_helper_from_prepared_rejects_unsupported_bundle():
     sim, prepared = _make_lumped_port_unsupported_prepared_bundle(n_steps=12)
     from rfx.hybrid_adjoint import forward_phase1_hybrid_from_prepared
-    with pytest.raises(ValueError, match="add_source"):
+    with pytest.raises(ValueError, match="one excited lumped port"):
         forward_phase1_hybrid_from_prepared(prepared)
 
 
@@ -5174,7 +5321,7 @@ def test_phase1_forward_helper_from_prepared_rejects_unsupported_bundle():
 
 def test_phase1_prepare_bundle_forward_result_rejects_unsupported_bundle():
     sim, prepared = _make_lumped_port_unsupported_prepared_bundle(n_steps=12)
-    with pytest.raises(ValueError, match="add_source"):
+    with pytest.raises(ValueError, match="one excited lumped port"):
         prepared.forward_result()
 
 
@@ -5182,7 +5329,7 @@ def test_phase1_prepare_bundle_forward_result_rejects_unsupported_bundle():
 
 def test_phase1_prepare_bundle_run_time_series_rejects_unsupported_bundle():
     sim, prepared = _make_lumped_port_unsupported_prepared_bundle(n_steps=12)
-    with pytest.raises(ValueError, match="add_source"):
+    with pytest.raises(ValueError, match="one excited lumped port"):
         prepared.run_time_series()
 
 
@@ -5190,8 +5337,8 @@ def test_phase1_prepare_bundle_run_time_series_rejects_unsupported_bundle():
 
 def test_phase1_prepare_bundle_metadata_passthroughs_on_unsupported_bundle():
     sim, prepared = _make_lumped_port_unsupported_prepared_bundle(n_steps=12)
-    _assert_unsupported_prepare_bundle_basics(prepared, expected_reason="add_source()")
-    assert prepared.source_count == 0
+    _assert_unsupported_prepare_bundle_basics(prepared, expected_reason="one excited lumped port")
+    assert prepared.source_count == 1
     assert prepared.probe_count == 1
     assert prepared.boundary == "pec"
     assert prepared.periodic == (False, False, False)
@@ -5201,8 +5348,8 @@ def test_phase1_prepare_bundle_metadata_passthroughs_on_unsupported_bundle():
 
 def test_phase1_prepare_bundle_reason_text_is_canonical_for_unsupported_bundle():
     sim, prepared = _make_lumped_port_unsupported_prepared_bundle(n_steps=12)
-    _assert_unsupported_prepare_bundle_basics(prepared, expected_reason="add_source()")
-    with pytest.raises(ValueError, match="add_source"):
+    _assert_unsupported_prepare_bundle_basics(prepared, expected_reason="one excited lumped port")
+    with pytest.raises(ValueError, match="one excited lumped port"):
         prepared.require_supported()
 
 
@@ -5210,8 +5357,8 @@ def test_phase1_prepare_bundle_reason_text_is_canonical_for_unsupported_bundle()
 
 def test_phase1_prepare_bundle_require_context_rejects_unsupported_bundle():
     sim, prepared = _make_lumped_port_unsupported_prepared_bundle(n_steps=12)
-    _assert_unsupported_prepare_bundle_basics(prepared, expected_reason="add_source()")
-    with pytest.raises(ValueError, match="add_source"):
+    _assert_unsupported_prepare_bundle_basics(prepared, expected_reason="one excited lumped port")
+    with pytest.raises(ValueError, match="one excited lumped port"):
         prepared.require_context()
 
 
@@ -5296,11 +5443,11 @@ def test_phase1_input_builder_preserves_unsupported_uniform_case():
     sim, inputs = _make_lumped_port_unsupported_inputs(n_steps=12)
 
     prepared = inputs.prepare()
-    _assert_unsupported_inputs_basics(inputs, expected_reason="add_source()")
-    assert inputs.source_count == 0
+    _assert_unsupported_inputs_basics(inputs, expected_reason="one excited lumped port")
+    assert inputs.source_count == 1
     assert inputs.probe_count == 1
     assert not prepared.supported
-    assert "add_source()" in prepared.reason_text
+    assert "one excited lumped port" in prepared.reason_text
 
 
 
@@ -5361,8 +5508,8 @@ def test_phase1_input_run_time_series_with_eps_override_matches_forward_result_a
 
 def test_phase1_input_builder_reason_surface_for_unsupported_uniform_case():
     sim, inputs = _make_lumped_port_unsupported_inputs(n_steps=12)
-    _assert_unsupported_inputs_basics(inputs, expected_reason="add_source()")
-    with pytest.raises(ValueError, match="add_source"):
+    _assert_unsupported_inputs_basics(inputs, expected_reason="one excited lumped port")
+    with pytest.raises(ValueError, match="one excited lumped port"):
         inputs.require_supported()
 
 
@@ -5370,16 +5517,16 @@ def test_phase1_input_builder_reason_surface_for_unsupported_uniform_case():
 
 def test_phase1_prepare_bundle_reports_unsupported_without_context():
     sim, prepared = _make_lumped_port_unsupported_prepared_bundle(n_steps=12)
-    _assert_unsupported_prepare_bundle_basics(prepared, expected_reason="add_source()")
+    _assert_unsupported_prepare_bundle_basics(prepared, expected_reason="one excited lumped port")
     assert not prepared.report.supported
-    assert any("add_source()" in reason for reason in prepared.report.reasons)
+    assert any("one excited lumped port" in reason for reason in prepared.report.reasons)
 
 
 
 
 def test_phase1_forward_from_prepared_rejects_unsupported_bundle():
     sim, prepared = _make_lumped_port_unsupported_prepared_bundle(n_steps=12)
-    with pytest.raises(ValueError, match="add_source"):
+    with pytest.raises(ValueError, match="one excited lumped port"):
         sim.forward_hybrid_phase1_from_prepared(prepared)
 
 
@@ -5388,7 +5535,7 @@ def test_phase1_forward_from_prepared_rejects_unsupported_bundle():
 def test_phase1_context_builder_rejects_lumped_port():
     sim = _make_lumped_port_unsupported_phase1_sim()
 
-    with pytest.raises(ValueError, match="add_source"):
+    with pytest.raises(ValueError, match="one excited lumped port"):
         sim.build_hybrid_phase1_context(n_steps=12)
 
 
@@ -5396,7 +5543,7 @@ def test_phase1_context_builder_rejects_lumped_port():
 def test_phase1_hybrid_lumped_port_raise_matches_explicit_n_steps_when_omitted():
     _assert_top_level_unsupported_forward_matches_explicit_n_steps_when_omitted(
         _make_lumped_port_unsupported_phase1_sim(),
-        expected_error="add_source",
+        expected_error="one excited lumped port",
         fallback="raise",
     )
 
@@ -5405,7 +5552,7 @@ def test_phase1_hybrid_lumped_port_raise_matches_explicit_n_steps_when_omitted()
 def test_phase1_hybrid_lumped_port_fallback_matches_explicit_n_steps_when_omitted():
     _assert_top_level_unsupported_forward_matches_explicit_n_steps_when_omitted(
         _make_lumped_port_unsupported_phase1_sim(),
-        expected_error="add_source",
+        expected_error="one excited lumped port",
         fallback="pure_ad",
     )
 
@@ -5415,7 +5562,7 @@ def test_phase1_hybrid_rejects_or_falls_back_on_lumped_port():
     sim = _make_lumped_port_unsupported_phase1_sim()
     n_steps = 12
 
-    with pytest.raises(ValueError, match="add_source"):
+    with pytest.raises(ValueError, match="one excited lumped port"):
         sim.forward_hybrid_phase1(n_steps=n_steps, fallback="raise")
 
     fallback = sim.forward_hybrid_phase1(n_steps=n_steps, fallback="pure_ad")

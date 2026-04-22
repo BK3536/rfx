@@ -302,10 +302,9 @@ class TestMaximizeTransmittedEnergy:
 class TestOptimizeWithProxy:
     """Integration test: optimize() with time-domain proxy objectives."""
 
-    def test_optimize_with_reflected_energy_proxy(self):
-        """Optimization with minimize_reflected_energy should reduce loss."""
+    @staticmethod
+    def _make_one_port_proxy_sim():
         from rfx.api import Simulation
-        from rfx.optimize import DesignRegion, optimize
         from rfx.sources.sources import GaussianPulse
 
         sim = Simulation(
@@ -318,14 +317,26 @@ class TestOptimizeWithProxy:
             impedance=50.0,
             waveform=GaussianPulse(f0=5e9, bandwidth=0.5),
         )
-        # Probe at port location to measure reflection
         sim.add_probe((0.01, 0.01, 0.01), "ez")
+        return sim
 
-        region = DesignRegion(
+    @staticmethod
+    def _make_proxy_design_region():
+        from rfx.optimize import DesignRegion
+
+        return DesignRegion(
             corner_lo=(0.025, 0.0, 0.0),
             corner_hi=(0.035, 0.02, 0.02),
             eps_range=(1.0, 6.0),
         )
+
+    def test_optimize_with_reflected_energy_proxy(self):
+        """Optimization with minimize_reflected_energy should reduce loss."""
+        from rfx.optimize import DesignRegion, optimize
+
+        sim = self._make_one_port_proxy_sim()
+
+        region = self._make_proxy_design_region()
 
         obj = minimize_reflected_energy(port_probe_idx=0)
 
@@ -334,6 +345,7 @@ class TestOptimizeWithProxy:
             n_iters=10,
             lr=0.05,
             verbose=True,
+            adjoint_mode="hybrid",
         )
 
         assert len(result.loss_history) == 10
@@ -347,6 +359,76 @@ class TestOptimizeWithProxy:
         # We only check it doesn't crash and produces finite losses;
         # convergence in 10 iters on a small domain is not guaranteed
         assert all(np.isfinite(l) for l in result.loss_history)
+
+    def test_optimize_with_reflected_energy_proxy_hybrid_matches_pure_ad_single_step(self):
+        """One-step proxy optimization should agree between hybrid and pure AD on the supported one-port subset."""
+        from rfx.optimize import DesignRegion, optimize
+
+        sim = self._make_one_port_proxy_sim()
+        region = self._make_proxy_design_region()
+        obj = minimize_reflected_energy(port_probe_idx=0)
+
+        pure = optimize(
+            sim,
+            region,
+            obj,
+            n_iters=1,
+            lr=0.05,
+            verbose=False,
+            adjoint_mode="pure_ad",
+        )
+        hybrid = optimize(
+            sim,
+            region,
+            obj,
+            n_iters=1,
+            lr=0.05,
+            verbose=False,
+            adjoint_mode="hybrid",
+        )
+
+        np.testing.assert_allclose(np.asarray(hybrid.loss_history), np.asarray(pure.loss_history), rtol=1e-5, atol=1e-7)
+        np.testing.assert_allclose(np.asarray(hybrid.latent), np.asarray(pure.latent), rtol=1e-4, atol=1e-6)
+
+    def test_optimize_with_reflected_energy_proxy_strict_hybrid_route_proof(self, monkeypatch):
+        """Supported one-port proxy optimization should prove strict hybrid routing explicitly."""
+        from rfx.optimize import DesignRegion, optimize
+
+        sim = self._make_one_port_proxy_sim()
+        report = sim.inspect_hybrid_phase1(n_steps=12)
+        assert report.supported
+        assert report.port_metadata is not None
+        assert report.port_metadata.total_ports == 1
+        assert report.port_metadata.excited_ports == 1
+
+        calls = {"hybrid": 0}
+        original_hybrid = sim.forward_hybrid_phase1_from_context
+
+        def _wrapped_hybrid(context, *, eps_override=None):
+            calls["hybrid"] += 1
+            return original_hybrid(context, eps_override=eps_override)
+
+        def _fail_pure_ad(*args, **kwargs):
+            raise AssertionError("strict hybrid proxy optimize unexpectedly used the pure-AD path")
+
+        monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _wrapped_hybrid)
+        monkeypatch.setattr(sim, "_forward_from_materials", _fail_pure_ad)
+
+        region = self._make_proxy_design_region()
+        obj = minimize_reflected_energy(port_probe_idx=0)
+
+        result = optimize(
+            sim,
+            region,
+            obj,
+            n_iters=1,
+            lr=0.05,
+            verbose=False,
+            adjoint_mode="hybrid",
+        )
+
+        assert len(result.loss_history) == 1
+        assert calls["hybrid"] > 0
 
     def test_optimize_with_transmitted_energy_proxy(self):
         """Optimization with maximize_transmitted_energy should reduce loss."""

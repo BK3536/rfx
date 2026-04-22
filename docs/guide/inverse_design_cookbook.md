@@ -16,6 +16,7 @@ removal workflow with a forward physics sanity check).
 |---|---|---|
 | `Simulation.run()` + ports + `result.s_params` | Supported | Use for forward RF analysis and validation |
 | `optimize()` with time-domain proxy objectives | Supported with guardrails | Add probes explicitly |
+| `optimize(..., adjoint_mode="hybrid")` on one excited lumped-port proxy flows | Experimental-supported | One excited lumped port only; no passive/multi/wire/waveguide/floquet ports; keep the design region away from the excited port cell |
 | `topology_optimize()` with dielectric foreground/background | Experimental-supported | Use proxy objectives; keep problems small first |
 | `topology_optimize(material_fg="pec")` | Experimental / caveat | Gradient behavior is still evolving |
 | NTFF post-processing on canonical radiators | Supported with setup rules | Margin + domain sizing matter |
@@ -110,6 +111,25 @@ sim.add_probe(output_position, "ez")
 obj = minimize_reflected_energy(port_probe_idx=0)
 result = optimize(sim, region, obj, n_iters=20, n_steps=500)
 ```
+
+Experimental hybrid subset:
+
+```python
+sim.add_port(port_position, "ez", impedance=50.0, waveform=...)
+sim.add_probe(port_position, "ez")
+
+obj = minimize_reflected_energy(port_probe_idx=0)
+result = optimize(sim, region, obj, n_iters=20, n_steps=500, adjoint_mode="hybrid")
+```
+
+Current hybrid optimize boundary for port/proxy workflows is intentionally narrow:
+- exactly **one excited lumped port**
+- no passive ports
+- no wire / waveguide / floquet ports
+- no multi-port arrangements
+- keep the design region disjoint from the excited port cell
+
+This did **not** add generic port replay, generic lossy-material support, or topology hybrid support.
 
 ## 3. Probe rules for optimization
 

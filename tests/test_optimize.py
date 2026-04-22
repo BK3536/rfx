@@ -17,7 +17,7 @@ from rfx import Box, GaussianPulse
 from rfx.api import Simulation
 from rfx.optimize import (
     DesignRegion, OptimizeResult, GradientCheckResult,
-    _latent_to_eps, optimize, gradient_check,
+    _inspect_optimize_hybrid_support, _latent_to_eps, optimize, gradient_check,
 )
 from rfx.optimize_objectives import maximize_directivity
 
@@ -35,6 +35,22 @@ def _make_optimize_design_region() -> DesignRegion:
     return DesignRegion(
         corner_lo=_OPT_BOX_LO,
         corner_hi=_OPT_BOX_HI,
+        eps_range=(1.0, 4.4),
+    )
+
+
+def _make_one_port_optimize_design_region() -> DesignRegion:
+    return DesignRegion(
+        corner_lo=(0.009, 0.003, 0.003),
+        corner_hi=(0.012, 0.006, 0.006),
+        eps_range=(1.0, 4.4),
+    )
+
+
+def _make_overlapping_one_port_optimize_design_region() -> DesignRegion:
+    return DesignRegion(
+        corner_lo=(0.004, 0.006, 0.006),
+        corner_hi=(0.006, 0.009, 0.009),
         eps_range=(1.0, 4.4),
     )
 
@@ -59,6 +75,12 @@ def _make_port_optimize_sim() -> Simulation:
     return sim
 
 
+def _make_multi_port_optimize_sim() -> Simulation:
+    sim = _make_port_optimize_sim()
+    sim.add_port((0.01, 0.0075, 0.0075), "ez", excite=False)
+    return sim
+
+
 def _make_pec_mask_optimize_sim() -> Simulation:
     sim = _make_source_optimize_sim()
     sim.add(Box(_OPT_BOX_LO, _OPT_BOX_HI), material="pec")
@@ -74,6 +96,11 @@ def _make_lossy_optimize_sim() -> Simulation:
 
 def _probe_energy_objective(run_result) -> jnp.ndarray:
     return -jnp.sum(run_result.time_series ** 2)
+
+
+def _port_cell(sim: Simulation) -> tuple[int, int, int]:
+    grid = sim._build_grid()
+    return tuple(int(v) for v in grid.position_to_index(sim._ports[0].position))
 
 
 def test_design_region():
@@ -157,7 +184,7 @@ def test_optimize_runs_single_iteration():
 def test_optimize_default_route_stays_on_pure_ad(monkeypatch):
     """Default optimize() mode should not silently switch to hybrid routing."""
     sim = _make_source_optimize_sim()
-    region = _make_optimize_design_region()
+    region = _make_one_port_optimize_design_region()
 
     def _fail_hybrid(*args, **kwargs):
         raise AssertionError("default optimize() unexpectedly routed through hybrid")
@@ -209,6 +236,153 @@ def test_optimize_hybrid_supported_route_bypasses_pure_ad(monkeypatch):
     assert len(result.loss_history) == 1
     assert calls["hybrid"] > 0
     assert not np.allclose(np.asarray(result.latent), 0.0)
+
+
+def test_optimize_hybrid_supported_one_excited_lumped_port_route_bypasses_pure_ad(monkeypatch):
+    """Strict hybrid mode should support the approved one excited lumped-port subset."""
+    sim = _make_port_optimize_sim()
+    report = sim.inspect_hybrid_phase1(n_steps=12)
+    assert report.supported
+    assert report.port_metadata is not None
+    assert report.port_metadata.total_ports == 1
+    assert report.port_metadata.excited_ports == 1
+    assert report.port_metadata.passive_ports == 0
+
+    calls = {"hybrid": 0}
+    original_hybrid = sim.forward_hybrid_phase1_from_context
+
+    def _wrapped_hybrid(context, *, eps_override=None):
+        calls["hybrid"] += 1
+        return original_hybrid(context, eps_override=eps_override)
+
+    def _fail_pure_ad(*args, **kwargs):
+        raise AssertionError("strict hybrid one-port optimize unexpectedly used the pure-AD path")
+
+    monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _wrapped_hybrid)
+    monkeypatch.setattr(sim, "_forward_from_materials", _fail_pure_ad)
+
+    result = optimize(
+        sim,
+        _make_one_port_optimize_design_region(),
+        _probe_energy_objective,
+        n_iters=1,
+        lr=0.01,
+        verbose=False,
+        adjoint_mode="hybrid",
+    )
+
+    assert len(result.loss_history) == 1
+    assert calls["hybrid"] > 0
+
+
+def test_optimize_hybrid_supported_one_excited_lumped_port_auto_mode_uses_hybrid(monkeypatch):
+    """Auto mode should choose hybrid for the approved one-port subset."""
+    sim = _make_port_optimize_sim()
+    report = sim.inspect_hybrid_phase1(n_steps=12)
+    assert report.supported
+
+    calls = {"hybrid": 0}
+    original_hybrid = sim.forward_hybrid_phase1_from_context
+
+    def _wrapped_hybrid(context, *, eps_override=None):
+        calls["hybrid"] += 1
+        return original_hybrid(context, eps_override=eps_override)
+
+    def _fail_pure_ad(*args, **kwargs):
+        raise AssertionError("auto mode unexpectedly fell back on a supported one-port fixture")
+
+    monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _wrapped_hybrid)
+    monkeypatch.setattr(sim, "_forward_from_materials", _fail_pure_ad)
+
+    result = optimize(
+        sim,
+        _make_one_port_optimize_design_region(),
+        _probe_energy_objective,
+        n_iters=1,
+        lr=0.01,
+        verbose=False,
+        adjoint_mode="auto",
+    )
+
+    assert len(result.loss_history) == 1
+    assert calls["hybrid"] > 0
+
+
+def test_optimize_supported_one_port_fixture_design_region_is_disjoint_from_port_cell():
+    """The approved one-port optimize fixture must keep design-region cells away from the port cell."""
+    sim = _make_port_optimize_sim()
+    region = _make_one_port_optimize_design_region()
+    grid = sim._build_grid()
+    lo_idx = tuple(int(v) for v in grid.position_to_index(region.corner_lo))
+    hi_idx = tuple(int(v) for v in grid.position_to_index(region.corner_hi))
+    port_cell = _port_cell(sim)
+
+    assert not (
+        lo_idx[0] <= port_cell[0] <= hi_idx[0]
+        and lo_idx[1] <= port_cell[1] <= hi_idx[1]
+        and lo_idx[2] <= port_cell[2] <= hi_idx[2]
+    )
+
+
+def test_optimize_hybrid_inspection_reports_design_region_overlap_for_one_port_fixture():
+    """Optimize-side hybrid inspection should surface design-region/port overlap in port metadata."""
+    sim = _make_port_optimize_sim()
+    overlap_region = _make_overlapping_one_port_optimize_design_region()
+    grid = sim._build_grid()
+    base_materials, _, _, _, _, _ = sim._assemble_materials(grid)
+    lo_idx = tuple(int(v) for v in grid.position_to_index(overlap_region.corner_lo))
+    hi_idx = tuple(int(v) for v in grid.position_to_index(overlap_region.corner_hi))
+    _, report = _inspect_optimize_hybrid_support(
+        sim,
+        eps_r=base_materials.eps_r,
+        n_steps=12,
+        design_bounds=(lo_idx, hi_idx),
+    )
+
+    assert not report.supported
+    assert report.port_metadata is not None
+    assert report.port_metadata.design_region_overlaps_excited_port_cell
+    assert "design region overlaps the excited lumped-port cell" in report.reason_text
+
+
+def test_optimize_hybrid_rejects_design_region_overlap_with_excited_port_cell():
+    """Strict hybrid mode should fail closed when the design region touches the excited port cell."""
+    sim = _make_port_optimize_sim()
+    overlap_region = _make_overlapping_one_port_optimize_design_region()
+
+    with pytest.raises(ValueError, match="design region overlaps the excited lumped-port cell"):
+        optimize(
+            sim,
+            overlap_region,
+            _probe_energy_objective,
+            n_iters=1,
+            lr=0.01,
+            verbose=False,
+            adjoint_mode="hybrid",
+        )
+
+
+def test_optimize_auto_falls_back_for_design_region_overlap_with_excited_port_cell(monkeypatch):
+    """Auto mode should fall back to pure AD when the design region overlaps the excited port cell."""
+    sim = _make_port_optimize_sim()
+    overlap_region = _make_overlapping_one_port_optimize_design_region()
+
+    def _fail_hybrid(*args, **kwargs):
+        raise AssertionError("auto mode unexpectedly used hybrid on a design-region/port overlap case")
+
+    monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _fail_hybrid)
+
+    result = optimize(
+        sim,
+        overlap_region,
+        _probe_energy_objective,
+        n_iters=1,
+        lr=0.01,
+        verbose=False,
+        adjoint_mode="auto",
+    )
+
+    assert len(result.loss_history) == 1
 
 
 def test_optimize_hybrid_single_step_matches_pure_ad():
@@ -300,7 +474,7 @@ def test_optimize_hybrid_ntff_directivity_single_step_matches_pure_ad():
 
 def test_optimize_auto_falls_back_for_port_based_fixture(monkeypatch):
     """Auto mode should keep port-based optimize fixtures on the pure-AD lane."""
-    sim = _make_port_optimize_sim()
+    sim = _make_multi_port_optimize_sim()
     region = _make_optimize_design_region()
 
     def _fail_hybrid(*args, **kwargs):
@@ -324,7 +498,7 @@ def test_optimize_auto_falls_back_for_port_based_fixture(monkeypatch):
 @pytest.mark.parametrize(
     ("sim_factory", "expected_error"),
     [
-        (_make_port_optimize_sim, "add_source"),
+        (_make_multi_port_optimize_sim, "only one excited lumped port"),
         (_make_pec_mask_optimize_sim, "pec_mask"),
         (_make_lossy_optimize_sim, "lossy materials"),
     ],

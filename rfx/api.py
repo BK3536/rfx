@@ -237,6 +237,7 @@ class _PreparedUniformForwardInputs(NamedTuple):
     sources: list
     raw_phase1_sources: tuple[tuple[int, int, int, str, jnp.ndarray], ...]
     probes: list
+    port_metadata: object | None
     debye_spec: tuple | None
     debye: tuple | None
     lorentz_spec: tuple | None
@@ -295,6 +296,23 @@ class _PortEntry:
     # values: "+x", "-x", "+y", "-y". None → auto-detect from position
     # at sim-build time.
     direction: str | None = None
+
+
+class _Phase1PortMetadata(NamedTuple):
+    """Bounded port-family metadata for Phase 1 hybrid inspection/replay."""
+
+    total_ports: int
+    excited_ports: int
+    passive_ports: int
+    wire_ports: int
+    waveguide_ports: int
+    floquet_ports: int
+    soft_source_count: int
+    excited_lumped_port_cell: tuple[int, int, int] | None = None
+    excited_lumped_port_component: str | None = None
+    excited_lumped_port_sigma: float | None = None
+    excited_port_had_pec: bool = False
+    design_region_overlaps_excited_port_cell: bool = False
 
 
 @dataclass(frozen=True)
@@ -4006,6 +4024,8 @@ class Simulation:
         from rfx.sources.sources import (
             LumpedPort,
             WirePort,
+            port_d_parallel,
+            port_sigma,
             setup_lumped_port,
             setup_wire_port,
             _wire_port_cells,
@@ -4016,11 +4036,21 @@ class Simulation:
         probes = []
         pec_mask_local = pec_mask
         pec_occupancy_local = pec_occupancy
+        total_ports = 0
+        excited_ports = 0
+        passive_ports = 0
+        wire_ports = 0
+        soft_source_count = 0
+        excited_lumped_port_cell = None
+        excited_lumped_port_component = None
+        excited_lumped_port_sigma = None
+        excited_port_had_pec = False
+        times = jnp.arange(n_steps, dtype=jnp.float32) * grid.dt
 
         for pe in self._ports:
             if pe.impedance == 0.0:
+                soft_source_count += 1
                 idx = grid.position_to_index(pe.position)
-                times = jnp.arange(n_steps, dtype=jnp.float32) * grid.dt
                 raw_phase1_sources.append(
                     (idx[0], idx[1], idx[2], pe.component, jax.vmap(pe.waveform)(times))
                 )
@@ -4036,7 +4066,13 @@ class Simulation:
                 )
                 continue
 
+            total_ports += 1
+            if pe.excite:
+                excited_ports += 1
+            else:
+                passive_ports += 1
             if pe.extent is not None:
+                wire_ports += 1
                 axis_map = {"ex": 0, "ey": 1, "ez": 2}
                 axis = axis_map[pe.component]
                 end = list(pe.position)
@@ -4064,10 +4100,29 @@ class Simulation:
                 impedance=pe.impedance,
                 excitation=pe.waveform,
             )
+            idx = grid.position_to_index(pe.position)
+            port_had_pec = False
+            if pec_mask_local is not None and bool(pec_mask_local[idx[0], idx[1], idx[2]]):
+                port_had_pec = True
+            if (
+                not port_had_pec
+                and pec_occupancy_local is not None
+                and float(pec_occupancy_local[idx[0], idx[1], idx[2]]) > 0.0
+            ):
+                port_had_pec = True
             materials = setup_lumped_port(grid, lp, materials)
             if pe.excite:
+                d_par = port_d_parallel(grid, idx, pe.component)
+                raw_waveform = jax.vmap(pe.waveform)(times) / d_par
+                raw_phase1_sources.append(
+                    (idx[0], idx[1], idx[2], pe.component, raw_waveform)
+                )
                 sources.append(make_port_source(grid, lp, materials, n_steps))
-            idx = grid.position_to_index(pe.position)
+                if excited_lumped_port_cell is None:
+                    excited_lumped_port_cell = idx
+                    excited_lumped_port_component = pe.component
+                    excited_lumped_port_sigma = port_sigma(grid, idx, pe.component, pe.impedance)
+                    excited_port_had_pec = port_had_pec
             if pec_mask_local is not None:
                 pec_mask_local = pec_mask_local.at[idx[0], idx[1], idx[2]].set(False)
             if pec_occupancy_local is not None:
@@ -4129,11 +4184,32 @@ class Simulation:
         periodic_bool = periodic if periodic is not None else (False, False, False)
         cpml_axes_run = grid.cpml_axes
         pec_axes_run = "".join(a for a in "xyz" if a not in cpml_axes_run)
+        port_metadata = None
+        if (
+            total_ports
+            or soft_source_count
+            or self._waveguide_ports
+            or self._floquet_ports
+        ):
+            port_metadata = _Phase1PortMetadata(
+                total_ports=total_ports,
+                excited_ports=excited_ports,
+                passive_ports=passive_ports,
+                wire_ports=wire_ports,
+                waveguide_ports=len(self._waveguide_ports),
+                floquet_ports=len(self._floquet_ports),
+                soft_source_count=soft_source_count,
+                excited_lumped_port_cell=excited_lumped_port_cell,
+                excited_lumped_port_component=excited_lumped_port_component,
+                excited_lumped_port_sigma=excited_lumped_port_sigma,
+                excited_port_had_pec=excited_port_had_pec,
+            )
         return _PreparedUniformForwardInputs(
             materials=materials,
             sources=sources,
             raw_phase1_sources=tuple(raw_phase1_sources),
             probes=probes,
+            port_metadata=port_metadata,
             debye_spec=debye_spec,
             debye=debye,
             lorentz_spec=lorentz_spec,
