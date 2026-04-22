@@ -3593,6 +3593,42 @@ class Simulation:
             num_periods=num_periods,
         )
 
+    def _build_hybrid_phase1_inputs_from_materials(
+        self,
+        grid: Grid,
+        materials: MaterialArrays,
+        debye_spec: tuple | None,
+        lorentz_spec: tuple | None,
+        *,
+        n_steps: int,
+        pec_mask: jnp.ndarray | None = None,
+        pec_occupancy: jnp.ndarray | None = None,
+    ) -> "Phase1HybridInputs":
+        """Build Phase 1 inputs from a preassembled uniform materials state.
+
+        This is the seam-owned materials-based path used by adjacent routing
+        surfaces such as topology work that must inspect/prepare the canonical
+        hybrid contract without rebuilding support logic.
+        """
+        prepared = self._prepare_uniform_forward_inputs(
+            grid,
+            materials,
+            debye_spec,
+            lorentz_spec,
+            n_steps=n_steps,
+            pec_mask=pec_mask,
+            pec_occupancy=pec_occupancy,
+        )
+
+        from rfx.hybrid_adjoint import Phase1HybridPreparedRunnerState
+
+        prepared_runner = Phase1HybridPreparedRunnerState.from_uniform_prepared(prepared)
+        return self.build_hybrid_phase1_inputs_from_prepared_runner_state(
+            grid,
+            prepared_runner,
+            n_steps=n_steps,
+        )
+
     def prepare_hybrid_phase1(
         self,
         *,

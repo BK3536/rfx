@@ -17,6 +17,7 @@ removal workflow with a forward physics sanity check).
 | `Simulation.run()` + ports + `result.s_params` | Supported | Use for forward RF analysis and validation |
 | `optimize()` with time-domain proxy objectives | Supported with guardrails | Add probes explicitly |
 | `optimize(..., adjoint_mode="hybrid")` on one excited lumped-port proxy flows | Experimental-supported | One excited lumped port only; no passive/multi/wire/waveguide/floquet ports; keep the design region away from the excited port cell |
+| `topology_optimize(..., adjoint_mode="hybrid")` on zero-sigma dielectric source/probe PEC cases | Experimental-supported | Source/probe only; no ports, no PEC foreground, no sigma-bearing materials, no CPML/dispersive positives |
 | `topology_optimize()` with dielectric foreground/background | Experimental-supported | Use proxy objectives; keep problems small first |
 | `topology_optimize(material_fg="pec")` | Experimental / caveat | Gradient behavior is still evolving |
 | NTFF post-processing on canonical radiators | Supported with setup rules | Margin + domain sizing matter |
@@ -154,6 +155,22 @@ For `steer_probe_array()`:
 If you do not add probes, optimization may produce empty or misindexed
 `time_series` data. Recent guardrails reject the most common built-in misuses
 before the solver starts.
+
+### Experimental topology hybrid subset
+
+`topology_optimize(..., adjoint_mode="hybrid")` is currently limited to a
+deliberately narrow carve-out:
+
+- at least one `add_source()`-style source and at least one probe
+- no ports
+- zero sigma everywhere in assembled materials
+- dielectric-only topology (`pec_occupancy_design is None`)
+- no pre-existing PEC / `pec_mask`
+- uniform, non-periodic, PEC-boundary-only, nondispersive positive fixtures
+
+This does **not** add generic topology hybrid support, PEC-foreground
+topology, sigma-bearing dielectric topology, port-based topology, CPML-positive
+topology, or dispersive-positive topology.
 
 ## 4. NTFF setup rules
 

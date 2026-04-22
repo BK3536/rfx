@@ -9,12 +9,14 @@ Validates:
 """
 
 import importlib.util
+import re
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from rfx import Box, DebyePole
 from rfx.boundaries.pec import apply_pec_mask, apply_pec_occupancy
 from rfx.core.yee import init_state
 
@@ -25,12 +27,64 @@ from rfx.topology import (
     apply_projection,
     density_to_eps,
     density_to_material_fields,
+    inspect_topology_hybrid_support,
     topology_optimize,
     _get_beta,
     _DEFAULT_BETA_SCHEDULE,
 )
 
 pytestmark = pytest.mark.gpu
+
+
+def _make_phase4c_topology_case(
+    *,
+    boundary: str = "pec",
+    add_port: bool = False,
+    material_sigma: float = 0.0,
+    material_fg: str = "diel",
+    pec_foreground: bool = False,
+    add_pec_box: bool = False,
+    debye: bool = False,
+):
+    from rfx.api import Simulation
+
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.015, 0.015, 0.015),
+        boundary=boundary,
+    )
+    if add_port:
+        sim.add_port((0.005, 0.0075, 0.0075), "ez")
+    else:
+        sim.add_source((0.005, 0.0075, 0.0075), "ez")
+    sim.add_probe((0.01, 0.0075, 0.0075), "ez")
+
+    if add_pec_box:
+        sim.add(Box((0.003, 0.006, 0.006), (0.006, 0.009, 0.009)), material="pec")
+
+    if pec_foreground:
+        fg_name = "pec"
+    else:
+        fg_name = material_fg
+        sim.add_material(
+            fg_name,
+            eps_r=4.0,
+            sigma=material_sigma,
+            debye_poles=[DebyePole(delta_eps=1.0, tau=8e-12)] if debye else None,
+        )
+
+    region = TopologyDesignRegion(
+        corner_lo=(0.009, 0.003, 0.003),
+        corner_hi=(0.012, 0.006, 0.006),
+        material_bg="air",
+        material_fg=fg_name,
+        beta_projection=1.0,
+    )
+    return sim, region
+
+
+def _topology_probe_energy_objective(result):
+    return -jnp.sum(result.time_series ** 2)
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +425,253 @@ class TestBetaSchedule:
         assert _get_beta(60, _DEFAULT_BETA_SCHEDULE) == 16.0
         assert _get_beta(80, _DEFAULT_BETA_SCHEDULE) == 64.0
         assert _get_beta(100, _DEFAULT_BETA_SCHEDULE) == 64.0
+
+
+@pytest.mark.skipif(
+    not importlib.util.find_spec("optax"),
+    reason="optax not installed",
+)
+def test_phase4c_topology_hybrid_support_inspection_reports_supported_zero_sigma_case():
+    sim, region = _make_phase4c_topology_case()
+
+    report = inspect_topology_hybrid_support(sim, region, n_steps=12)
+
+    assert report.supported
+    assert report.port_metadata is not None
+    assert report.port_metadata.total_ports == 0
+    assert report.port_metadata.soft_source_count == 1
+    assert report.inventory is not None
+
+
+@pytest.mark.skipif(
+    not importlib.util.find_spec("optax"),
+    reason="optax not installed",
+)
+def test_phase4c_topology_optimize_default_route_stays_on_pure_ad(monkeypatch):
+    sim, region = _make_phase4c_topology_case()
+
+    def _fail_hybrid(*args, **kwargs):
+        raise AssertionError("default topology_optimize unexpectedly routed through hybrid")
+
+    monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _fail_hybrid)
+
+    result = topology_optimize(
+        sim,
+        region,
+        _topology_probe_energy_objective,
+        n_iterations=1,
+        learning_rate=0.05,
+        beta_schedule=[(0, 1.0)],
+        verbose=False,
+    )
+
+    assert len(result.history) == 1
+
+
+@pytest.mark.skipif(
+    not importlib.util.find_spec("optax"),
+    reason="optax not installed",
+)
+def test_phase4c_topology_optimize_strict_hybrid_route_proof(monkeypatch):
+    sim, region = _make_phase4c_topology_case()
+    report = inspect_topology_hybrid_support(sim, region, n_steps=12)
+    assert report.supported
+
+    calls = {"hybrid": 0}
+    original_hybrid = sim.forward_hybrid_phase1_from_context
+
+    def _wrapped_hybrid(context, *, eps_override=None):
+        calls["hybrid"] += 1
+        return original_hybrid(context, eps_override=eps_override)
+
+    def _fail_pure_ad(*args, **kwargs):
+        raise AssertionError("strict topology hybrid unexpectedly used the pure-AD forward path")
+
+    monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _wrapped_hybrid)
+    monkeypatch.setattr(sim, "_forward_from_materials", _fail_pure_ad)
+
+    result = topology_optimize(
+        sim,
+        region,
+        _topology_probe_energy_objective,
+        n_iterations=1,
+        learning_rate=0.05,
+        beta_schedule=[(0, 1.0)],
+        verbose=False,
+        adjoint_mode="hybrid",
+    )
+
+    assert len(result.history) == 1
+    assert calls["hybrid"] > 0
+
+
+@pytest.mark.skipif(
+    not importlib.util.find_spec("optax"),
+    reason="optax not installed",
+)
+def test_phase4c_topology_optimize_auto_mode_uses_hybrid(monkeypatch):
+    sim, region = _make_phase4c_topology_case()
+
+    calls = {"hybrid": 0}
+    original_hybrid = sim.forward_hybrid_phase1_from_context
+
+    def _wrapped_hybrid(context, *, eps_override=None):
+        calls["hybrid"] += 1
+        return original_hybrid(context, eps_override=eps_override)
+
+    def _fail_pure_ad(*args, **kwargs):
+        raise AssertionError("auto topology hybrid unexpectedly fell back on supported case")
+
+    monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _wrapped_hybrid)
+    monkeypatch.setattr(sim, "_forward_from_materials", _fail_pure_ad)
+
+    result = topology_optimize(
+        sim,
+        region,
+        _topology_probe_energy_objective,
+        n_iterations=1,
+        learning_rate=0.05,
+        beta_schedule=[(0, 1.0)],
+        verbose=False,
+        adjoint_mode="auto",
+    )
+
+    assert len(result.history) == 1
+    assert calls["hybrid"] > 0
+
+
+@pytest.mark.skipif(
+    not importlib.util.find_spec("optax"),
+    reason="optax not installed",
+)
+def test_phase4c_topology_optimize_hybrid_matches_pure_ad_one_step():
+    sim, region = _make_phase4c_topology_case()
+
+    pure = topology_optimize(
+        sim,
+        region,
+        _topology_probe_energy_objective,
+        n_iterations=1,
+        learning_rate=0.05,
+        beta_schedule=[(0, 1.0)],
+        verbose=False,
+        adjoint_mode="pure_ad",
+    )
+    hybrid = topology_optimize(
+        sim,
+        region,
+        _topology_probe_energy_objective,
+        n_iterations=1,
+        learning_rate=0.05,
+        beta_schedule=[(0, 1.0)],
+        verbose=False,
+        adjoint_mode="hybrid",
+    )
+
+    np.testing.assert_allclose(np.asarray(hybrid.history), np.asarray(pure.history), rtol=1e-4, atol=1e-6)
+    np.testing.assert_allclose(np.asarray(hybrid.density), np.asarray(pure.density), rtol=1e-4, atol=1e-6)
+
+
+@pytest.mark.skipif(
+    not importlib.util.find_spec("optax"),
+    reason="optax not installed",
+)
+@pytest.mark.parametrize(
+    ("case_kwargs", "expected_reason"),
+    [
+        ({"material_fg": "fr4", "material_sigma": 0.02}, "zero sigma"),
+        ({"pec_foreground": True}, "dielectric-only"),
+        ({"add_port": True}, "requires zero ports"),
+        ({"add_pec_box": True}, "pec_mask-free"),
+        ({"boundary": "cpml"}, "PEC boundary only"),
+        ({"debye": True}, "nondispersive"),
+    ],
+)
+def test_phase4c_topology_hybrid_negative_reason_surface(case_kwargs, expected_reason):
+    sim, region = _make_phase4c_topology_case(**case_kwargs)
+    report = inspect_topology_hybrid_support(sim, region, n_steps=12)
+
+    assert not report.supported
+    assert expected_reason in report.reason_text
+
+    with pytest.raises(ValueError, match=expected_reason):
+        topology_optimize(
+            sim,
+            region,
+            _topology_probe_energy_objective,
+            n_iterations=1,
+            learning_rate=0.05,
+            beta_schedule=[(0, 1.0)],
+            verbose=False,
+            adjoint_mode="hybrid",
+        )
+
+
+@pytest.mark.skipif(
+    not importlib.util.find_spec("optax"),
+    reason="optax not installed",
+)
+def test_phase4c_topology_sigma_negative_reason_surface_matches_strict_raise_and_auto_fallback(monkeypatch):
+    sim, region = _make_phase4c_topology_case(material_fg="fr4", material_sigma=0.02)
+    report = inspect_topology_hybrid_support(sim, region, n_steps=12)
+    assert not report.supported
+
+    with pytest.raises(ValueError, match=re.escape(report.reason_text)):
+        topology_optimize(
+            sim,
+            region,
+            _topology_probe_energy_objective,
+            n_iterations=1,
+            learning_rate=0.05,
+            beta_schedule=[(0, 1.0)],
+            verbose=False,
+            adjoint_mode="hybrid",
+        )
+
+    def _fail_hybrid(*args, **kwargs):
+        raise AssertionError("auto topology hybrid unexpectedly used hybrid on sigma-bearing case")
+
+    monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _fail_hybrid)
+    result = topology_optimize(
+        sim,
+        region,
+        _topology_probe_energy_objective,
+        n_iterations=1,
+        learning_rate=0.05,
+        beta_schedule=[(0, 1.0)],
+        verbose=False,
+        adjoint_mode="auto",
+    )
+
+    assert len(result.history) == 1
+
+
+@pytest.mark.skipif(
+    not importlib.util.find_spec("optax"),
+    reason="optax not installed",
+)
+def test_phase4c_topology_owned_dispersion_stays_on_pure_ad_in_auto_mode(monkeypatch):
+    sim, region = _make_phase4c_topology_case(debye=True)
+    report = inspect_topology_hybrid_support(sim, region, n_steps=12)
+    assert not report.supported
+    assert "nondispersive" in report.reason_text
+
+    def _fail_hybrid(*args, **kwargs):
+        raise AssertionError("auto topology hybrid unexpectedly used hybrid on topology-owned dispersion")
+
+    monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _fail_hybrid)
+    result = topology_optimize(
+        sim,
+        region,
+        _topology_probe_energy_objective,
+        n_iterations=1,
+        learning_rate=0.05,
+        beta_schedule=[(0, 1.0)],
+        verbose=False,
+        adjoint_mode="auto",
+    )
+
+    assert len(result.history) == 1
 
 
 # ---------------------------------------------------------------------------

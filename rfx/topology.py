@@ -22,6 +22,14 @@ Typical workflow
 ...     objective=lambda r: -jnp.sum(r.time_series ** 2),
 ...     n_iterations=100)
 
+Hybrid note
+-----------
+The current experimental hybrid subset is intentionally narrower than the
+general pure-AD topology surface: zero-sigma, source/probe-only dielectric
+topology on PEC boundary only. Port-based, PEC-foreground, sigma-bearing,
+CPML-positive, and dispersive-positive topology remain on the pure-AD lane
+unless explicitly expanded in a later phase.
+
 Key concepts
 ------------
 - **Density field**: Each cell in the design region has a continuous
@@ -36,7 +44,8 @@ Key concepts
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import inspect
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import jax
@@ -309,6 +318,181 @@ class TopologyResult:
         return self.history
 
 
+def _call_topology_objective(objective: Callable, result, *, accepts_ntff_box: bool) -> jnp.ndarray:
+    """Evaluate a topology objective against the minimal forward result contract."""
+    if accepts_ntff_box:
+        return objective(result, ntff_box=result.ntff_box)
+    return objective(result)
+
+
+def _build_topology_material_state(
+    base_eps_r: jnp.ndarray,
+    base_sigma: jnp.ndarray,
+    base_mu_r: jnp.ndarray,
+    lo_idx: tuple[int, int, int],
+    hi_idx: tuple[int, int, int],
+    fields: TopologyMaterialFields,
+):
+    """Material-state helper shared by topology inspection and routing."""
+    from rfx.core.yee import MaterialArrays
+
+    si, sj, sk = lo_idx
+    ei, ej, ek = hi_idx
+    eps_r = base_eps_r.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.eps)
+    sigma = base_sigma.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.sigma)
+    materials = MaterialArrays(eps_r=eps_r, sigma=sigma, mu_r=base_mu_r)
+
+    pec_occupancy = None
+    if fields.pec_occupancy is not None:
+        pec_occupancy = jnp.zeros(base_eps_r.shape, dtype=jnp.float32)
+        pec_occupancy = pec_occupancy.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.pec_occupancy)
+    return materials, pec_occupancy
+
+
+def _topology_hybrid_reason_texts(
+    sim,
+    *,
+    bg_has_dispersion: bool,
+    fg_has_dispersion: bool,
+    debye_spec,
+    lorentz_spec,
+    materials,
+    pec_mask,
+    pec_occupancy,
+    port_metadata,
+) -> tuple[str, ...]:
+    """Phase-4C-specific guardrails layered on top of seam-owned inspection."""
+    reasons: list[str] = []
+    if sim._boundary != "pec":
+        reasons.append("Phase 4C topology hybrid supports PEC boundary only")
+    if debye_spec is not None or lorentz_spec is not None or bg_has_dispersion or fg_has_dispersion:
+        reasons.append("Phase 4C topology hybrid supports nondispersive materials only")
+    if port_metadata is not None and getattr(port_metadata, "total_ports", 0) > 0:
+        reasons.append("Phase 4C topology hybrid requires zero ports")
+    if pec_mask is not None:
+        reasons.append("Phase 4C topology hybrid requires pec_mask-free fixtures")
+    if pec_occupancy is not None:
+        reasons.append("Phase 4C topology hybrid supports dielectric-only topology (no pec_occupancy)")
+    if bool(jnp.any(jnp.abs(materials.sigma) > 0.0)):
+        reasons.append("Phase 4C topology hybrid requires zero sigma everywhere")
+    return tuple(reasons)
+
+
+def _inspect_topology_hybrid_support(
+    sim,
+    design_region: TopologyDesignRegion,
+    *,
+    init_density: jnp.ndarray | None = None,
+    n_steps: int | None = None,
+    num_periods: float = 20.0,
+):
+    """Inspect the bounded Phase 4C topology subset via the seam-owned materials path."""
+    try:
+        mat_bg = sim._resolve_material(design_region.material_bg)
+        mat_fg = sim._resolve_material(design_region.material_fg)
+    except KeyError as exc:
+        raise ValueError(str(exc)) from exc
+
+    eps_bg = mat_bg.eps_r
+    eps_fg = mat_fg.eps_r
+    sigma_bg = mat_bg.sigma
+    sigma_fg = mat_fg.sigma
+    bg_has_dispersion = bool(mat_bg.debye_poles or mat_bg.lorentz_poles)
+    fg_has_dispersion = bool(mat_fg.debye_poles or mat_fg.lorentz_poles)
+    pec_threshold = sim._PEC_SIGMA_THRESHOLD
+    bg_is_pec = sigma_bg >= pec_threshold
+    fg_is_pec = sigma_fg >= pec_threshold
+
+    grid = sim._build_grid()
+    lo_idx = list(grid.position_to_index(design_region.corner_lo))
+    hi_idx = list(grid.position_to_index(design_region.corner_hi))
+    pads = (grid.pad_x, grid.pad_y, grid.pad_z)
+    dims = (grid.nx, grid.ny, grid.nz)
+    for d in range(3):
+        lo_idx[d] = max(lo_idx[d], pads[d])
+        hi_idx[d] = min(hi_idx[d], dims[d] - 1 - pads[d])
+    lo_idx = tuple(lo_idx)
+    hi_idx = tuple(hi_idx)
+    design_shape = tuple(hi_idx[d] - lo_idx[d] + 1 for d in range(3))
+    if any(s <= 0 for s in design_shape):
+        raise ValueError(
+            f"Design region is empty after clamping to interior (lo_idx={lo_idx}, hi_idx={hi_idx})."
+        )
+
+    filt_r = design_region.effective_filter_radius
+    filter_radius_cells = None if filt_r is None else filt_r / grid.dx
+    base_materials, debye_spec, lorentz_spec, base_pec_mask, _, _ = sim._assemble_materials(grid)
+    density = (
+        0.5 * jnp.ones(design_shape, dtype=jnp.float32)
+        if init_density is None
+        else init_density
+    )
+    fields = density_to_material_fields(
+        density,
+        eps_bg,
+        eps_fg,
+        filter_radius_cells=filter_radius_cells,
+        beta=design_region.beta_projection,
+        sigma_bg=sigma_bg,
+        sigma_fg=sigma_fg,
+        pec_bg=bg_is_pec,
+        pec_fg=fg_is_pec,
+    )
+    materials, pec_occupancy = _build_topology_material_state(
+        base_materials.eps_r,
+        base_materials.sigma,
+        base_materials.mu_r,
+        lo_idx,
+        hi_idx,
+        fields,
+    )
+    resolved_n_steps = n_steps if n_steps is not None else grid.num_timesteps(num_periods=num_periods)
+    inputs = sim._build_hybrid_phase1_inputs_from_materials(
+        grid,
+        materials,
+        debye_spec,
+        lorentz_spec,
+        n_steps=resolved_n_steps,
+        pec_mask=base_pec_mask,
+        pec_occupancy=pec_occupancy,
+    )
+    report = sim.inspect_hybrid_phase1_from_inputs(inputs)
+    extra_reasons = _topology_hybrid_reason_texts(
+        sim,
+        bg_has_dispersion=bg_has_dispersion,
+        fg_has_dispersion=fg_has_dispersion,
+        debye_spec=debye_spec,
+        lorentz_spec=lorentz_spec,
+        materials=materials,
+        pec_mask=base_pec_mask,
+        pec_occupancy=pec_occupancy,
+        port_metadata=report.port_metadata,
+    )
+    if extra_reasons:
+        all_reasons = tuple(dict.fromkeys(report.reasons + extra_reasons))
+        report = replace(report, supported=False, reasons=all_reasons, inventory=None)
+    return inputs, report, grid, lo_idx, hi_idx, filter_radius_cells, base_materials, debye_spec, lorentz_spec, fields
+
+
+def inspect_topology_hybrid_support(
+    sim,
+    design_region: TopologyDesignRegion,
+    *,
+    init_density: jnp.ndarray | None = None,
+    n_steps: int | None = None,
+    num_periods: float = 20.0,
+):
+    """Inspect whether a topology fixture fits the bounded Phase 4C hybrid subset."""
+    _, report, *_ = _inspect_topology_hybrid_support(
+        sim,
+        design_region,
+        init_density=init_density,
+        n_steps=n_steps,
+        num_periods=num_periods,
+    )
+    return report
+
+
 # ---------------------------------------------------------------------------
 # Default beta schedule
 # ---------------------------------------------------------------------------
@@ -348,6 +532,7 @@ def topology_optimize(
     beta_schedule: list[tuple[int, float]] | None = None,
     init_density: jnp.ndarray | None = None,
     verbose: bool = True,
+    adjoint_mode: str = "pure_ad",
 ) -> TopologyResult:
     """Run density-based topology optimization.
 
@@ -378,6 +563,13 @@ def topology_optimize(
         (uniform mixture of bg and fg materials).
     verbose : bool
         Print progress every 10 iterations.
+    adjoint_mode : {"pure_ad", "hybrid", "auto"}
+        Forward/adjoint routing policy for each topology iteration.
+        ``pure_ad`` preserves the current default behavior.
+        ``hybrid`` requires the bounded Phase 4C topology hybrid subset to
+        pass support inspection and raises otherwise.
+        ``auto`` uses the hybrid seam only when the Phase 4C support
+        inspection passes and otherwise falls back to the current pure-AD path.
 
     Returns
     -------
@@ -468,6 +660,23 @@ def topology_optimize(
     beta_history = []
 
     n_steps = grid.num_timesteps(num_periods=20.0)
+    objective_accepts_ntff_box = "ntff_box" in inspect.signature(objective).parameters
+    hybrid_context = None
+    if adjoint_mode not in {"pure_ad", "hybrid", "auto"}:
+        raise ValueError(
+            f"adjoint_mode must be 'pure_ad', 'hybrid', or 'auto', got {adjoint_mode!r}"
+        )
+    if adjoint_mode != "pure_ad":
+        inputs, report, *_ = _inspect_topology_hybrid_support(
+            sim,
+            design_region,
+            init_density=init_density,
+            n_steps=n_steps,
+        )
+        if report.supported:
+            hybrid_context = sim.build_hybrid_phase1_context_from_inputs(inputs)
+        elif adjoint_mode == "hybrid":
+            raise ValueError(report.reason_text)
 
     def forward(logit_param, beta):
         """Forward pass: logit -> material fields -> simulation -> objective."""
@@ -489,29 +698,32 @@ def topology_optimize(
         eps_r = base_eps_r.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.eps)
         sigma = base_sigma.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.sigma)
 
-        from rfx.core.yee import MaterialArrays
-        materials = MaterialArrays(eps_r=eps_r, sigma=sigma, mu_r=base_mu_r)
-
-        pec_occupancy = None
-        if fields.pec_occupancy is not None:
-            pec_occupancy = jnp.zeros(grid.shape, dtype=jnp.float32)
-            pec_occupancy = pec_occupancy.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.pec_occupancy)
-
-        result = sim._forward_from_materials(
-            grid,
-            materials,
-            debye_spec,
-            lorentz_spec,
-            n_steps=n_steps,
-            checkpoint=True,
-            pec_mask=base_pec_mask,
-            pec_occupancy=pec_occupancy,
+        if hybrid_context is not None:
+            result = sim.forward_hybrid_phase1_from_context(hybrid_context, eps_override=eps_r)
+        else:
+            materials, pec_occupancy = _build_topology_material_state(
+                base_eps_r,
+                base_sigma,
+                base_mu_r,
+                lo_idx,
+                hi_idx,
+                fields,
+            )
+            result = sim._forward_from_materials(
+                grid,
+                materials,
+                debye_spec,
+                lorentz_spec,
+                n_steps=n_steps,
+                checkpoint=True,
+                pec_mask=base_pec_mask,
+                pec_occupancy=pec_occupancy,
+            )
+        return _call_topology_objective(
+            objective,
+            result,
+            accepts_ntff_box=objective_accepts_ntff_box,
         )
-        import inspect
-        sig = inspect.signature(objective)
-        if 'ntff_box' in sig.parameters:
-            return objective(result, ntff_box=result.ntff_box)
-        return objective(result)
 
     for it in range(n_iterations):
         beta = _get_beta(it, beta_schedule)
