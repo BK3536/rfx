@@ -1,7 +1,7 @@
 # Hybrid Adjoint Macro Roadmap
 
 Status: active macro roadmap
-Date: 2026-04-23
+Date: 2026-04-24
 Worktree: `/root/workspace/byungkwan-workspace/.worktrees/rfx-hybrid-adjoint-ralplan`
 
 ## Purpose
@@ -19,6 +19,9 @@ Use this roadmap when:
 
 ### Committed major milestones
 - seam extraction / hardening complete
+- Phase II: Practical Workflow Coverage complete
+- Phase III: Strategy B / Scale-up complete as a bounded source/probe slice
+- Phase IV: Productization / Default Policy completion candidate in this worktree, with `pure_ad` retained as the public default by the Gate 4 review
 - Phase 3A: CPML complete
 - Phase 3B: Debye complete
 - Phase 3C: Lorentz complete
@@ -28,11 +31,16 @@ Use this roadmap when:
 - Phase 4C / Phase I closure: zero-sigma dielectric topology carve-out complete
 
 ### Current worktree state
-- Phase II Practical Workflow Coverage is complete locally and ready to commit:
-  - CPML zero-sigma dielectric source/probe topology hybrid support
-  - one-excited + optional one-passive lumped-port proxy optimize hybrid support
-  - cookbook/support-contract alignment
-- next major roadmap target is **Phase III — Strategy B / Scale-up**
+- Phase II and Phase III execution artifacts are complete in this worktree, and Phase IV is at completion-candidate state:
+  - Phase II completion notes: `.omx/plans/phase-ii-completion-notes.md`
+  - Phase III completion notes: `.omx/plans/phase-iii-completion-notes.md`
+  - Phase IV completion notes: `.omx/plans/phase-iv-completion-notes.md`
+- current public optimizer policy is:
+  - `pure_ad` default
+  - bounded `auto` opt-in/recommended path for landed supported families
+  - strict `hybrid` opt-in
+- Strategy B remains outside the public optimizer policy matrix
+- no immediate new macro phase is required; reopen planning only when new evidence materially changes the policy, workflow, or algorithm boundary
 
 ## Operating principles
 
@@ -145,7 +153,8 @@ If this phase cannot show compelling benchmark value, do not let it sprawl into 
 Turn the hybrid adjoint from an advanced explicit capability into a product-quality, policy-driven feature surface.
 
 ### Includes
-- explicit selection policy across `pure_ad`, `hybrid`, `auto`, and (if landed) Strategy B paths
+- explicit selection policy across `pure_ad`, `hybrid`, and `auto`
+- explicit bounded policy treatment for any landed Strategy B prototype seams without promoting them into the public optimizer matrix
 - default-policy decisions for optimize/topology surfaces
 - support-matrix cleanup and release-quality docs/examples
 - migration guidance and boundary communication
@@ -249,7 +258,7 @@ then it is a **milestone inside the current macro phase**, not a new phase.
 # Near-term recommendation
 
 If starting from the current repo state:
-1. commit the completed Phase II Practical Workflow Coverage worktree closure
-2. begin **Phase III — Strategy B / Scale-up** with benchmark/evidence framing before implementation
-3. use `autoresearch` first if the scale target is unclear, then `$ralplan --deliberate` and `team` execution when the Strategy B plan is evidence-backed
+1. treat Phase II and Phase III as completed reference artifacts, and Phase IV as a completion-candidate reference artifact in this worktree, not as a pending starting point
+2. keep `pure_ad` as the public default unless a new gated default-shift review produces stronger evidence
+3. reopen planning only when a materially new workflow, policy, or replay boundary appears
 4. avoid reopening micro-phase numbering unless a genuinely new algorithm/policy boundary appears

@@ -158,6 +158,24 @@ For PCB and patch-style problems, the most practical recent `rfx` workflow is
 graded z meshing via `dz_profile` / `auto_configure()`, rather than assuming
 one globally fine uniform mesh.
 
+### Stage 1 inverse-design mode policy
+
+For `optimize()` and `topology_optimize()`, the current public policy is:
+
+- **Default:** `adjoint_mode="pure_ad"`
+- **Bounded recommended opt-in:** `adjoint_mode="auto"` on the landed bounded
+  hybrid-supported families
+- **Strict opt-in:** `adjoint_mode="hybrid"` when you want unsupported cases to
+  raise instead of falling back
+
+`auto` is intentionally conservative. It inspects support first, chooses the
+hybrid lane only when the current bounded support contract passes, and
+otherwise falls back to `pure_ad`.
+
+Strategy B is **not** part of this public optimizer policy surface. Treat it as
+a separate prototype seam rather than a migration target for default inverse
+design workflows.
+
 ---
 
 ## Common Gotchas
@@ -179,5 +197,6 @@ one globally fine uniform mesh.
 - [Sources & Ports](/rfx/guide/sources-ports/) -- source vs. port workflows
 - [Non-Uniform Mesh](/rfx/guide/nonuniform-mesh/) -- thin-substrate workflow
 - [Inverse Design](/rfx/guide/inverse-design/) -- gradient-based optimization
+- [Support Boundaries](/rfx/api/support-boundaries/) -- current promoted vs experimental surfaces
 - [Advanced Features](/rfx/guide/advanced/) -- dispersive materials, CFS-CPML
 - [Geometry & Limitations](/rfx/guide/geometry-and-limitations/) -- tool comparison

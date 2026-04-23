@@ -7,6 +7,23 @@ sidebar:
 rfx is fully differentiable — `jax.grad` computes gradients through the entire
 FDTD simulation, enabling gradient-based inverse design of RF structures.
 
+## Stage 1 optimizer mode policy
+
+For the public optimizer APIs, the current mode policy is:
+
+- **Default:** `adjoint_mode="pure_ad"`
+- **Bounded recommended opt-in:** `adjoint_mode="auto"` on the landed bounded
+  hybrid-supported families
+- **Strict opt-in:** `adjoint_mode="hybrid"` when you want unsupported cases to
+  raise instead of falling back
+
+`auto` is deliberately conservative. It inspects support first, chooses the
+hybrid lane only when the bounded support contract passes, and otherwise falls
+back to `pure_ad`.
+
+Strategy B is not part of this public optimizer mode matrix. Treat it as a
+separate prototype seam rather than a general inverse-design default.
+
 ## How it works
 
 JAX traces the computation graph through all FDTD time steps.
@@ -97,8 +114,12 @@ result = optimize(
     objective=minimize_reflected_energy(port_probe_idx=0),
     n_iters=50,
     lr=0.01,
+    adjoint_mode="auto",
 )
 ```
+
+Use `adjoint_mode="hybrid"` only when you want strict enforcement instead of
+bounded `auto` fallback.
 
 ## Far-field objectives with NTFF data
 

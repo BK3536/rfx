@@ -43,3 +43,24 @@ def test_phase4_support_matrix_keeps_strategy_b_outside_stage1_table():
     assert "| `hybrid` | experimental-supported / strict opt-in |" in text
     assert "| Strategy B |" not in text
     assert "Strategy B outside this public optimizer policy matrix" in text
+
+
+def test_phase4_public_support_and_migration_docs_match_stage1_policy():
+    support_text = _normalize((ROOT / "docs/public/api/support-boundaries.mdx").read_text())
+    migration_text = _normalize((ROOT / "docs/public/guide/migration.md").read_text())
+    inverse_design_text = _normalize((ROOT / "docs/public/guide/inverse-design.md").read_text())
+    changelog_text = _normalize((ROOT / "docs/public/guide/changelog.mdx").read_text())
+
+    assert "| `pure_ad` | supported default |" in support_text
+    assert "| `auto` | experimental-supported / bounded opt-in |" in support_text
+    assert "| `hybrid` | experimental-supported / strict opt-in |" in support_text
+    assert "Strategy B outside this public optimizer policy matrix" in support_text
+
+    for text in (migration_text, inverse_design_text):
+        assert 'adjoint_mode="pure_ad"' in text
+        assert 'adjoint_mode="auto"' in text
+        assert 'adjoint_mode="hybrid"' in text
+        assert "falls back to `pure_ad`" in text
+        assert "Strategy B is not part of this public optimizer policy surface" in text or "Strategy B is not part of this public optimizer mode matrix" in text
+
+    assert "Stage 1 hybrid optimizer policy" in changelog_text
