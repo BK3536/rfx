@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Callable, NamedTuple
+from typing import Callable, NamedTuple, TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -46,8 +46,11 @@ from rfx.boundaries.pec import apply_pec, apply_pec_faces
 from rfx.farfield import NTFFData, init_ntff_data, accumulate_ntff
 from rfx.grid import Grid
 from rfx.materials.debye import DebyeCoeffs, DebyeState, init_debye, update_e_debye
-from rfx.materials.lorentz import LorentzCoeffs, LorentzPole, LorentzState, init_lorentz, update_e_lorentz
+from rfx.materials.lorentz import LorentzCoeffs, LorentzState, init_lorentz, update_e_lorentz
 from rfx.simulation import ProbeSpec, SourceSpec
+
+if TYPE_CHECKING:
+    from rfx.api import ForwardResult
 
 
 class Phase1FieldState(NamedTuple):
@@ -2168,6 +2171,287 @@ def _reverse_phase1_trace_from_observables(
     return grad_eps
 
 
+
+def _phase3_strategy_b_segments(n_steps: int, checkpoint_every: int) -> tuple[tuple[int, int], ...]:
+    if checkpoint_every <= 0:
+        raise ValueError("checkpoint_every must be positive for Strategy B")
+    return tuple(
+        (start, min(start + checkpoint_every, n_steps))
+        for start in range(0, n_steps, checkpoint_every)
+    )
+
+
+def _stack_phase1_field_states(states: tuple[Phase1FieldState, ...]) -> Phase1FieldState:
+    return Phase1FieldState(
+        *(jnp.stack([state_field for state_field in fields], axis=0) for fields in zip(*states))
+    )
+
+
+def _phase1_field_state_at(states: Phase1FieldState, index: int) -> Phase1FieldState:
+    return Phase1FieldState(*(field[index] for field in states))
+
+
+def _stack_cpml_states(states: tuple[CPMLState, ...]) -> CPMLState:
+    return CPMLState(
+        *(jnp.stack([state_field for state_field in fields], axis=0) for fields in zip(*states))
+    )
+
+
+def _cpml_state_at(states: CPMLState, index: int) -> CPMLState:
+    return CPMLState(*(field[index] for field in states))
+
+
+def _run_phase3_strategy_b_lossless_pec_forward(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    checkpoint_every: int,
+) -> tuple[jnp.ndarray, Phase1FieldState]:
+    coeffs = _coeffs_from_eps(context, eps_r)
+    src_waveforms = _source_waveforms_from_eps(context, eps_r)
+    state = context.initial_state
+    checkpoint_states: list[Phase1FieldState] = []
+    time_series_segments: list[jnp.ndarray] = []
+
+    for start, end in _phase3_strategy_b_segments(context.n_steps, checkpoint_every):
+        checkpoint_states.append(state)
+        state, segment_time_series = _run_uniform_lossless_pec_time_series(
+            context,
+            coeffs,
+            src_waveforms[start:end],
+            initial_state=state,
+        )
+        time_series_segments.append(segment_time_series)
+
+    return jnp.concatenate(time_series_segments, axis=0), _stack_phase1_field_states(
+        tuple(checkpoint_states)
+    )
+
+
+def _run_phase3_strategy_b_lossless_cpml_forward(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    checkpoint_every: int,
+) -> tuple[jnp.ndarray, Phase1FieldState, CPMLState]:
+    materials = _materials_from_eps(context, eps_r)
+    src_waveforms = _source_waveforms_from_eps(context, eps_r)
+    state = context.initial_state
+    cpml_state = _zero_cpml_state(context.grid)
+    checkpoint_states: list[Phase1FieldState] = []
+    checkpoint_cpml_states: list[CPMLState] = []
+    time_series_segments: list[jnp.ndarray] = []
+
+    for start, end in _phase3_strategy_b_segments(context.n_steps, checkpoint_every):
+        checkpoint_states.append(state)
+        checkpoint_cpml_states.append(cpml_state)
+        state, cpml_state, segment_time_series = _run_uniform_lossless_cpml_time_series(
+            context,
+            materials,
+            src_waveforms[start:end],
+            initial_state=state,
+            initial_cpml_state=cpml_state,
+        )
+        time_series_segments.append(segment_time_series)
+
+    return (
+        jnp.concatenate(time_series_segments, axis=0),
+        _stack_phase1_field_states(tuple(checkpoint_states)),
+        _stack_cpml_states(tuple(checkpoint_cpml_states)),
+    )
+
+
+def _reverse_phase3_strategy_b_lossless_pec(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    checkpoints: Phase1FieldState,
+    raw_src_waveforms: jnp.ndarray,
+    probe_bar: jnp.ndarray,
+    checkpoint_every: int,
+) -> jnp.ndarray:
+    coeffs = _coeffs_from_eps(context, eps_r)
+    src_waveforms = _source_waveforms_from_eps(context, eps_r)
+    lambda_next = _zeros_like_state(context.initial_state)
+    grad_eps = jnp.zeros_like(eps_r)
+
+    for segment_index, (start, end) in reversed(
+        tuple(enumerate(_phase3_strategy_b_segments(context.n_steps, checkpoint_every)))
+    ):
+        segment_start_state = _phase1_field_state_at(checkpoints, segment_index)
+        _, _, states_before = _run_uniform_lossless_pec_time_series(
+            context,
+            coeffs,
+            src_waveforms[start:end],
+            return_trace=True,
+            initial_state=segment_start_state,
+        )
+
+        def reverse_step(carry, xs):
+            lambda_after, grad_accum = carry
+            state_before, raw_src_vals, probe_cot = xs
+
+            def step_from_eps(state, eps_local):
+                return _uniform_lossless_pec_step(
+                    state,
+                    _source_values_from_eps(context, eps_local, raw_src_vals),
+                    _coeffs_from_eps(context, eps_local),
+                    context.src_meta,
+                    context.prb_meta,
+                )
+
+            _, step_vjp = jax.vjp(step_from_eps, state_before, eps_r)
+            lambda_before, grad_eps_step = step_vjp((lambda_after, probe_cot))
+            return (lambda_before, grad_accum + grad_eps_step), None
+
+        (lambda_next, grad_eps), _ = jax.lax.scan(
+            reverse_step,
+            (lambda_next, grad_eps),
+            (states_before, raw_src_waveforms[start:end], probe_bar[start:end]),
+            reverse=True,
+        )
+
+    return grad_eps
+
+
+def _reverse_phase3_strategy_b_lossless_cpml(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    checkpoints: Phase1FieldState,
+    cpml_checkpoints: CPMLState,
+    raw_src_waveforms: jnp.ndarray,
+    probe_bar: jnp.ndarray,
+    checkpoint_every: int,
+) -> jnp.ndarray:
+    materials = _materials_from_eps(context, eps_r)
+    src_waveforms = _source_waveforms_from_eps(context, eps_r)
+    lambda_next = _zeros_like_state(context.initial_state)
+    lambda_cpml_next = _zero_cpml_state(context.grid)
+    grad_eps = jnp.zeros_like(eps_r)
+
+    for segment_index, (start, end) in reversed(
+        tuple(enumerate(_phase3_strategy_b_segments(context.n_steps, checkpoint_every)))
+    ):
+        segment_start_state = _phase1_field_state_at(checkpoints, segment_index)
+        segment_start_cpml = _cpml_state_at(cpml_checkpoints, segment_index)
+        _, _, _, states_before, cpml_states_before = _run_uniform_lossless_cpml_time_series(
+            context,
+            materials,
+            src_waveforms[start:end],
+            return_trace=True,
+            initial_state=segment_start_state,
+            initial_cpml_state=segment_start_cpml,
+        )
+
+        def reverse_step(carry, xs):
+            lambda_after, lambda_cpml_after, grad_accum = carry
+            state_before, cpml_before, raw_src_vals, probe_cot = xs
+
+            def step_from_eps(state, cpml_state, eps_local):
+                return _uniform_lossless_cpml_step(
+                    state,
+                    cpml_state,
+                    _source_values_from_eps(context, eps_local, raw_src_vals),
+                    _materials_from_eps(context, eps_local),
+                    context.grid,
+                    context.cpml_params,
+                    context.cpml_axes,
+                    context.pec_axes,
+                    context.pec_faces,
+                    context.src_meta,
+                    context.prb_meta,
+                )
+
+            _, step_vjp = jax.vjp(step_from_eps, state_before, cpml_before, eps_r)
+            lambda_before, lambda_cpml_before, grad_eps_step = step_vjp(
+                (lambda_after, lambda_cpml_after, probe_cot)
+            )
+            return (lambda_before, lambda_cpml_before, grad_accum + grad_eps_step), None
+
+        (lambda_next, lambda_cpml_next, grad_eps), _ = jax.lax.scan(
+            reverse_step,
+            (lambda_next, lambda_cpml_next, grad_eps),
+            (
+                states_before,
+                cpml_states_before,
+                raw_src_waveforms[start:end],
+                probe_bar[start:end],
+            ),
+            reverse=True,
+        )
+
+    return grad_eps
+
+
+def _make_phase3_strategy_b_source_probe_forward(
+    context: Phase1HybridContext,
+    checkpoint_every: int,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Create the narrow Phase III Strategy B source/probe custom VJP."""
+
+    @jax.custom_vjp
+    def _forward_time_series(eps_r: jnp.ndarray) -> jnp.ndarray:
+        if context.boundary == "cpml":
+            time_series, _, _ = _run_phase3_strategy_b_lossless_cpml_forward(
+                context,
+                eps_r,
+                checkpoint_every,
+            )
+        else:
+            time_series, _ = _run_phase3_strategy_b_lossless_pec_forward(
+                context,
+                eps_r,
+                checkpoint_every,
+            )
+        return time_series
+
+    def _forward_fwd(eps_r: jnp.ndarray):
+        if context.boundary == "cpml":
+            time_series, checkpoints, cpml_checkpoints = (
+                _run_phase3_strategy_b_lossless_cpml_forward(
+                    context,
+                    eps_r,
+                    checkpoint_every,
+                )
+            )
+            return time_series, (
+                eps_r,
+                checkpoints,
+                cpml_checkpoints,
+                context.src_waveforms_raw,
+            )
+        time_series, checkpoints = _run_phase3_strategy_b_lossless_pec_forward(
+            context,
+            eps_r,
+            checkpoint_every,
+        )
+        return time_series, (eps_r, checkpoints, None, context.src_waveforms_raw)
+
+    def _forward_bwd(res, probe_bar: jnp.ndarray):
+        eps_r, checkpoints, cpml_checkpoints, raw_src_waveforms = res
+        if context.boundary == "cpml":
+            assert cpml_checkpoints is not None
+            grad_eps = _reverse_phase3_strategy_b_lossless_cpml(
+                context,
+                eps_r,
+                checkpoints,
+                cpml_checkpoints,
+                raw_src_waveforms,
+                probe_bar,
+                checkpoint_every,
+            )
+        else:
+            grad_eps = _reverse_phase3_strategy_b_lossless_pec(
+                context,
+                eps_r,
+                checkpoints,
+                raw_src_waveforms,
+                probe_bar,
+                checkpoint_every,
+            )
+        return (grad_eps,)
+
+    _forward_time_series.defvjp(_forward_fwd, _forward_bwd)
+    return _forward_time_series
+
+
 def _states_after_from_trace(
     states_before: Phase1FieldState,
     final_state: Phase1FieldState,
@@ -2272,6 +2556,7 @@ def _run_uniform_lossless_pec_time_series(
     src_waveforms: jnp.ndarray,
     *,
     return_trace: bool = False,
+    initial_state: Phase1FieldState | None = None,
 ):
     """Run the extracted time-series seam with precomputed coefficients."""
 
@@ -2287,7 +2572,8 @@ def _run_uniform_lossless_pec_time_series(
             return next_state, (probe_out, state)
         return next_state, probe_out
 
-    final_state, outputs = jax.lax.scan(body, context.initial_state, src_waveforms)
+    start_state = context.initial_state if initial_state is None else initial_state
+    final_state, outputs = jax.lax.scan(body, start_state, src_waveforms)
     if return_trace:
         time_series, states_before = outputs
         return final_state, time_series, states_before
@@ -2300,6 +2586,8 @@ def _run_uniform_lossless_cpml_time_series(
     src_waveforms: jnp.ndarray,
     *,
     return_trace: bool = False,
+    initial_state: Phase1FieldState | None = None,
+    initial_cpml_state: CPMLState | None = None,
 ):
     """Run the extracted time-series seam with CPML and PEC-face enforcement."""
 
@@ -2326,7 +2614,10 @@ def _run_uniform_lossless_cpml_time_series(
 
     (final_state, final_cpml_state), outputs = jax.lax.scan(
         body,
-        (context.initial_state, _zero_cpml_state(context.grid)),
+        (
+            context.initial_state if initial_state is None else initial_state,
+            _zero_cpml_state(context.grid) if initial_cpml_state is None else initial_cpml_state,
+        ),
         src_waveforms,
     )
     if return_trace:

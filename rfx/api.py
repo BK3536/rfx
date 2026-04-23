@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import math
 import jax
 from numbers import Integral
-from typing import NamedTuple
+from typing import NamedTuple, TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
@@ -50,6 +50,15 @@ from rfx.simulation import (
     SnapshotSpec,
 )
 from rfx.adi import ADIState2D, run_adi_2d
+
+if TYPE_CHECKING:
+    from rfx.hybrid_adjoint import (
+        Phase1HybridContext,
+        Phase1HybridInputs,
+        Phase1HybridInspection,
+        Phase1HybridPrepared,
+        Phase1HybridPreparedRunnerState,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2470,8 +2479,6 @@ class Simulation:
         inv_sq = sum(1.0 / di ** 2 for di in d)
         dt_cfl = 0.99 / (C0 * math.sqrt(inv_sq))
         omega = 2.0 * math.pi * self._freq_max
-        k0 = omega / C0
-
         errors = {}
         sin_wdt2 = math.sin(omega * dt_cfl / 2.0)
         for ax, (name, di) in enumerate(zip("xyz", d)):
@@ -3555,6 +3562,93 @@ class Simulation:
             )
         )
 
+    def _phase3_strategy_b_source_probe_reasons(
+        self,
+        inputs: "Phase1HybridInputs",
+        report: "Phase1HybridInspection",
+        *,
+        checkpoint_every: int | None,
+    ) -> tuple[str, ...]:
+        reasons = list(report.reasons)
+        if checkpoint_every is None:
+            reasons.append("checkpoint_every is required for Phase III Strategy B")
+        elif checkpoint_every <= 0:
+            reasons.append("checkpoint_every must be positive for Phase III Strategy B")
+        if inputs.boundary not in {"pec", "cpml"}:
+            reasons.append(
+                "Phase III Strategy B source/probe prototype supports only "
+                "PEC/CPML boundaries"
+            )
+        if inputs.ntff_box is not None:
+            reasons.append("Phase III Strategy B source/probe prototype does not support NTFF")
+        if inputs.debye_spec is not None or inputs.lorentz_spec is not None:
+            reasons.append(
+                "Phase III Strategy B source/probe prototype supports only "
+                "lossless nondispersive materials"
+            )
+        if (
+            inputs.port_metadata is not None
+            and getattr(inputs.port_metadata, "total_ports", 0) > 0
+        ):
+            reasons.append(
+                "Phase III Strategy B source/probe prototype supports only "
+                "add_source()/probe workflows"
+            )
+        if (
+            inputs.materials is not None
+            and np.any(np.abs(np.asarray(inputs.materials.sigma)) > 0.0)
+        ):
+            reasons.append(
+                "Phase III Strategy B source/probe prototype does not support "
+                "conductivity"
+            )
+        if inputs.pec_mask is not None:
+            reasons.append(
+                "Phase III Strategy B source/probe prototype does not support "
+                "pec_mask replay"
+            )
+        if inputs.pec_occupancy is not None:
+            reasons.append(
+                "Phase III Strategy B source/probe prototype does not support "
+                "pec_occupancy replay"
+            )
+        return tuple(dict.fromkeys(reasons))
+
+    def inspect_hybrid_strategy_b_phase3(
+        self,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+        checkpoint_every: int | None = None,
+    ) -> "Phase1HybridInspection":
+        """Inspect the narrow Phase III Strategy B source/probe prototype."""
+
+        inputs = self.build_hybrid_phase1_inputs(
+            eps_override=eps_override,
+            n_steps=n_steps,
+            num_periods=num_periods,
+        )
+        report = self.inspect_hybrid_phase1_from_inputs(inputs)
+        reasons = self._phase3_strategy_b_source_probe_reasons(
+            inputs,
+            report,
+            checkpoint_every=checkpoint_every,
+        )
+        if not reasons:
+            return report
+
+        from rfx.hybrid_adjoint import Phase1HybridInspection
+
+        return Phase1HybridInspection.unsupported(
+            reasons=reasons,
+            source_count=report.source_count,
+            probe_count=report.probe_count,
+            boundary=report.boundary,
+            periodic=report.periodic,
+            port_metadata=report.port_metadata,
+        )
+
     def _resolve_phase1_hybrid_runner_state_n_steps(
         self,
         grid: Grid | NonUniformGrid | None,
@@ -4012,6 +4106,8 @@ class Simulation:
         n_steps: int | None = None,
         num_periods: float = 20.0,
         fallback: str = "pure_ad",
+        strategy: str = "a",
+        checkpoint_every: int | None = None,
     ) -> ForwardResult:
         """Experimental Phase 1 hybrid-adjoint forward for seam observables.
 
@@ -4024,6 +4120,14 @@ class Simulation:
         """
         if fallback not in {"pure_ad", "raise"}:
             raise ValueError(f"fallback must be 'pure_ad' or 'raise', got {fallback!r}")
+        if strategy not in {"a", "strategy_a", "b", "strategy_b"}:
+            raise ValueError(
+                "strategy must be 'a', 'strategy_a', 'b', or 'strategy_b', "
+                f"got {strategy!r}"
+            )
+        strategy_key = "b" if strategy in {"b", "strategy_b"} else "a"
+        if strategy_key == "a" and checkpoint_every is not None:
+            raise ValueError("checkpoint_every is only supported with strategy='b'")
 
         inputs = self.build_hybrid_phase1_inputs(
             eps_override=eps_override,
@@ -4031,6 +4135,30 @@ class Simulation:
             num_periods=num_periods,
         )
         report = self.inspect_hybrid_phase1_from_inputs(inputs)
+        if strategy_key == "b":
+            strategy_b_reasons = self._phase3_strategy_b_source_probe_reasons(
+                inputs,
+                report,
+                checkpoint_every=checkpoint_every,
+            )
+            if strategy_b_reasons:
+                raise ValueError("; ".join(strategy_b_reasons))
+            assert checkpoint_every is not None
+            context = self.build_hybrid_phase1_context_from_inputs(inputs)
+            from rfx.hybrid_adjoint import (
+                _make_phase3_strategy_b_source_probe_forward,
+                phase1_forward_result,
+            )
+
+            forward = _make_phase3_strategy_b_source_probe_forward(
+                context,
+                checkpoint_every,
+            )
+            return phase1_forward_result(
+                context.grid,
+                forward(context.resolved_eps_r(eps_override)),
+            )
+
         if not report.supported:
             if fallback == "pure_ad":
                 return self.forward(
