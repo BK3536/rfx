@@ -80,7 +80,7 @@ codebase:
    pytest tests/ -x -q
    ```
 4. **Update the docs.** If the change affects users, update the relevant page
-   under `docs/public/guide/` or `docs/agent/`.
+   under `docs/public/`.
 5. **Add or update docstrings.** Any new public API should carry a clear,
    accurate docstring.
 
@@ -184,7 +184,6 @@ rfx/
 tests/                 # pytest test suite
 examples/              # Self-contained example scripts
 docs/public/guide/     # Canonical public guide source
-docs/agent/            # Canonical public AI-agent docs
 ```
 
 ## Questions?

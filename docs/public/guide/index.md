@@ -8,6 +8,11 @@ sidebar:
 engineering. This index tracks the **v1.5.0** release surface and highlights
 selected post-release updates already merged on `main`.
 
+The current claims-bearing surface remains the uniform Cartesian Yee lane.
+SBP-SAT subgridding is visible here only as an **experimental all-PEC z-slab
+research lane** with **proxy benchmark** evidence, not as a generally
+supported local-refinement feature.
+
 ## Recent highlights
 
 - **Published RF validation**: 5-case error table against Balanis, Pozar, and analytical references.
@@ -70,7 +75,7 @@ same structure in one place so you can jump directly to the right section.
 |---|---|
 | [Advanced Features](/rfx/guide/advanced/) | Multi-GPU, material fitting, mixed precision, nonlinear materials, and research examples |
 | [Conformal PEC](/rfx/guide/conformal-pec/) | Dey-Mittra method for curved PEC conductors |
-| [SBP-SAT Subgridding](/rfx/guide/subgridding/) | Local mesh refinement with JIT performance |
+| [SBP-SAT Subgridding](/rfx/guide/subgridding/) | Experimental all-PEC z-slab research lane; proxy benchmark only |
 | [Gradient Behavior](/rfx/guide/gradient-behavior/) | Where gradients are strong, weak, or noisy |
 | [Geometry & Limitations](/rfx/guide/geometry-and-limitations/) | Supported workflows, strengths, and current trade-offs |
 

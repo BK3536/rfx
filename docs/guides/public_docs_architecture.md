@@ -14,7 +14,6 @@ public `remilab.ai/rfx/` documentation surface.
 | `docs/public/examples/` | public runnable-example hub pages deployed to `/rfx/examples/*` | yes |
 | `docs/public/validation/` | public evidence and benchmark pages deployed to `/rfx/validation/*` | yes |
 | `docs/public/api/` | curated public API pages deployed to `/rfx/api/*` | yes |
-| `docs/agent/` | public AI-agent pages deployed to `/rfx/agent/*` | yes |
 | `docs/guide/` | legacy redirect entrypoint kept for backwards navigation | no |
 | `docs/api/` | generated API docs published as subordinate deep reference under `/rfx/api/generated/*` | generated only |
 | `docs/research_notes/` | planning, handoffs, chronology | internal only |
@@ -31,8 +30,7 @@ Keep the public docs grouped by user task:
 3. **Analysis & Validation**
 4. **Design & Optimization**
 5. **Advanced & Research Methods**
-6. **AI Agent Guide**
-7. **Project & Maintainer**
+6. **Project & Maintainer**
 
 Secondary context-linked public hubs:
 
@@ -42,7 +40,7 @@ Secondary context-linked public hubs:
 - `/rfx/api/generated/`
 
 The sidebar grouping can be maintained in gitops, but the page content and route
-inventory should originate from `docs/public/` and `docs/agent/` in this repo.
+inventory should originate from `docs/public/` in this repo.
 
 ## Naming rules
 
@@ -56,7 +54,7 @@ inventory should originate from `docs/public/` and `docs/agent/` in this repo.
 
 ## Maintenance workflow
 
-1. Author or edit the public pages in `docs/public/` and `docs/agent/`.
+1. Author or edit the public pages in `docs/public/`.
 2. Run the source drift check:
 
    ```bash
@@ -81,7 +79,7 @@ Two CI layers should stay in place:
 1. **Source repo CI (`research/rfx`)**
    - syntax-check the public-doc tooling scripts
    - verify that every slug in `docs/public/site_map.json` resolves to an
-     actual page in `docs/public/guide/` or `docs/agent/`
+     actual page in `docs/public/`
 
 2. **Gitops repo CI (`remilab-sites-gitops`)**
    - re-export from `research/rfx` and fail if the snapshot changes

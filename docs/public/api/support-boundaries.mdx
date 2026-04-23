@@ -51,6 +51,20 @@ public claims-bearing baseline.
 | distributed | scaling lane |
 | Floquet/Bloch | promotion pending explicit benchmark ladder |
 
+### SBP-SAT / subgridding retained experimental subset
+
+Publicly documented SBP-SAT scope is intentionally narrow:
+
+- all-PEC boundary only
+- one full-span x/y refined z slab only
+- soft point sources only
+- point probes only
+- proxy numerical-equivalence evidence only
+
+The lane is still **experimental**. It is not yet a claims-bearing public
+surface for physical reflection / transmission, open-boundary behavior,
+arbitrary 3-D box refinement, or refined-region port workflows.
+
 ## Unsupported combinations
 
 Unsupported combinations must hard-fail.
@@ -63,6 +77,11 @@ Unsupported combinations must hard-fail.
 | TFSF + nonuniform | hard-fail |
 | Waveguide ports + nonuniform | hard-fail |
 | Lumped RLC + nonuniform | hard-fail |
+| CPML/UPML + SBP-SAT subgridding | hard-fail |
+| PMC/periodic `BoundarySpec` + SBP-SAT subgridding | hard-fail |
+| partial x/y refinement + SBP-SAT subgridding | hard-fail |
+| DFT planes / flux monitors / NTFF + SBP-SAT subgridding | hard-fail |
+| TFSF / waveguide / Floquet / coaxial / impedance / wire ports + SBP-SAT subgridding | hard-fail |
 
 ## Promotion rule
 
@@ -74,4 +93,3 @@ present:
 3. unit and integration tests
 4. benchmark or convergence evidence
 5. docs, examples, and API wording aligned to the promoted scope
-

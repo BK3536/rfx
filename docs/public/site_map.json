@@ -54,15 +54,6 @@
       ]
     },
     {
-      "label": "AI Agent Guide",
-      "items": [
-        "rfx/agent/overview",
-        "rfx/agent/auto-config",
-        "rfx/agent/prompt-templates",
-        "rfx/agent/design-workflows"
-      ]
-    },
-    {
       "label": "Project & Maintainer",
       "items": [
         "rfx/guide/migration",

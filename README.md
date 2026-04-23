@@ -23,8 +23,8 @@
 ## At a Glance
 
 Current correctness-bearing support is centered on the **uniform Cartesian Yee
-reference lane**. Non-uniform graded-z, distributed execution, and
-Floquet/Bloch workflows should be treated according to
+reference lane**. Non-uniform graded-z, SBP-SAT subgridding, distributed
+execution, and Floquet/Bloch workflows should be treated according to
 `docs/guides/support_matrix.md`, not as blanket guarantees.
 
 | | |
@@ -175,12 +175,11 @@ Canonical public-doc sources in this repo:
 - `docs/public/guide/` — public guide pages
 - `docs/public/examples/` — runnable example hubs
 - `docs/public/validation/` — quantitative evidence and lane-label hubs
-- `docs/agent/` — public AI-agent pages
 - `docs/guides/public_docs_architecture.md` — ownership, sync, and deploy rules
 
 ### Public docs maintenance workflow
 
-1. Edit the source pages in `docs/public/index.mdx`, `docs/public/guide/`, or `docs/agent/`.
+1. Edit the source pages in `docs/public/`.
 2. Validate the source tree:
    ```bash
    python scripts/check_public_docs_manifest.py
@@ -205,6 +204,7 @@ Gitops-side snapshot/build CI lives in the deploy repo:
 - [Examples hub](docs/public/examples/index.mdx) — current runnable entry points
 - [Examples showcase](docs/public/examples/showcase.mdx) — bounded visual tour of the example surface
 - [Non-Uniform Mesh guide](docs/public/guide/nonuniform-mesh.mdx) — practical thin-substrate shadow-lane workflows
+- [SBP-SAT Subgridding guide](docs/public/guide/subgridding.mdx) — experimental all-PEC z-slab research lane; proxy benchmark only
 
 ### Tutorials
 - [Patch Antenna Design](docs/public/guide/tutorial-patch-antenna.mdx) — practical patch workflow from local resonance run to external cross-check
