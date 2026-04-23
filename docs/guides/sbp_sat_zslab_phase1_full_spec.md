@@ -19,24 +19,30 @@ runtime surfaces are reconciled.
 
 ### Current evidence
 
-- `Simulation.add_refinement(...)` currently accepts `z_range`, `ratio`,
-  `xy_margin`, and `tau`, while rejecting `xy_margin` and CPML/UPML in the
-  Phase-1 path (`rfx/api.py:533-592`).
-- Additional subgridding preflight rejects NTFF, DFT planes, waveguide ports,
-  Floquet ports, TFSF, and lumped RLC (`rfx/api.py:2933-2961`).
-- Face operators are implemented in `rfx/subgridding/face_ops.py:1-179`.
+- `Simulation.add_refinement(...)` currently accepts `z_range`, `ratio`, and
+  `tau`, while rejecting `xy_margin` and all non-PEC `BoundarySpec` faces in
+  the Phase-1 path (`rfx/api.py`).
+- Additional subgridding preflight rejects NTFF, DFT planes, flux monitors,
+  waveguide ports, Floquet ports, TFSF, lumped RLC, coaxial ports, and
+  impedance/wire ports (`rfx/api.py`).
+- Face operators are implemented in `rfx/subgridding/face_ops.py`.
 - The current 3D SBP-SAT core contains z-slab config/state, canonical `dt`,
   face trace helpers, SAT helpers, compatibility wrappers, the stepper, and
-  overlap-safe energy accounting (`rfx/subgridding/sbp_sat_3d.py:1-556`).
+  overlap-safe energy accounting (`rfx/subgridding/sbp_sat_3d.py`).
 - The runtime path builds a full-span x/y fine slab from `add_refinement(...)`
   and dispatches to `run_subgridded_jit(...)`
-  (`rfx/runners/subgridded.py:13-225`).
+  (`rfx/runners/subgridded.py`).
 - JIT execution calls `step_subgrid_3d(...)` inside one `jax.lax.scan`
-  (`rfx/subgridding/jit_runner.py:25-148`).
+  (`rfx/subgridding/jit_runner.py`).
 - Current tests cover API guards, face operators, z-slab smoke, alpha/tau,
-  JIT, and proxy cross-validation (`tests/test_sbp_sat_api_guards.py:1-57`,
-  `tests/test_sbp_sat_face_ops.py:1-128`,
-  `tests/test_subgrid_crossval.py:1-144`).
+  JIT, proxy cross-validation, and support-matrix benchmark metadata
+  (`tests/test_sbp_sat_api_guards.py`, `tests/test_sbp_sat_face_ops.py`,
+  `tests/test_subgrid_crossval.py`, `tests/test_support_matrix_sbp_sat.py`).
+- Milestone 3 locks the benchmark claim boundary: `tests/test_subgrid_crossval.py`
+  is a proxy numerical-equivalence benchmark only, while
+  `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md` defines the deferred
+  true reflection/transmission benchmark and `docs/guides/support_matrix.json`
+  records that public R/T claims remain blocked.
 
 ## 1. RALPLAN-DR summary
 
@@ -437,6 +443,7 @@ must be proven before broader claims.
 | source/probe outside z slab | run mapping/preflight | `test_source_outside_zslab_fails` | existing |
 | NTFF with subgrid | run preflight | `test_unsupported_phase1_features_fail_fast[ntff]` | existing pattern |
 | DFT plane with subgrid | run preflight | `test_unsupported_phase1_features_fail_fast[dft_plane]` | existing pattern |
+| flux monitor with subgrid | run preflight | `test_unsupported_phase1_features_fail_fast[flux_monitor]` | new |
 | waveguide port with subgrid | run preflight | `test_subgrid_rejects_waveguide_port` | new explicit test |
 | Floquet port with subgrid | run preflight | `test_unsupported_phase1_features_fail_fast[floquet]` | existing pattern |
 | TFSF with subgrid | run preflight | `test_subgrid_rejects_tfsf_source` | new explicit test |
@@ -462,21 +469,24 @@ must be proven before broader claims.
 | Smoke/stability | prove bounded simple behavior | `tests/test_sbp_sat_3d.py`, `tests/test_sbp_sat_alpha.py` |
 | JIT/runtime | prove one canonical scan path | `tests/test_sbp_sat_jit.py` |
 | Proxy benchmark | compare probe DFT against uniform-fine | `tests/test_subgrid_crossval.py` |
-| True benchmark | compute R/T or S-parameters | new tests required |
-| Drift regression | prove `origin/main` integration | new post-rebase tests required |
+| True benchmark | compute R/T or S-parameters | deferred spec in `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md`; implementation blocked until required source/observable surfaces exist |
+| Drift regression | prove `origin/main` integration | `tests/test_api.py::test_upml_rejects_subgridding_refinement` plus BoundarySpec cases in `tests/test_sbp_sat_api_guards.py` |
+| Support matrix | lock evidence claims | `tests/test_support_matrix_sbp_sat.py` |
 
 **Current evidence:**
 
-- Focused suite passed during review:
-  `pytest -q tests/test_sbp_sat_api_guards.py tests/test_sbp_sat_3d.py tests/test_sbp_sat_alpha.py tests/test_sbp_sat_face_ops.py tests/test_sbp_sat_jit.py tests/test_subgrid_crossval.py`
-  -> `37 passed`; warning count is non-gating and was observed as 7-8 across
-  parent/independent review runs.
+- Milestone 2 mainline-integration regression slice passed:
+  `pytest -q tests/test_api.py::test_upml_rejects_subgridding_refinement tests/test_sbp_sat_api_guards.py tests/test_sbp_sat_face_ops.py tests/test_sbp_sat_3d.py tests/test_sbp_sat_alpha.py tests/test_sbp_sat_jit.py tests/test_subgrid_crossval.py tests/test_boundary_spec.py tests/test_boundary_spec_legacy.py tests/test_boundary_spec_preflight.py tests/test_boundary_spec_thickness.py tests/test_boundary_pmc_guard.py tests/test_boundary_pmc_hi_faces.py tests/test_silent_drop_warnings.py`
+  -> `127 passed, 2 deselected, 3 warnings`.
+- Milestone 3 support-matrix contract is locked by
+  `tests/test_support_matrix_sbp_sat.py`.
 
 **Acceptance criteria:**
 
 - Phase-1 implementation-complete requires all non-slow tests plus the proxy
   crossval suite.
-- Public-doc eligible requires post-rebase tests plus true benchmark decisions.
+- Public-doc eligible requires post-rebase tests plus true benchmark
+  implementation, not only the Milestone 3 deferred spec.
 - Full SBP-SAT roadmap milestones require separate verification gates.
 
 ### 2.11 Benchmark definitions
@@ -490,14 +500,21 @@ reflection/transmission validation.
 - Sample one time-series probe.
 - Compute one-frequency DFT amplitude and phase.
 - Require amplitude error `<= 5%` and phase error `<= 5 degrees`.
+- Name both reflection-side and transmission-side fixtures as proxy fixtures.
 
 **Evidence:**
 
-- DFT helper and error calculation are in `tests/test_subgrid_crossval.py:21-50`.
+- DFT helper and error calculation are in `tests/test_subgrid_crossval.py`.
 - Reflection-side and transmission-side proxy tests are in
-  `tests/test_subgrid_crossval.py:89-144`.
-- Transmission probe placement was moved to reduce downstream PEC-cavity
-  contamination (`tests/test_subgrid_crossval.py:121-124`).
+  `tests/test_subgrid_crossval.py`.
+- Support-matrix metadata records the proxy tolerance and explicitly marks
+  true R/T as deferred in `docs/guides/support_matrix.json`.
+
+**Deferred true benchmark specification:**
+
+- Full spec: `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md`.
+- Current status: deferred because Phase 1 hard-fails the source/observable and
+  boundary surfaces needed for clean incident/reflected/transmitted separation.
 
 **Required future true benchmark content:**
 
@@ -507,12 +524,15 @@ reflection/transmission validation.
 - Decide whether to use S-parameter extraction or dedicated plane-wave
   monitors.
 - Document when slow/GPU markers are required.
+- Preserve the support-matrix block on public claims until the true benchmark
+  passes.
 
 **Acceptance criteria:**
 
 - Proxy benchmarks are labeled as proxy benchmarks.
-- True R/T benchmark work is its own deliverable, not silently implied by the
-  current tests.
+- True R/T benchmark work is its own deferred deliverable, not silently implied
+  by the current tests.
+- The support matrix states the current evidence level exactly.
 
 ### 2.12 Milestones and deliverables
 
@@ -570,14 +590,17 @@ reflection/transmission validation.
 
 **Deliverables:**
 
-- Proxy benchmark retained and clearly named.
-- True reflection/transmission benchmark spec.
-- Either implemented true R/T tests or an explicit deferred research issue.
-- Tolerance rationale documented.
+- Proxy benchmark retained and clearly named in `tests/test_subgrid_crossval.py`.
+- True reflection/transmission benchmark spec in
+  `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md`.
+- True R/T tests explicitly deferred until the required boundary/source/observable
+  contracts exist; the deferred issue record lives in the true R/T spec.
+- Tolerance rationale documented in the true R/T spec and support matrix.
 
 **Exit gate:**
 
-- The support matrix states exactly what benchmark evidence exists.
+- The support matrix states exactly what benchmark evidence exists, and
+  `tests/test_support_matrix_sbp_sat.py` locks that metadata.
 
 #### Milestone 4 — Public documentation eligibility
 

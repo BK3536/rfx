@@ -28,6 +28,49 @@ Status legend:
 | Distributed | experimental | scaling lane | not part of correctness-bearing baseline |
 | Floquet/Bloch | experimental | periodic/phased-array lane | promotion pending explicit benchmark ladder |
 
+## SBP-SAT / subgridding experimental lane
+
+Current retained subset:
+- all-PEC `BoundarySpec` / scalar `boundary="pec"` only
+- full-span x/y z-slab refinement only
+- soft point sources and point probes only
+- proxy numerical-equivalence comparison against a uniform-fine reference
+
+Current policy:
+- preserved as a research lane, not a claims-bearing public support surface
+- unsupported combinations hard-fail instead of warning or silently dropping
+- public support promotion is blocked until true R/T evidence exists
+
+### Benchmark evidence
+
+| Evidence layer | Status | Artifact | Claim level |
+|---|---|---|---|
+| unit / integration | implemented | `tests/test_sbp_sat_api_guards.py`, `tests/test_sbp_sat_face_ops.py`, `tests/test_sbp_sat_3d.py`, `tests/test_sbp_sat_alpha.py`, `tests/test_sbp_sat_jit.py` | API guards, operator behavior, smoke stability, JIT seam |
+| proxy crossval | implemented | `tests/test_subgrid_crossval.py` | single-probe DFT amplitude/phase vs uniform-fine reference; **not** physical R/T |
+| true reflection/transmission | deferred | `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md` | no public R/T, S-parameter, or open-boundary claim yet |
+
+Proxy tolerance is intentionally narrow and local: relative amplitude error
+`<= 5%` and phase error `<= 5°` against a uniform-fine reference for the
+current PEC-cavity proxy fixture. That tolerance checks numerical closeness to
+the reference run; it does not validate incident/reflected/transmitted field
+separation, energy balance, or calibrated S-parameters.
+
+### Explicit unsupported combinations in the SBP-SAT lane
+
+| Combination | Status | Expected behavior |
+|---|---|---|
+| CPML/UPML boundary | unsupported | hard-fail |
+| PMC or periodic `BoundarySpec` | unsupported | hard-fail |
+| partial x/y refinement (`xy_margin`) | unsupported | hard-fail |
+| NTFF | unsupported | hard-fail |
+| DFT planes | unsupported | hard-fail |
+| flux monitors | unsupported | hard-fail |
+| TFSF | unsupported | hard-fail |
+| waveguide or Floquet ports | unsupported | hard-fail |
+| lumped RLC | unsupported | hard-fail |
+| coaxial ports | unsupported | hard-fail |
+| impedance point ports or wire/extent ports | unsupported | hard-fail |
+
 ## Reference-lane support table
 
 | Dimension | Supported subset |

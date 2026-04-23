@@ -87,6 +87,10 @@ def test_source_outside_zslab_fails():
             "does not support DFT plane probes",
         ),
         (
+            lambda sim: sim.add_flux_monitor(axis="z", coordinate=0.018, n_freqs=4),
+            "does not support flux monitors",
+        ),
+        (
             lambda sim: sim._waveguide_ports.append(object()),
             "does not support waveguide ports",
         ),

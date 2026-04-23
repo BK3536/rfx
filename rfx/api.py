@@ -3998,6 +3998,11 @@ class Simulation:
                     "Phase-1 SBP-SAT z-slab subgridding does not support "
                     "DFT plane probes"
                 )
+            if self._flux_monitors:
+                raise ValueError(
+                    "Phase-1 SBP-SAT z-slab subgridding does not support "
+                    "flux monitors"
+                )
             if self._waveguide_ports:
                 raise ValueError(
                     "Phase-1 SBP-SAT z-slab subgridding does not support "

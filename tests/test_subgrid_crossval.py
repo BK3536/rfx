@@ -1,4 +1,4 @@
-"""Phase-1 z-slab benchmark comparisons against a uniform-fine reference.
+"""Phase-1 z-slab proxy benchmark comparisons against a uniform-fine reference.
 
 These tests are intentionally narrower than the previous broad 3D cavity
 cross-checks.  They target the approved Phase-1 lane:
@@ -7,9 +7,10 @@ cross-checks.  They target the approved Phase-1 lane:
 - single canonical stepper
 - PEC boundary only
 
-The benchmarks use a normal-incidence proxy geometry and compare a
-subgridded run against a uniform-fine reference at a fixed evaluation
-frequency.
+These are proxy numerical-equivalence benchmarks, not calibrated physical
+reflection/transmission or S-parameter benchmarks. They use a normal-incidence
+PEC-cavity proxy geometry and compare a subgridded run against a uniform-fine
+reference at a fixed evaluation frequency.
 """
 
 import numpy as np
@@ -86,8 +87,8 @@ class _ThinSlabFixture:
         return sim.run(n_steps=self.n_steps)
 
 
-class TestPhase1SubgridBenchmarks(_ThinSlabFixture):
-    def test_zslab_plane_wave_reflection_vs_uniform_fine(self):
+class TestPhase1SubgridProxyBenchmarks(_ThinSlabFixture):
+    def test_zslab_reflection_side_proxy_vs_uniform_fine(self):
         """Reflection-side proxy benchmark against a uniform-fine reference."""
 
         probe_z = 0.0165
@@ -111,8 +112,8 @@ class TestPhase1SubgridBenchmarks(_ThinSlabFixture):
 
         _assert_benchmark("Reflection proxy benchmark", result_ref, result_sub, self.freq_eval)
 
-    def test_zslab_dielectric_transmission_vs_uniform_fine(self):
-        """Transmission benchmark against a uniform-fine reference."""
+    def test_zslab_transmission_side_proxy_vs_uniform_fine(self):
+        """Transmission-side proxy benchmark against a uniform-fine reference."""
         from rfx import Box, Simulation
 
         domain = (0.06, 0.06, 0.06)
@@ -141,4 +142,4 @@ class TestPhase1SubgridBenchmarks(_ThinSlabFixture):
             refinement=(0.010, 0.050),
         )
 
-        _assert_benchmark("Transmission benchmark", result_ref, result_sub, self.freq_eval)
+        _assert_benchmark("Transmission-side proxy benchmark", result_ref, result_sub, self.freq_eval)

@@ -22,7 +22,62 @@
         "lumped_rlc": "hard_fail"
       }
     },
-    "sbp_sat_subgridding": {"status": "experimental"},
+    "sbp_sat_subgridding": {
+      "status": "experimental",
+      "role": "research_lane",
+      "supported_subset": {
+        "boundary": "all_pec_only",
+        "geometry": "full_span_xy_z_slab_only",
+        "sources": ["soft_point_source"],
+        "observables": ["point_probe"],
+        "claim_level": "experimental_proxy_validated_only"
+      },
+      "unsupported_combinations": {
+        "cpml_upml_boundary": "hard_fail",
+        "pmc_or_periodic_boundaryspec": "hard_fail",
+        "partial_xy_refinement": "hard_fail",
+        "ntff": "hard_fail",
+        "dft_plane": "hard_fail",
+        "flux_monitor": "hard_fail",
+        "tfsf": "hard_fail",
+        "waveguide_port": "hard_fail",
+        "floquet_port": "hard_fail",
+        "lumped_rlc": "hard_fail",
+        "coaxial_port": "hard_fail",
+        "impedance_or_wire_port": "hard_fail"
+      },
+      "benchmark_evidence": {
+        "unit_and_integration": [
+          "tests/test_sbp_sat_api_guards.py",
+          "tests/test_sbp_sat_face_ops.py",
+          "tests/test_sbp_sat_3d.py",
+          "tests/test_sbp_sat_alpha.py",
+          "tests/test_sbp_sat_jit.py"
+        ],
+        "proxy_crossval": {
+          "status": "implemented",
+          "test_file": "tests/test_subgrid_crossval.py",
+          "metric": "single_probe_dft_amplitude_phase_vs_uniform_fine_reference",
+          "fixture": "all_pec_normal_incidence_z_slab_proxy",
+          "tolerance": {
+            "relative_amplitude_error_max": 0.05,
+            "phase_error_deg_max": 5.0
+          },
+          "claim_level": "proxy_only_not_physical_rt"
+        },
+        "true_reflection_transmission": {
+          "status": "deferred",
+          "spec": "docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md",
+          "blocking_requirements": [
+            "incident_reflected_transmitted_field_separation",
+            "open_boundary_or_validated_time_gating",
+            "flux_sparameter_or_equivalent_observable_contract"
+          ],
+          "public_claim_allowed": false,
+          "deferred_issue": "docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md#deferred-issue-record"
+        }
+      }
+    },
     "adi": {"status": "experimental"},
     "distributed": {"status": "experimental"},
     "floquet_bloch": {"status": "experimental"}
