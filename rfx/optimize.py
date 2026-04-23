@@ -216,11 +216,14 @@ def optimize(
         Print progress every 10 iterations.
     adjoint_mode : {"pure_ad", "hybrid", "auto"}
         Forward/adjoint routing policy for each optimize iteration.
-        ``pure_ad`` preserves the current default behavior.
+        ``pure_ad`` preserves the current Stage 1 public default behavior.
         ``hybrid`` requires the current Phase 1 hybrid seam to support the
-        configured simulation and raises otherwise.
-        ``auto`` uses the hybrid seam only when support inspection passes and
-        otherwise falls back to the existing pure-AD path.
+        configured simulation and raises otherwise, so it is the strict
+        opt-in mode.
+        ``auto`` is the bounded opt-in/recommended path for landed supported
+        families: it first inspects support, uses the hybrid seam only when
+        inspection passes, and otherwise falls back to the current pure-AD
+        path.
 
     Returns
     -------

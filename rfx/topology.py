@@ -565,11 +565,14 @@ def topology_optimize(
         Print progress every 10 iterations.
     adjoint_mode : {"pure_ad", "hybrid", "auto"}
         Forward/adjoint routing policy for each topology iteration.
-        ``pure_ad`` preserves the current default behavior.
+        ``pure_ad`` preserves the current Stage 1 public default behavior.
         ``hybrid`` requires the bounded Phase 4C topology hybrid subset to
-        pass support inspection and raises otherwise.
-        ``auto`` uses the hybrid seam only when the Phase 4C support
-        inspection passes and otherwise falls back to the current pure-AD path.
+        pass support inspection and raises otherwise, so it is the strict
+        opt-in mode.
+        ``auto`` is the bounded opt-in/recommended path for landed supported
+        topology families: it first inspects support, uses the hybrid seam
+        only when the Phase 4C support inspection passes, and otherwise falls
+        back to the current pure-AD path.
 
     Returns
     -------
@@ -696,7 +699,6 @@ def topology_optimize(
         si, sj, sk = lo_idx
         ei, ej, ek = hi_idx
         eps_r = base_eps_r.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.eps)
-        sigma = base_sigma.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.sigma)
 
         if hybrid_context is not None:
             result = sim.forward_hybrid_phase1_from_context(hybrid_context, eps_override=eps_r)
@@ -729,7 +731,7 @@ def topology_optimize(
         beta = _get_beta(it, beta_schedule)
         beta_history.append(beta)
 
-        loss, grad = jax.value_and_grad(lambda l: forward(l, beta))(logit)
+        loss, grad = jax.value_and_grad(lambda logit_param: forward(logit_param, beta))(logit)
         loss_val = float(loss)
         history.append(loss_val)
 

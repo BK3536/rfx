@@ -16,7 +16,9 @@ removal workflow with a forward physics sanity check).
 |---|---|---|
 | `Simulation.run()` + ports + `result.s_params` | Supported | Use for forward RF analysis and validation |
 | `optimize()` with time-domain proxy objectives | Supported with guardrails | Add probes explicitly |
+| `optimize(..., adjoint_mode="auto")` on bounded landed hybrid-supported flows | Experimental-supported / recommended bounded path | Uses support inspection first; chooses `hybrid` only on landed bounded families and otherwise falls back to `pure_ad` |
 | `optimize(..., adjoint_mode="hybrid")` on bounded lumped-port proxy flows | Experimental-supported | One excited lumped port, optionally one passive lumped port; no extra passive/multi-excited/wire/waveguide/floquet ports; keep the design region away from all port cells |
+| `topology_optimize(..., adjoint_mode="auto")` on zero-sigma dielectric source/probe PEC or CPML cases | Experimental-supported / recommended bounded path | Uses support inspection first; chooses `hybrid` only on landed bounded families and otherwise falls back to `pure_ad` |
 | `topology_optimize(..., adjoint_mode="hybrid")` on zero-sigma dielectric source/probe PEC or CPML cases | Experimental-supported | Source/probe only; no ports, no PEC foreground, no sigma-bearing materials, no dispersive positives |
 | `topology_optimize()` with dielectric foreground/background | Experimental-supported | Use proxy objectives; keep problems small first |
 | `topology_optimize(material_fg="pec")` | Experimental / caveat | Gradient behavior is still evolving |
@@ -36,6 +38,22 @@ healthy:
 
 If the forward case is not yet believable, optimization will usually turn a
 setup problem into a harder-to-debug gradient problem.
+
+## 1A. Stage 1 mode policy for public optimizers
+
+For `optimize()` and `topology_optimize()`, the current public policy is:
+
+- **Default:** `adjoint_mode="pure_ad"`
+- **Bounded recommended path:** `adjoint_mode="auto"` on the landed bounded
+  families listed on this page
+- **Strict opt-in:** `adjoint_mode="hybrid"` if you want unsupported cases to
+  raise instead of falling back
+
+`auto` is intentionally conservative. It inspects support first, selects the
+hybrid seam only on the landed bounded families, and otherwise falls back to
+`pure_ad`. This page does **not** treat Strategy B as part of that public
+optimizer policy surface. For the fuller policy matrix and migration guidance,
+see [Hybrid Optimizer Mode Policy](../guides/hybrid_optimizer_mode_policy.md).
 
 ## 2. Objective compatibility rules
 
@@ -120,6 +138,13 @@ sim.add_port(port_position, "ez", impedance=50.0, waveform=...)
 sim.add_probe(port_position, "ez")
 
 obj = minimize_reflected_energy(port_probe_idx=0)
+result = optimize(sim, region, obj, n_iters=20, n_steps=500, adjoint_mode="auto")
+```
+
+Use `adjoint_mode="hybrid"` only when you want strict enforcement instead of
+bounded `auto` fallback:
+
+```python
 result = optimize(sim, region, obj, n_iters=20, n_steps=500, adjoint_mode="hybrid")
 ```
 
@@ -161,8 +186,20 @@ before the solver starts.
 
 ### Experimental topology hybrid subset
 
-`topology_optimize(..., adjoint_mode="hybrid")` is currently limited to a
-deliberately narrow carve-out:
+`topology_optimize(..., adjoint_mode="auto")` is the bounded recommended path
+for the current deliberately narrow carve-out:
+
+```python
+result = topology_optimize(
+    sim,
+    region,
+    obj,
+    n_iterations=20,
+    adjoint_mode="auto",
+)
+```
+
+The landed topology hybrid subset is:
 
 - at least one `add_source()`-style source and at least one probe
 - no ports
@@ -175,6 +212,9 @@ This does **not** add generic topology hybrid support, PEC-foreground
 topology, sigma-bearing dielectric topology, port-based topology, broader CPML
 topology beyond the zero-sigma source/probe carve-out, or dispersive-positive
 topology.
+
+Use `adjoint_mode="hybrid"` only when you want unsupported topology fixtures to
+raise instead of falling back to `pure_ad`.
 
 ## 4. NTFF setup rules
 

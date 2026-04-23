@@ -71,3 +71,23 @@ A lane or feature can be promoted to **supported** only when all of the followin
 3. unit + integration tests
 4. benchmark / convergence evidence
 5. docs/examples/API wording aligned to the promoted scope
+
+## Hybrid optimizer mode policy (Stage 1)
+
+The hybrid-adjoint public optimizer policy is intentionally narrower than the
+claims-bearing RF reference lane above. Stage 1 covers only the public
+`adjoint_mode` contract on `optimize()` and `topology_optimize()`.
+
+| Public optimizer mode | Status | Stage 1 policy |
+|---|---|---|
+| `pure_ad` | supported default | public default for `optimize()` and `topology_optimize()` |
+| `auto` | experimental-supported / bounded opt-in | inspect support first; select `hybrid` only on landed bounded families; otherwise fall back to `pure_ad` |
+| `hybrid` | experimental-supported / strict opt-in | require support inspection to pass; raise on unsupported cases |
+
+See `docs/guides/hybrid_optimizer_mode_policy.md` for the fuller policy matrix,
+migration guidance, and explicit Strategy B exclusion.
+
+Stage 1 keeps **Strategy B outside this public optimizer policy matrix**. It
+may appear only as a deferred/prototype exclusion note linked to its own
+contract; it receives no default, recommended, implied-safe, or equivalent
+status here.
