@@ -1218,20 +1218,12 @@ def inspect_phase1_hybrid(
         checkpoint_every=checkpoint_every,
     )
     if isinstance(grid, NonUniformGrid):
-        cpml = grid.cpml_layers
-        dx_phys = np.asarray(grid.dx_arr)[cpml : grid.nx - cpml]
-        dy_phys = np.asarray(grid.dy_arr)[cpml : grid.ny - cpml]
         if periodic != (False, False, False):
             reasons = tuple(
                 dict.fromkeys(
                     reasons + ("Phase V does not support combined non-uniform + periodic hybrid workflows",)
                 )
             )
-        if (
-            not np.allclose(dx_phys, dx_phys[0])
-            or not np.allclose(dy_phys, dy_phys[0])
-        ):
-            reasons = tuple(dict.fromkeys(reasons + ("non-uniform grids are unsupported",)))
         if ntff_box is not None:
             reasons = tuple(
                 dict.fromkeys(reasons + ("Phase V nonuniform hybrid does not support NTFF",))

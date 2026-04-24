@@ -3715,7 +3715,7 @@ class Simulation:
         n_steps: int | None = None,
         num_periods: float = 20.0,
     ) -> "Phase1HybridInputs":
-        """Build the bounded Phase V z-graded non-uniform hybrid input surface."""
+        """Build the bounded Phase V non-uniform hybrid input surface."""
 
         grid = self._build_nonuniform_grid()
         resolved_n_steps = self._resolve_phase1_hybrid_runner_state_n_steps(
@@ -3724,19 +3724,6 @@ class Simulation:
             num_periods=num_periods,
         )
         assert resolved_n_steps is not None
-
-        if self._dx_profile is not None or self._dy_profile is not None:
-            from rfx.hybrid_adjoint import unsupported_phase1_hybrid_nonuniform_report
-
-            return self.build_hybrid_phase1_inputs_from_inspected_runner_state(
-                grid,
-                None,
-                unsupported_phase1_hybrid_nonuniform_report(
-                    probe_count=len(self._probes),
-                    boundary=self._boundary,
-                ),
-                n_steps=resolved_n_steps,
-            )
 
         materials, debye_spec, lorentz_spec, pec_mask = self._assemble_materials_nu(grid)
         if eps_override is not None:

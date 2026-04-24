@@ -76,6 +76,41 @@ def _make_source_optimize_sim(*, boundary: str = "pec", ntff: bool = False) -> S
     return sim
 
 
+
+def _make_full_axis_nonuniform_source_optimize_sim(*, ntff: bool = False) -> Simulation:
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.015, 0.015, 0.015),
+        boundary="pec",
+        dx=0.0025,
+        dx_profile=np.array([0.0025, 0.0020, 0.0030, 0.0030, 0.0020, 0.0025], dtype=float),
+        dy_profile=np.array([0.0025, 0.0030, 0.0020, 0.0020, 0.0030, 0.0025], dtype=float),
+        dz_profile=np.array([0.0020, 0.0015, 0.0010, 0.0015, 0.0020], dtype=float),
+    )
+    sim.add_source(
+        (0.0045, 0.0075, 0.0045),
+        "ez",
+        waveform=GaussianPulse(f0=3e9, bandwidth=0.5),
+    )
+    sim.add_probe((0.0105, 0.0075, 0.0045), "ez")
+    if ntff:
+        sim.add_ntff_box(_OPT_NTFF_BOX_LO, _OPT_NTFF_BOX_HI, freqs=_OPT_NTFF_FREQS)
+    return sim
+
+
+def _make_full_axis_nonuniform_periodic_source_optimize_sim() -> Simulation:
+    sim = _make_full_axis_nonuniform_source_optimize_sim()
+    sim.set_periodic_axes("x")
+    return sim
+
+
+def _make_full_axis_nonuniform_optimize_design_region() -> DesignRegion:
+    return DesignRegion(
+        corner_lo=(0.0060, 0.0030, 0.0020),
+        corner_hi=(0.0075, 0.0055, 0.0035),
+        eps_range=(1.0, 4.4),
+    )
+
 def _make_port_optimize_sim() -> Simulation:
     sim = Simulation(freq_max=5e9, domain=(0.015, 0.015, 0.015), boundary="pec")
     sim.add_port((0.005, 0.0075, 0.0075), "ez")
@@ -220,6 +255,151 @@ def test_optimize_default_route_stays_on_pure_ad(monkeypatch):
     )
 
     assert len(result.loss_history) == 1
+
+
+def test_optimize_default_route_stays_on_pure_ad_for_full_axis_nonuniform(monkeypatch):
+    """Default optimize() should not silently switch full-axis nonuniform cases to hybrid."""
+    sim = _make_full_axis_nonuniform_source_optimize_sim()
+    region = _make_full_axis_nonuniform_optimize_design_region()
+
+    def _fail_hybrid(*args, **kwargs):
+        raise AssertionError("default optimize() unexpectedly routed full-axis nonuniform through hybrid")
+
+    monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _fail_hybrid)
+
+    result = optimize(
+        sim,
+        region,
+        _probe_energy_objective,
+        n_iters=1,
+        n_steps=8,
+        lr=0.01,
+        verbose=False,
+    )
+
+    assert len(result.loss_history) == 1
+
+
+def test_optimize_auto_uses_hybrid_for_full_axis_nonuniform_source_probe(monkeypatch):
+    """Auto mode may inherit the bounded full-axis nonuniform source/probe subset."""
+    sim = _make_full_axis_nonuniform_source_optimize_sim()
+    grid = sim._build_nonuniform_grid()
+    materials, *_ = sim._assemble_materials_nu(grid)
+    inputs, report = _inspect_optimize_hybrid_support(
+        sim,
+        eps_r=materials.eps_r,
+        n_steps=8,
+    )
+    assert inputs.supported
+    assert report.supported
+
+    calls = {"hybrid": 0}
+    original_hybrid = sim.forward_hybrid_phase1_from_context
+
+    def _wrapped_hybrid(context, *, eps_override=None):
+        calls["hybrid"] += 1
+        return original_hybrid(context, eps_override=eps_override)
+
+    def _fail_nonuniform_pure(*args, **kwargs):
+        raise AssertionError("auto mode unexpectedly fell back for supported full-axis nonuniform")
+
+    monkeypatch.setattr(sim, "forward_hybrid_phase1_from_context", _wrapped_hybrid)
+    monkeypatch.setattr(sim, "_forward_nonuniform_from_materials", _fail_nonuniform_pure)
+
+    result = optimize(
+        sim,
+        _make_full_axis_nonuniform_optimize_design_region(),
+        _probe_energy_objective,
+        n_iters=1,
+        n_steps=8,
+        lr=0.01,
+        verbose=False,
+        adjoint_mode="auto",
+    )
+
+    assert len(result.loss_history) == 1
+    assert calls["hybrid"] > 0
+
+
+def test_optimize_auto_keeps_nonuniform_ntff_out_of_hybrid_subset():
+    """Deferred nonuniform NTFF cases must not become implied-safe auto/hybrid cases."""
+    sim = _make_full_axis_nonuniform_source_optimize_sim(ntff=True)
+    grid = sim._build_nonuniform_grid()
+    materials, *_ = sim._assemble_materials_nu(grid)
+
+    _, report = _inspect_optimize_hybrid_support(
+        sim,
+        eps_r=materials.eps_r,
+        n_steps=8,
+    )
+
+    assert not report.supported
+    assert "does not support NTFF" in report.reason_text
+
+
+def test_optimize_auto_keeps_combined_nonuniform_periodic_out_of_hybrid_subset():
+    """Deferred combined nonuniform+periodic cases must stay outside optimize auto hybrid."""
+    sim = _make_full_axis_nonuniform_periodic_source_optimize_sim()
+    grid = sim._build_nonuniform_grid()
+    materials, *_ = sim._assemble_materials_nu(grid)
+
+    _, report = _inspect_optimize_hybrid_support(
+        sim,
+        eps_r=materials.eps_r,
+        n_steps=8,
+    )
+
+    assert not report.supported
+    assert "combined non-uniform + periodic" in report.reason_text
+
+
+def test_optimize_auto_keeps_nonuniform_port_workflow_out_of_hybrid_subset():
+    """Deferred nonuniform port workflows must stay outside optimize auto hybrid."""
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.015, 0.015, 0.015),
+        boundary="pec",
+        dx=0.0025,
+        dx_profile=np.array([0.0025, 0.0020, 0.0030, 0.0030, 0.0020, 0.0025], dtype=float),
+        dy_profile=np.array([0.0025, 0.0030, 0.0020, 0.0020, 0.0030, 0.0025], dtype=float),
+        dz_profile=np.array([0.0020, 0.0015, 0.0010, 0.0015, 0.0020], dtype=float),
+    )
+    sim.add_port(
+        (0.0045, 0.0075, 0.0045),
+        "ez",
+        impedance=50.0,
+        waveform=GaussianPulse(f0=3e9, bandwidth=0.5),
+    )
+    sim.add_probe((0.0105, 0.0075, 0.0045), "ez")
+    grid = sim._build_nonuniform_grid()
+    materials, *_ = sim._assemble_materials_nu(grid)
+
+    _, report = _inspect_optimize_hybrid_support(
+        sim,
+        eps_r=materials.eps_r,
+        n_steps=8,
+    )
+
+    assert not report.supported
+    assert "supports only add_source()/probe workflows" in report.reason_text
+
+
+def test_optimize_auto_keeps_nonuniform_lossy_workflow_out_of_hybrid_subset():
+    """Deferred nonuniform lossy workflows must stay outside optimize auto hybrid."""
+    sim = _make_full_axis_nonuniform_source_optimize_sim()
+    sim.add_material("lossy", eps_r=2.0, sigma=5.0)
+    sim.add(Box((0.006, 0.006, 0.002), (0.0075, 0.0075, 0.004)), material="lossy")
+    grid = sim._build_nonuniform_grid()
+    materials, *_ = sim._assemble_materials_nu(grid)
+
+    _, report = _inspect_optimize_hybrid_support(
+        sim,
+        eps_r=materials.eps_r,
+        n_steps=8,
+    )
+
+    assert not report.supported
+    assert "supports only zero sigma materials" in report.reason_text
 
 
 def test_optimize_hybrid_supported_route_bypasses_pure_ad(monkeypatch):

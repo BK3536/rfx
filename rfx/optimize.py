@@ -229,12 +229,21 @@ def optimize(
     -------
     OptimizeResult
     """
-    grid = sim._build_grid()
+    is_nonuniform = any(
+        getattr(sim, attr, None) is not None
+        for attr in ("_dz_profile", "_dx_profile", "_dy_profile")
+    )
+    grid = sim._build_nonuniform_grid() if is_nonuniform else sim._build_grid()
 
     # Compute design-region grid indices, clamped to interior (exclude CPML).
-    lo_idx = list(grid.position_to_index(region.corner_lo))
-    hi_idx = list(grid.position_to_index(region.corner_hi))
-    pads = (grid.pad_x, grid.pad_y, grid.pad_z)
+    if is_nonuniform:
+        lo_idx = list(sim._pos_to_nu_index(grid, region.corner_lo))
+        hi_idx = list(sim._pos_to_nu_index(grid, region.corner_hi))
+        pads = (grid.cpml_layers, grid.cpml_layers, grid.cpml_layers)
+    else:
+        lo_idx = list(grid.position_to_index(region.corner_lo))
+        hi_idx = list(grid.position_to_index(region.corner_hi))
+        pads = (grid.pad_x, grid.pad_y, grid.pad_z)
     dims = (grid.nx, grid.ny, grid.nz)
     for d in range(3):
         lo_idx[d] = max(lo_idx[d], pads[d])
@@ -254,7 +263,10 @@ def optimize(
         init_latent = jnp.zeros(design_shape, dtype=jnp.float32)
 
     eps_min, eps_max = region.eps_range
-    base_materials, debye_spec, lorentz_spec, base_pec_mask, _, _ = sim._assemble_materials(grid)
+    if is_nonuniform:
+        base_materials, debye_spec, lorentz_spec, base_pec_mask = sim._assemble_materials_nu(grid)
+    else:
+        base_materials, debye_spec, lorentz_spec, base_pec_mask, _, _ = sim._assemble_materials(grid)
     base_eps_r = base_materials.eps_r
     base_sigma = base_materials.sigma
     base_mu_r = base_materials.mu_r
@@ -292,6 +304,14 @@ def optimize(
 
         if hybrid_context is not None:
             result = sim.forward_hybrid_phase1_from_context(hybrid_context, eps_override=eps_r)
+        elif is_nonuniform:
+            result = sim._forward_nonuniform_from_materials(
+                eps_override=eps_r,
+                sigma_override=base_sigma,
+                pec_mask_override=base_pec_mask,
+                n_steps=_n_steps,
+                checkpoint=True,
+            )
         else:
             from rfx.core.yee import MaterialArrays
 

@@ -411,6 +411,7 @@ def _make_nonuniform_unsupported_phase1_sim() -> Simulation:
     )
     sim.add_source((0.005, 0.0075, 0.0075), "ez", waveform=GaussianPulse(f0=3e9, bandwidth=0.5))
     sim.add_probe((0.01, 0.0075, 0.0075), "ez")
+    sim.set_periodic_axes("x")
     return sim
 
 
@@ -452,7 +453,7 @@ def _unsupported_phase1_cases() -> list[tuple[Simulation, str]]:
         (_make_lorentz_lossy_unsupported_phase1_sim(), "lossy materials"),
         (_make_drude_unsupported_phase1_sim(), "Drude"),
         (_make_mixed_dispersion_unsupported_phase1_sim(), "mixed Debye+Lorentz"),
-        (_make_nonuniform_unsupported_phase1_sim(), "non-uniform grids are unsupported"),
+        (_make_nonuniform_unsupported_phase1_sim(), "combined non-uniform + periodic"),
     ]
 
 
@@ -1857,7 +1858,7 @@ def test_phase1_context_from_inputs_rejects_unsupported_nonuniform_case():
     sim = _make_nonuniform_unsupported_phase1_sim()
 
     inputs = sim.build_hybrid_phase1_inputs(n_steps=12)
-    with pytest.raises(ValueError, match="non-uniform grids are unsupported"):
+    with pytest.raises(ValueError, match="combined non-uniform \\+ periodic"):
         sim.build_hybrid_phase1_context_from_inputs(inputs)
 
 
@@ -1935,9 +1936,9 @@ def test_phase1_input_surface_helper_aliases_match_methods_for_unsupported_nonun
 
     assert inspect_phase1_hybrid_from_inputs(inputs) == inputs.inspect()
     assert prepare_phase1_hybrid_from_inputs(inputs).report == inputs.prepare().report
-    with pytest.raises(ValueError, match="non-uniform grids are unsupported"):
+    with pytest.raises(ValueError, match="combined non-uniform \\+ periodic"):
         build_phase1_hybrid_context_from_inputs(inputs)
-    with pytest.raises(ValueError, match="non-uniform grids are unsupported"):
+    with pytest.raises(ValueError, match="combined non-uniform"):
         forward_phase1_hybrid_from_inputs(inputs)
 
 
@@ -4822,7 +4823,7 @@ def test_phase1_ntff_nonuniform_fallback_matches_pure_forward():
     sim = _make_nonuniform_ntff_unsupported_phase1_sim()
     n_steps = 12
 
-    with pytest.raises(ValueError, match="non-uniform grids are unsupported"):
+    with pytest.raises(ValueError, match="does not support NTFF"):
         sim.forward_hybrid_phase1(n_steps=n_steps, fallback="raise")
 
     fallback = sim.forward_hybrid_phase1(n_steps=n_steps, fallback="pure_ad")
@@ -5046,7 +5047,7 @@ def test_phase1_nonuniform_unsupported_classmethods_match_helper_functions():
 
 
 
-def test_phase1_nonuniform_unsupported_helpers_match_public_surfaces():
+def test_phase1_nonuniform_unsupported_helpers_remain_legacy_generic_exports():
     sim = _make_nonuniform_unsupported_phase1_sim()
 
     from rfx.hybrid_adjoint import (
@@ -5065,9 +5066,11 @@ def test_phase1_nonuniform_unsupported_helpers_match_public_surfaces():
     public_report = sim.inspect_hybrid_phase1(n_steps=12)
     public_prepared = sim.prepare_hybrid_phase1(n_steps=12)
 
-    assert report == public_report
-    assert prepared.report == public_prepared.report
-    assert prepared.context is None
+    assert report.reason_text == "non-uniform grids are unsupported"
+    assert prepared.reason_text == "non-uniform grids are unsupported"
+    assert "combined non-uniform + periodic" in public_report.reason_text
+    assert public_prepared.report == public_report
+    assert public_prepared.context is None
 
 
 
@@ -5109,7 +5112,7 @@ def test_phase1_private_nonuniform_prep_report_matches_canonical_helper_surface(
 def test_phase1_hybrid_nonuniform_raise_matches_explicit_n_steps_when_omitted():
     _assert_top_level_unsupported_forward_matches_explicit_n_steps_when_omitted(
         _make_nonuniform_unsupported_phase1_sim(),
-        expected_error="non-uniform grids are unsupported",
+        expected_error="combined non-uniform",
         fallback="raise",
     )
 
@@ -5118,7 +5121,7 @@ def test_phase1_hybrid_nonuniform_raise_matches_explicit_n_steps_when_omitted():
 def test_phase1_hybrid_nonuniform_fallback_matches_explicit_n_steps_when_omitted():
     _assert_top_level_unsupported_forward_matches_explicit_n_steps_when_omitted(
         _make_nonuniform_unsupported_phase1_sim(),
-        expected_error="non-uniform grids are unsupported",
+        expected_error="combined non-uniform",
         fallback="pure_ad",
     )
 
@@ -5127,7 +5130,7 @@ def test_phase1_hybrid_nonuniform_fallback_matches_explicit_n_steps_when_omitted
 def test_phase1_top_level_nonuniform_public_family_matches_explicit_n_steps_when_omitted():
     _assert_top_level_unsupported_public_family_matches_explicit_n_steps_when_omitted(
         _make_nonuniform_unsupported_phase1_sim(),
-        expected_error="non-uniform grids are unsupported",
+        expected_error="combined non-uniform",
     )
 
 
@@ -5230,13 +5233,13 @@ def test_phase1_top_level_prepare_bundle_preserves_report_and_no_context_for_uns
 
 
 
-def test_phase1_prepare_bundle_reports_nonuniform_unsupported():
+def test_phase1_prepare_bundle_reports_nonuniform_periodic_unsupported():
     sim, prepared = _make_nonuniform_unsupported_prepared_bundle(n_steps=12)
     assert not prepared.supported
     assert prepared.context is None
-    assert prepared.reason_text == "non-uniform grids are unsupported"
+    assert "combined non-uniform + periodic" in prepared.reason_text
     assert prepared.boundary == "pec"
-    assert prepared.periodic == (False, False, False)
+    assert prepared.periodic == (True, False, False)
 
 
 
@@ -5488,7 +5491,7 @@ def test_phase1_forward_from_inputs_rejects_unsupported_nonuniform_case():
     sim = _make_nonuniform_unsupported_phase1_sim()
 
     inputs = sim.build_hybrid_phase1_inputs(n_steps=12)
-    with pytest.raises(ValueError, match="non-uniform grids are unsupported"):
+    with pytest.raises(ValueError, match="combined non-uniform"):
         sim.forward_hybrid_phase1_from_inputs(inputs)
 
 
@@ -5521,9 +5524,9 @@ def test_phase1_input_builder_preserves_nonuniform_unsupported_case():
 
     _, prepared = _make_nonuniform_unsupported_prepared_bundle(n_steps=12)
 
-    _assert_unsupported_inputs_basics(inputs, expected_reason="non-uniform grids are unsupported")
+    _assert_unsupported_inputs_basics(inputs, expected_reason="combined non-uniform + periodic")
     assert prepared.report.reason_text == inputs.reason_text
-    with pytest.raises(ValueError, match="non-uniform grids are unsupported"):
+    with pytest.raises(ValueError, match="combined non-uniform"):
         inputs.require_supported()
 
 
