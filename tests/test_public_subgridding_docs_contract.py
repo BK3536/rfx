@@ -34,6 +34,7 @@ def test_public_subgridding_guide_is_scoped_and_experimental():
     assert "point probes" in text
     assert "proxy benchmark" in text
     assert "If you need a practical thin-substrate workflow today" in text
+    assert "absorbing-boundary coexistence" in text
     assert "local mesh refinement with JIT performance" not in text
 
 

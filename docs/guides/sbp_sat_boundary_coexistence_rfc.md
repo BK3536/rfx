@@ -33,8 +33,9 @@ The current codebase already establishes four important facts:
    `pec`, `pmc`, `periodic`, `cpml`, and `upml` tokens together with optional
    per-face thickness overrides.
 2. `BoundarySpec` already forbids mixing CPML and UPML in the same simulation.
-3. `Simulation._validate_phase1_subgrid_boundaries()` currently rejects any
-   subgrid configuration whose canonical six-face boundary model is not all-PEC.
+3. `Simulation._validate_subgrid_boundary_mode()` now accepts the currently
+   implemented reflector/periodic subset and still rejects absorbing faces,
+   mixed PMC+periodic configurations, and one-side-touch periodic axes.
 4. `Simulation._resolve_face_layers()` and related preflight code already define
    the non-subgridded meaning of per-face absorber layer counts.
 

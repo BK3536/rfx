@@ -56,13 +56,13 @@ Promotion beyond `experimental` is blocked by the following current facts:
 
 1. `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md` still records the true
    R/T benchmark as **deferred**.
-2. Milestones 6-8 still remain **RFC/spec gates**, not widened runtime
+2. Milestones 7-8 still remain **RFC/spec gates**, not widened runtime
    implementations:
-   - boundary coexistence
    - ports and observables inside refined regions
    - materials / dispersion / time integration
-   The all-PEC arbitrary-box runtime now exists, but its broader promotion
-   still depends on the remaining gates and evidence.
+   The all-PEC arbitrary-box runtime and the selected reflector/periodic
+   boundary subset now exist, but broader promotion still depends on the
+   remaining gates and evidence.
 3. The support matrix still correctly records the lane as an experimental
    all-PEC arbitrary-box lane with only a selected reflector/periodic subset,
    proxy-only evidence, and many unsupported combinations still hard-failing.

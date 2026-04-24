@@ -30,8 +30,9 @@ def test_promotion_proposal_recommends_retaining_experimental_status():
         "retain experimental status",
         "true R/T benchmark",
         "deferred",
-        "Milestones 6-8 still remain **RFC/spec gates**",
-        "all-PEC arbitrary-box runtime now exists",
+        "Milestones 7-8 still remain **RFC/spec gates**",
+        "all-PEC arbitrary-box runtime and the selected reflector/periodic",
+        "boundary subset now exist",
         "all-PEC arbitrary-box lane with a selected reflector/periodic boundary subset",
     ):
         assert token in text

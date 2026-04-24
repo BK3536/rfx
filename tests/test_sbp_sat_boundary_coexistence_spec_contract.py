@@ -34,6 +34,20 @@ def test_boundary_coexistence_rfc_has_required_sections():
         assert heading in text
 
 
+def test_boundary_coexistence_rfc_current_baseline_matches_implemented_subset():
+    text = _text(RFC)
+
+    for token in (
+        "Simulation._validate_subgrid_boundary_mode()",
+        "accepts the currently",
+        "implemented reflector/periodic subset",
+        "rejects absorbing faces",
+        "mixed PMC+periodic configurations",
+        "one-side-touch periodic axes",
+    ):
+        assert token in text
+
+
 def test_boundary_coexistence_rfc_locks_core_invariants_and_padding_contract():
     text = _text(RFC)
 
