@@ -3574,6 +3574,10 @@ class Simulation:
             reasons.append("checkpoint_every is required for Phase III Strategy B")
         elif checkpoint_every <= 0:
             reasons.append("checkpoint_every must be positive for Phase III Strategy B")
+        if isinstance(inputs.grid, NonUniformGrid):
+            reasons.append(
+                "Phase III Strategy B source/probe prototype supports only uniform grids"
+            )
         if inputs.boundary not in {"pec", "cpml"}:
             reasons.append(
                 "Phase III Strategy B source/probe prototype supports only "
@@ -3679,6 +3683,18 @@ class Simulation:
     ) -> "Phase1HybridInputs":
         """Build the seam-owned Phase 1 input spec for uniform hybrid preparation."""
 
+        is_nonuniform = (
+            self._dz_profile is not None
+            or self._dx_profile is not None
+            or self._dy_profile is not None
+        )
+        if is_nonuniform:
+            return self._build_nonuniform_hybrid_phase1_inputs(
+                eps_override=eps_override,
+                n_steps=n_steps,
+                num_periods=num_periods,
+            )
+
         grid, prepared, report = self._inspect_hybrid_phase1_prepared(
             eps_override=eps_override,
             n_steps=n_steps,
@@ -3690,6 +3706,100 @@ class Simulation:
             report,
             n_steps=n_steps,
             num_periods=num_periods,
+        )
+
+    def _build_nonuniform_hybrid_phase1_inputs(
+        self,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        n_steps: int | None = None,
+        num_periods: float = 20.0,
+    ) -> "Phase1HybridInputs":
+        """Build the bounded Phase V z-graded non-uniform hybrid input surface."""
+
+        grid = self._build_nonuniform_grid()
+        resolved_n_steps = self._resolve_phase1_hybrid_runner_state_n_steps(
+            grid,
+            n_steps=n_steps,
+            num_periods=num_periods,
+        )
+        assert resolved_n_steps is not None
+
+        if self._dx_profile is not None or self._dy_profile is not None:
+            from rfx.hybrid_adjoint import unsupported_phase1_hybrid_nonuniform_report
+
+            return self.build_hybrid_phase1_inputs_from_inspected_runner_state(
+                grid,
+                None,
+                unsupported_phase1_hybrid_nonuniform_report(
+                    probe_count=len(self._probes),
+                    boundary=self._boundary,
+                ),
+                n_steps=resolved_n_steps,
+            )
+
+        materials, debye_spec, lorentz_spec, pec_mask = self._assemble_materials_nu(grid)
+        if eps_override is not None:
+            materials = MaterialArrays(
+                eps_r=eps_override,
+                sigma=materials.sigma,
+                mu_r=materials.mu_r,
+            )
+
+        times = jnp.arange(resolved_n_steps, dtype=jnp.float32) * grid.dt
+        raw_sources = []
+        has_non_source_ports = False
+        for pe in self._ports:
+            if pe.impedance != 0.0 or pe.extent is not None:
+                has_non_source_ports = True
+                continue
+            idx = self._pos_to_nu_index(grid, pe.position)
+            raw_sources.append(
+                (idx[0], idx[1], idx[2], pe.component, jax.vmap(pe.waveform)(times))
+            )
+
+        probes = []
+        from rfx.simulation import ProbeSpec
+
+        for pe in self._probes:
+            idx = self._pos_to_nu_index(grid, pe.position)
+            probes.append(ProbeSpec(i=idx[0], j=idx[1], k=idx[2], component=pe.component))
+
+        periodic = tuple(axis in self._periodic_axes for axis in "xyz")
+
+        from rfx.hybrid_adjoint import Phase1HybridInputs, Phase1HybridInspection
+
+        if has_non_source_ports or self._waveguide_ports or self._floquet_ports:
+            report = Phase1HybridInspection.unsupported(
+                reasons=("Phase V nonuniform hybrid supports only add_source()/probe workflows",),
+                source_count=len(raw_sources),
+                probe_count=len(probes),
+                boundary=self._boundary,
+                periodic=periodic,
+                port_metadata=None,
+            )
+            return Phase1HybridInputs.unsupported(report)
+
+        return Phase1HybridInputs(
+            boundary=self._boundary,
+            periodic=periodic,
+            materials=materials,
+            raw_sources=tuple(raw_sources),
+            probes=tuple(probes),
+            port_metadata=None,
+            debye_spec=debye_spec,
+            debye=None,
+            lorentz_spec=lorentz_spec,
+            lorentz=None,
+            ntff_box=object() if self._ntff is not None else None,
+            waveguide_ports=(),
+            pec_mask=pec_mask,
+            pec_occupancy=None,
+            grid=grid,
+            n_steps=resolved_n_steps,
+            pec_axes="",
+            cpml_axes=getattr(grid, "cpml_axes", ""),
+            pec_faces=tuple(sorted(getattr(grid, "pec_faces", set()))),
         )
 
     def _build_hybrid_phase1_inputs_from_materials(

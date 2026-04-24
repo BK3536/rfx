@@ -12,6 +12,7 @@ import jax.numpy as jnp
 
 from rfx import Box, DebyePole, GaussianPulse, drude_pole, lorentz_pole
 from rfx.api import Simulation
+from rfx.grid import Grid
 from rfx.hybrid_adjoint import phase1_forward_result
 from rfx.optimize_objectives import maximize_directivity
 
@@ -405,6 +406,7 @@ def _make_nonuniform_unsupported_phase1_sim() -> Simulation:
         domain=(0.015, 0.015, 0.015),
         boundary="pec",
         dx=0.0025,
+        dx_profile=np.array([0.0025, 0.0015, 0.0015, 0.0015, 0.0015, 0.0025], dtype=float),
         dz_profile=np.array([0.002, 0.002, 0.002, 0.002, 0.002], dtype=float),
     )
     sim.add_source((0.005, 0.0075, 0.0075), "ez", waveform=GaussianPulse(f0=3e9, bandwidth=0.5))

@@ -47,6 +47,7 @@ from rfx.farfield import NTFFData, init_ntff_data, accumulate_ntff
 from rfx.grid import Grid
 from rfx.materials.debye import DebyeCoeffs, DebyeState, init_debye, update_e_debye
 from rfx.materials.lorentz import LorentzCoeffs, LorentzState, init_lorentz, update_e_lorentz
+from rfx.nonuniform import NonUniformGrid, run_nonuniform
 from rfx.simulation import ProbeSpec, SourceSpec
 
 if TYPE_CHECKING:
@@ -149,7 +150,7 @@ def phase1_forward_result(
 class Phase1HybridContext:
     """Static replay context for the experimental Phase 1 hybrid lane."""
 
-    grid: Grid
+    grid: Grid | NonUniformGrid
     boundary: str
     n_steps: int
     dt: float
@@ -356,7 +357,7 @@ class Phase1HybridInputs:
     waveguide_ports: list | tuple | None
     pec_mask: jnp.ndarray | None
     pec_occupancy: jnp.ndarray | None
-    grid: Grid | None = None
+    grid: Grid | NonUniformGrid | None = None
     n_steps: int | None = None
     pec_axes: str = ""
     cpml_axes: str = ""
@@ -441,7 +442,7 @@ class Phase1HybridInputs:
         *,
         boundary: str,
         probe_count: int,
-        grid: Grid | None,
+        grid: Grid | NonUniformGrid | None,
         prepared: Phase1HybridPreparedRunnerState | None,
         report: Phase1HybridInspection,
         n_steps: int | None,
@@ -1186,7 +1187,7 @@ def inspect_phase1_hybrid(
     waveguide_ports: list | tuple | None,
     pec_mask: jnp.ndarray | None,
     pec_occupancy: jnp.ndarray | None,
-    grid: Grid | None = None,
+    grid: Grid | NonUniformGrid | None = None,
     n_steps: int | None = None,
     pec_axes: str = "",
     cpml_axes: str = "",
@@ -1214,6 +1215,31 @@ def inspect_phase1_hybrid(
         n_warmup=n_warmup,
         checkpoint_every=checkpoint_every,
     )
+    if isinstance(grid, NonUniformGrid):
+        cpml = grid.cpml_layers
+        dx_phys = np.asarray(grid.dx_arr)[cpml : grid.nx - cpml]
+        dy_phys = np.asarray(grid.dy_arr)[cpml : grid.ny - cpml]
+        if (
+            not np.allclose(dx_phys, dx_phys[0])
+            or not np.allclose(dy_phys, dy_phys[0])
+        ):
+            reasons = tuple(dict.fromkeys(reasons + ("non-uniform grids are unsupported",)))
+        if ntff_box is not None:
+            reasons = tuple(
+                dict.fromkeys(reasons + ("Phase V nonuniform hybrid does not support NTFF",))
+            )
+        if debye_spec is not None or lorentz_spec is not None:
+            reasons = tuple(
+                dict.fromkeys(
+                    reasons + ("Phase V nonuniform hybrid supports only lossless nondispersive materials",)
+                )
+            )
+        if np.any(np.abs(np.asarray(materials.sigma)) > 0.0):
+            reasons = tuple(
+                dict.fromkeys(
+                    reasons + ("Phase V nonuniform hybrid supports only zero sigma materials",)
+                )
+            )
     inventory = None
     if not reasons and grid is not None and n_steps is not None:
         inventory = Phase1HybridContext.from_inputs(
@@ -1379,6 +1405,24 @@ def run_phase1_forward_time_series(
 
     materials = _materials_from_eps(context, eps_r)
     src_waveforms = _source_waveforms_from_eps(context, eps_r)
+    if isinstance(context.grid, NonUniformGrid):
+        if context.debye_spec is not None or context.lorentz_spec is not None:
+            raise ValueError("mixed or dispersive non-uniform hybrid support is unsupported")
+        sources = [
+            (i, j, k, component, src_waveforms[:, idx])
+            for idx, (i, j, k, component) in enumerate(context.src_meta)
+        ]
+        probes = list(context.prb_meta)
+        result = run_nonuniform(
+            context.grid,
+            materials,
+            context.n_steps,
+            sources=sources,
+            probes=probes,
+            checkpoint=True,
+            emit_time_series=True,
+        )
+        return result["time_series"]
     if context.debye_spec is not None and context.lorentz_spec is not None:
         raise ValueError("mixed Debye+Lorentz dispersion is unsupported")
     if context.debye_spec is not None:
@@ -1435,6 +1479,12 @@ def run_phase1_forward_time_series(
 
 def make_phase1_hybrid_forward(context: Phase1HybridContext) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Create a custom_vjp forward op for the Phase 1 hybrid seam."""
+
+    if isinstance(context.grid, NonUniformGrid):
+        def _forward_time_series(eps_r: jnp.ndarray) -> jnp.ndarray:
+            return run_phase1_forward_time_series(context, eps_r)
+
+        return _forward_time_series
 
     @jax.custom_vjp
     def _forward_time_series(eps_r: jnp.ndarray) -> jnp.ndarray:
@@ -3114,6 +3164,11 @@ def _source_values_from_eps(
         sigma = context.sigma[i, j, k]
         loss = sigma * jnp.float32(context.dt) / (jnp.float32(2.0) * eps)
         cb = (jnp.float32(context.dt) / eps) / (jnp.float32(1.0) + loss)
+        if isinstance(context.grid, NonUniformGrid):
+            dx_local = context.grid.dx_arr[i]
+            dy_local = context.grid.dy_arr[j]
+            dz_local = context.grid.dz[k]
+            return raw_src_vals * cb / (dx_local * dy_local * dz_local)
         return raw_src_vals * cb
 
     if raw_src_vals.shape[0] == 0:
@@ -3125,7 +3180,13 @@ def _source_values_from_eps(
         sigma = context.sigma[i, j, k]
         loss = sigma * jnp.float32(context.dt) / (jnp.float32(2.0) * eps)
         cb = (jnp.float32(context.dt) / eps) / (jnp.float32(1.0) + loss)
-        scaled.append(raw_src_vals[idx] * cb)
+        if isinstance(context.grid, NonUniformGrid):
+            dx_local = context.grid.dx_arr[i]
+            dy_local = context.grid.dy_arr[j]
+            dz_local = context.grid.dz[k]
+            scaled.append(raw_src_vals[idx] * cb / (dx_local * dy_local * dz_local))
+        else:
+            scaled.append(raw_src_vals[idx] * cb)
     return jnp.stack(scaled)
 
 
