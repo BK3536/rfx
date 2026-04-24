@@ -653,13 +653,16 @@ class Simulation:
         z_range: tuple[float, float],
         *,
         ratio: int = 4,
+        x_range: tuple[float, float] | None = None,
+        y_range: tuple[float, float] | None = None,
         xy_margin: float | None = None,
         tau: float = 0.5,
     ) -> "Simulation":
         """Add a z-axis refinement region for SBP-SAT subgridding.
 
-        Phase 1 covers the full supported x/y span and the specified
-        z-range at dx_fine = dx_coarse / ratio.
+        The retained public docs still describe the experimental z-slab lane,
+        but the low-level runtime can also accept explicit ``x_range`` /
+        ``y_range`` to define an arbitrary all-PEC refinement box.
 
         Parameters
         ----------
@@ -667,6 +670,9 @@ class Simulation:
             Physical z-range for the fine region.
         ratio : int
             Refinement ratio (fine cells per coarse cell). Default 4.
+        x_range, y_range : (lo, hi) in metres or None
+            Optional coarse-domain bounds for an arbitrary refinement box.
+            ``None`` keeps the full domain span on that axis.
         xy_margin : float or None
             Reserved for a later partial x/y refinement milestone. Phase 1
             rejects non-None values.
@@ -682,10 +688,25 @@ class Simulation:
             raise ValueError(
                 "Phase-1 SBP-SAT z-slab subgridding does not support xy_margin"
             )
+        for axis_name, axis_range, domain_extent in (
+            ("x", x_range, self._domain[0]),
+            ("y", y_range, self._domain[1]),
+            ("z", z_range, self._domain[2]),
+        ):
+            if axis_range is None:
+                continue
+            lo, hi = axis_range
+            if not (0.0 <= lo < hi <= domain_extent):
+                raise ValueError(
+                    f"{axis_name}_range={axis_range!r} must satisfy "
+                    f"0 <= lo < hi <= {domain_extent}"
+                )
 
         self._refinement = {
             "z_range": z_range,
             "ratio": ratio,
+            "x_range": x_range,
+            "y_range": y_range,
             "xy_margin": xy_margin,
             "tau": tau,
         }

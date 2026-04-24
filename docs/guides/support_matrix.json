@@ -4,15 +4,38 @@
   "lanes": {
     "uniform_yee_rf": {
       "status": "supported",
-      "boundaries": ["pec", "cpml", "upml"],
-      "sources": ["point_current", "lumped_port", "wire_port", "waveguide_port"],
-      "observables": ["probe", "flux_monitor", "s_parameters", "harminv_resonance", "benchmarked_ntff"],
-      "materials": ["isotropic_linear", "conductive", "validated_dispersive_subsets"]
+      "boundaries": [
+        "pec",
+        "cpml",
+        "upml"
+      ],
+      "sources": [
+        "point_current",
+        "lumped_port",
+        "wire_port",
+        "waveguide_port"
+      ],
+      "observables": [
+        "probe",
+        "flux_monitor",
+        "s_parameters",
+        "harminv_resonance",
+        "benchmarked_ntff"
+      ],
+      "materials": [
+        "isotropic_linear",
+        "conductive",
+        "validated_dispersive_subsets"
+      ]
     },
     "nonuniform_graded_z": {
       "status": "shadow",
       "role": "preserved_thin_substrate_lane",
-      "supported_subset": ["probe", "current_source", "selected_dispersive_smoke_coverage"],
+      "supported_subset": [
+        "probe",
+        "current_source",
+        "selected_dispersive_smoke_coverage"
+      ],
       "unsupported_combinations": {
         "floquet": "hard_fail",
         "ntff": "hard_fail",
@@ -27,15 +50,18 @@
       "role": "research_lane",
       "supported_subset": {
         "boundary": "all_pec_only",
-        "geometry": "full_span_xy_z_slab_only",
-        "sources": ["soft_point_source"],
-        "observables": ["point_probe"],
+        "geometry": "all_pec_arbitrary_box_only",
+        "sources": [
+          "soft_point_source"
+        ],
+        "observables": [
+          "point_probe"
+        ],
         "claim_level": "experimental_proxy_validated_only"
       },
       "unsupported_combinations": {
         "cpml_upml_boundary": "hard_fail",
         "pmc_or_periodic_boundaryspec": "hard_fail",
-        "partial_xy_refinement": "hard_fail",
         "ntff": "hard_fail",
         "dft_plane": "hard_fail",
         "flux_monitor": "hard_fail",
@@ -44,7 +70,8 @@
         "floquet_port": "hard_fail",
         "lumped_rlc": "hard_fail",
         "coaxial_port": "hard_fail",
-        "impedance_or_wire_port": "hard_fail"
+        "impedance_or_wire_port": "hard_fail",
+        "xy_margin_geometry_autobox": "hard_fail"
       },
       "benchmark_evidence": {
         "unit_and_integration": [
@@ -75,12 +102,30 @@
           ],
           "public_claim_allowed": false,
           "deferred_issue": "docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md#deferred-issue-record"
+        },
+        "box_proxy_crossval": {
+          "status": "implemented",
+          "test_file": "tests/test_sbp_sat_box_crossval.py",
+          "metric": "single_probe_dft_amplitude_phase_vs_uniform_fine_reference_for_internal_all_pec_box_fixtures",
+          "fixtures": [
+            "x_face_proxy",
+            "y_face_proxy",
+            "edge_proxy",
+            "corner_proxy"
+          ],
+          "claim_level": "internal_proxy_only_not_public_rt"
         }
       }
     },
-    "adi": {"status": "experimental"},
-    "distributed": {"status": "experimental"},
-    "floquet_bloch": {"status": "experimental"}
+    "adi": {
+      "status": "experimental"
+    },
+    "distributed": {
+      "status": "experimental"
+    },
+    "floquet_bloch": {
+      "status": "experimental"
+    }
   },
   "promotion_rule": [
     "support_matrix_entry",

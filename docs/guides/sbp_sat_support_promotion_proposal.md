@@ -12,7 +12,7 @@ Keep the support-matrix lane as:
 
 - `status: experimental`
 - `boundary: all_pec_only`
-- `geometry: full_span_xy_z_slab_only`
+- `geometry: all_pec_arbitrary_box_only`
 - `sources: soft_point_source`
 - `observables: point_probe`
 - `claim_level: experimental_proxy_validated_only`
@@ -26,7 +26,7 @@ supported or shadow.
 The current public/docs-safe claim set is:
 
 1. SBP-SAT subgridding exists as an **experimental research lane**.
-2. The retained visible surface is an **all-PEC, full-span x/y, refined z-slab**
+2. The retained visible surface is an **all-PEC, axis-aligned refinement box**
    case only.
 3. The shipped runtime supports **soft point sources** and **point probes** only.
 4. The current executable benchmark evidence is **proxy numerical equivalence**
@@ -37,7 +37,8 @@ The current public/docs-safe claim set is:
 
 Do **not** claim any of the following today:
 
-- arbitrary 3-D box refinement support
+- claims-bearing arbitrary 3-D box support beyond the current experimental
+  all-PEC subset
 - PMC / periodic / CPML / UPML coexistence
 - true R/T, S-parameter, or open-boundary validation
 - impedance point ports, wire/extent ports, coaxial ports, waveguide ports,
@@ -53,13 +54,15 @@ Promotion beyond `experimental` is blocked by the following current facts:
 
 1. `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md` still records the true
    R/T benchmark as **deferred**.
-2. Milestones 5-8 produced **RFC/spec gates**, not runtime implementations:
-   - all-PEC arbitrary 6-face box refinement
+2. Milestones 6-8 still remain **RFC/spec gates**, not widened runtime
+   implementations:
    - boundary coexistence
    - ports and observables inside refined regions
    - materials / dispersion / time integration
+   The all-PEC arbitrary-box runtime now exists, but its broader promotion
+   still depends on the remaining gates and evidence.
 3. The support matrix still correctly records the lane as all-PEC-only,
-   full-span z-slab only, proxy-only.
+   arbitrary-box only, proxy-only.
 4. Public docs already use appropriately narrow wording; broadening them now
    would outrun the evidence.
 
@@ -97,4 +100,4 @@ A future promotion proposal may recommend widening the lane only after:
 ## Decision summary
 
 **Current decision:** retain SBP-SAT subgridding as an experimental, proxy-only,
-all-PEC z-slab lane.
+all-PEC arbitrary-box lane.

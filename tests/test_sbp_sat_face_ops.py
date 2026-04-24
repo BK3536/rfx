@@ -4,9 +4,16 @@ import numpy as np
 import jax.numpy as jnp
 
 from rfx.subgridding.face_ops import (
+    build_edge_ops,
+    build_face_ops,
     build_zface_ops,
+    check_edge_norm_compatibility,
     check_norm_compatibility,
+    prolong_edge,
+    prolong_face,
     prolong_zface,
+    restrict_edge,
+    restrict_face,
     restrict_zface,
 )
 from rfx.subgridding.sbp_sat_3d import (
@@ -62,6 +69,37 @@ def test_zface_restriction_is_pt_over_ratio():
     )
 
 
+def test_generic_face_ops_match_zface_ops():
+    z_ops = build_zface_ops((3, 4), ratio=2, dx_c=0.006)
+    g_ops = build_face_ops((3, 4), ratio=2, dx_c=0.006)
+    np.testing.assert_allclose(np.array(g_ops.prolong_i), np.array(z_ops.prolong_i), atol=1e-6)
+    np.testing.assert_allclose(np.array(g_ops.prolong_j), np.array(z_ops.prolong_j), atol=1e-6)
+    np.testing.assert_allclose(np.array(g_ops.restrict_i), np.array(z_ops.restrict_i), atol=1e-6)
+    np.testing.assert_allclose(np.array(g_ops.restrict_j), np.array(z_ops.restrict_j), atol=1e-6)
+
+
+def test_face_ops_aliases_match_zface_helpers():
+    ops = build_face_ops((3, 4), ratio=2, dx_c=0.006)
+    coarse = jnp.ones((3, 4), dtype=jnp.float32) * 3.25
+    fine = prolong_face(coarse, ops)
+    restricted = restrict_face(fine, ops)
+    np.testing.assert_allclose(np.array(restricted), np.array(coarse), atol=1e-6)
+
+
+def test_edge_norm_compatibility():
+    ops = build_edge_ops(5, ratio=2, dx_c=0.006)
+    report = check_edge_norm_compatibility(ops, atol=1e-6)
+    assert report["passes"], report
+
+
+def test_edge_restriction_matches_norm_definition():
+    ops = build_edge_ops(4, ratio=3, dx_c=0.009)
+    coarse = jnp.ones((4,), dtype=jnp.float32) * 1.75
+    fine = prolong_edge(coarse, ops)
+    restricted = restrict_edge(fine, ops)
+    np.testing.assert_allclose(np.array(restricted), np.array(coarse), atol=1e-6)
+
+
 def test_extract_tangential_e_zface_shapes():
     config, state = init_subgrid_3d(
         shape_c=(6, 5, 8),
@@ -98,6 +136,44 @@ def test_extract_tangential_h_zface_shapes():
     assert hy_face_c.shape == (6, 5)
     assert hx_face_f.shape == (12, 10)
     assert hy_face_f.shape == (12, 10)
+
+
+def test_extract_tangential_e_xface_shapes():
+    config, state = init_subgrid_3d(
+        shape_c=(6, 5, 8),
+        dx_c=0.004,
+        fine_region=(1, 5, 1, 4, 2, 6),
+        ratio=2,
+    )
+    ey_face_c, ez_face_c = extract_tangential_e_face(
+        (state.ex_c, state.ey_c, state.ez_c), config, "x_lo", grid="coarse"
+    )
+    ey_face_f, ez_face_f = extract_tangential_e_face(
+        (state.ex_f, state.ey_f, state.ez_f), config, "x_lo", grid="fine"
+    )
+    assert ey_face_c.shape == (3, 4)
+    assert ez_face_c.shape == (3, 4)
+    assert ey_face_f.shape == (6, 8)
+    assert ez_face_f.shape == (6, 8)
+
+
+def test_extract_tangential_h_yface_shapes():
+    config, state = init_subgrid_3d(
+        shape_c=(6, 5, 8),
+        dx_c=0.004,
+        fine_region=(1, 5, 1, 4, 2, 6),
+        ratio=2,
+    )
+    hx_face_c, hz_face_c = extract_tangential_h_face(
+        (state.hx_c, state.hy_c, state.hz_c), config, "y_hi", grid="coarse"
+    )
+    hx_face_f, hz_face_f = extract_tangential_h_face(
+        (state.hx_f, state.hy_f, state.hz_f), config, "y_hi", grid="fine"
+    )
+    assert hx_face_c.shape == (4, 4)
+    assert hz_face_c.shape == (4, 4)
+    assert hx_face_f.shape == (8, 8)
+    assert hz_face_f.shape == (8, 8)
 
 
 def test_scatter_roundtrip_zface_preserves_nonface_entries():

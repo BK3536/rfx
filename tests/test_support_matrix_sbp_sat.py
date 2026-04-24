@@ -21,7 +21,7 @@ def test_sbp_sat_support_matrix_records_experimental_proxy_evidence():
 
     assert lane["status"] == "experimental"
     assert lane["supported_subset"]["boundary"] == "all_pec_only"
-    assert lane["supported_subset"]["geometry"] == "full_span_xy_z_slab_only"
+    assert lane["supported_subset"]["geometry"] == "all_pec_arbitrary_box_only"
     assert lane["supported_subset"]["sources"] == ["soft_point_source"]
     assert lane["supported_subset"]["observables"] == ["point_probe"]
 
@@ -33,6 +33,16 @@ def test_sbp_sat_support_matrix_records_experimental_proxy_evidence():
         "relative_amplitude_error_max": 0.05,
         "phase_error_deg_max": 5.0,
     }
+
+    box_proxy = lane["benchmark_evidence"]["box_proxy_crossval"]
+    assert box_proxy["status"] == "implemented"
+    assert box_proxy["test_file"] == "tests/test_sbp_sat_box_crossval.py"
+    assert box_proxy["fixtures"] == [
+        "x_face_proxy",
+        "y_face_proxy",
+        "edge_proxy",
+        "corner_proxy",
+    ]
 
 
 def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
@@ -57,7 +67,7 @@ def test_sbp_sat_unsupported_surface_remains_hard_fail_in_support_matrix():
     for key in (
         "cpml_upml_boundary",
         "pmc_or_periodic_boundaryspec",
-        "partial_xy_refinement",
+        "xy_margin_geometry_autobox",
         "ntff",
         "dft_plane",
         "flux_monitor",

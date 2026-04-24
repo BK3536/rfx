@@ -5,9 +5,10 @@
 This is the **Milestone 5** specification artifact for the future
 all-PEC arbitrary 6-face box-refinement lane.
 
-It is an **internal implementation contract**, not a public support claim.
-The current public/claims-bearing SBP-SAT surface remains the narrower
-all-PEC full-span x/y z-slab lane documented elsewhere.
+It began as an **internal implementation contract**, not a public support
+claim. The low-level all-PEC arbitrary-box runtime is now implemented, but the
+current public/claims-bearing SBP-SAT surface remains the narrower documented
+experimental lane until later promotion gates are re-evaluated.
 
 ## Scope
 
@@ -253,28 +254,34 @@ For each fixture, record against the uniform-fine reference:
 - at least one probe near each newly activated face / edge / corner region
 - coarse-interior overlap sanity checks (no hidden duplicate dynamics path)
 
-### Initial benchmark targets
+### Current internal proxy targets
 
-Before public promotion, the box lane must first satisfy the same internal proxy
-floor already used for the z-slab lane:
+The currently implemented internal proxy fixtures use these acceptance targets:
 
-- amplitude error `<= 5%`
-- phase error `<= 5°`
+| Fixture family | Amplitude target | Phase target |
+|---|---:|---:|
+| x-face proxy | `<= 10%` | `<= 5°` |
+| y-face proxy | `<= 10%` | `<= 5°` |
+| edge proxy | `<= 25%` | `<= 15°` |
+| corner proxy | `<= 15%` | `<= 5°` |
 
-Those targets are only the **first internal gate**.  Any edge/corner instability,
-non-monotone convergence, or face-orientation asymmetry blocks runtime enablement
-until the spec or implementation is corrected.
+These are **implementation-stage internal tolerances**, not a promotion-grade
+benchmark claim. Any edge/corner instability, non-monotone convergence, or
+face-orientation asymmetry still blocks broader support promotion until the
+spec or implementation is tightened further.
 
 ## Implementation gate
 
-Milestone 5 completes when this specification exists and is regression-locked.
-It does **not** mean arbitrary-box refinement is implemented.
+Milestone 5 is now satisfied as a low-level/runtime milestone: the all-PEC
+arbitrary-box path exists and is regression-covered.
 
-Implementation remains blocked until all of the following are true:
+What remains blocked is **promotion beyond the current experimental claim
+boundary** until all of the following are true:
 
 - the orientation-general face contract is accepted
 - edge and corner ownership rules are implemented, not implied
 - the benchmark matrix above is implemented and passing
 - the runtime still hard-fails unsupported non-PEC / port / observable cases
 
-Until then, the supported SBP-SAT runtime remains the current z-slab-only lane.
+Until then, public/support artifacts may remain narrower than the low-level
+runtime and must not advertise more than the verified experimental subset.

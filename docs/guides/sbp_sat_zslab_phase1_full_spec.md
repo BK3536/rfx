@@ -19,9 +19,9 @@ runtime surfaces are reconciled.
 
 ### Current evidence
 
-- `Simulation.add_refinement(...)` currently accepts `z_range`, `ratio`, and
-  `tau`, while rejecting `xy_margin` and all non-PEC `BoundarySpec` faces in
-  the Phase-1 path (`rfx/api.py`).
+- `Simulation.add_refinement(...)` currently accepts `z_range`, `ratio`,
+  `tau`, and optional `x_range` / `y_range`, while rejecting `xy_margin` and
+  all non-PEC `BoundarySpec` faces in the current all-PEC path (`rfx/api.py`).
 - Additional subgridding preflight rejects NTFF, DFT planes, flux monitors,
   waveguide ports, Floquet ports, TFSF, lumped RLC, coaxial ports, and
   impedance/wire ports (`rfx/api.py`).
@@ -29,11 +29,14 @@ runtime surfaces are reconciled.
 - The current 3D SBP-SAT core contains z-slab config/state, canonical `dt`,
   face trace helpers, SAT helpers, compatibility wrappers, the stepper, and
   overlap-safe energy accounting (`rfx/subgridding/sbp_sat_3d.py`).
-- The runtime path builds a full-span x/y fine slab from `add_refinement(...)`
+- The runtime path builds the current all-PEC fine box from `add_refinement(...)`
   and dispatches to `run_subgridded_jit(...)`
   (`rfx/runners/subgridded.py`).
 - JIT execution calls `step_subgrid_3d(...)` inside one `jax.lax.scan`
   (`rfx/subgridding/jit_runner.py`).
+- The low-level all-PEC runtime now also accepts an arbitrary refinement box,
+  while the public/documented claim boundary remains intentionally narrower
+  until later promotion gates are re-evaluated.
 - Current tests cover API guards, face operators, z-slab smoke, alpha/tau,
   JIT, proxy cross-validation, and support-matrix benchmark metadata
   (`tests/test_sbp_sat_api_guards.py`, `tests/test_sbp_sat_face_ops.py`,
@@ -159,14 +162,14 @@ new work.
 
 | Surface | Status | Required wording |
 |---|---|---|
-| Geometry | Phase-1 candidate | full-span x/y, local z slab only |
-| Interfaces | Phase-1 candidate | z-faces only: `z_lo`, `z_hi` |
+| Geometry | Experimental current implementation | all-PEC axis-aligned refinement box only |
+| Interfaces | Experimental current implementation | oriented face/edge/corner coupling under the all-PEC box lane |
 | Boundaries | Candidate all-PEC only | reject CPML/UPML now; after `origin/main`, reject PMC/periodic/mixed specs too |
-| Sources | Candidate soft point sources only | source/probe positions must lie inside refined z slab |
-| Probes | Candidate point probes only | probe positions must lie inside refined z slab |
+| Sources | Candidate soft point sources only | source/probe positions must lie inside the refined box |
+| Probes | Candidate point probes only | probe positions must lie inside the refined box |
 | Impedance ports | **Unsupported in Milestone 1** | hard-fail nonzero impedance point ports and wire/extent ports; repair/support moves to a later port-support milestone |
 | NTFF/DFT/waveguide/Floquet/TFSF/RLC/coaxial ports | Unsupported | fail fast |
-| Arbitrary 3D box refinement | Unsupported | later milestone only |
+| Arbitrary 3D box refinement | Implemented internally, still experimental | keep public claims narrower until box proxy evidence and later promotion review are updated |
 | CPML + subgrid coexistence | Unsupported | later research milestone only |
 
 **Evidence:**
@@ -362,9 +365,11 @@ Milestone 5 now records that contract in
 1. `Simulation.run(...)` dispatches to `_run_subgridded(...)`.
 2. `_run_subgridded(...)` imports and calls `run_subgridded_path(...)`
    (`rfx/api.py:2163-2170`).
-3. `run_subgridded_path(...)` builds the full-span x/y fine z slab and
-   `SubgridConfig3D` (`rfx/runners/subgridded.py:13-81`).
-4. Fine-grid materials are rasterized over the z slab
+3. `run_subgridded_path(...)` now maps explicit all-PEC box bounds from the
+   refinement config, while `SubgridConfig3D` / `step_subgrid_3d(...)` accept
+   arbitrary all-PEC box bounds (`rfx/runners/subgridded.py`,
+   `rfx/subgridding/sbp_sat_3d.py`).
+4. Fine-grid materials are rasterized over the current refinement box
    (`rfx/runners/subgridded.py:93-122`).
 5. Sources/probes are mapped to fine-grid indices
    (`rfx/runners/subgridded.py:124-219`).
@@ -374,14 +379,14 @@ Milestone 5 now records that contract in
 **Compatibility shims:**
 
 - `_shared_node_coupling_h_3d(...)` and `_shared_node_coupling_3d(...)` now
-  delegate to z-face-only SAT helpers (`rfx/subgridding/sbp_sat_3d.py:425-440`).
+  delegate to the oriented-face SAT helpers (`rfx/subgridding/sbp_sat_3d.py`).
 - The spec must decide whether to keep these as private compatibility shims,
   rename them, or delete them after import users are removed.
 
 **Required improvements:**
 
 - Add config-level validation so direct `SubgridConfig3D` construction cannot
-  bypass full-span x/y and z-slab invariants.
+  bypass arbitrary-box invariants.
 - Implement `validate_subgrid_config_3d(config)` rather than replacing
   `SubgridConfig3D` immediately. Call it from:
   - `init_subgrid_3d(...)` after config construction;
@@ -643,8 +648,8 @@ reflection/transmission validation.
 
 **Exit gate:**
 
-- No all-PEC box-refinement implementation begins until the six-face math,
-  edge/corner policy, and benchmarks are specified.
+- The all-PEC arbitrary-box runtime remains experimental until the six-face
+  math, edge/corner policy, and benchmark matrix stay regression-locked.
 - `tests/test_sbp_sat_box_refinement_spec_contract.py` locks the spec artifact.
 
 #### Milestone 6 — Boundary coexistence

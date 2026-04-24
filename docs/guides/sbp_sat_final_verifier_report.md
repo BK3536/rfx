@@ -8,7 +8,7 @@ benchmarks, and unsupported-case documentation.
 ## Final verdict
 
 The current SBP-SAT lane is **documented correctly** for public consumption as
-an **experimental, proxy-only, all-PEC z-slab** lane.
+an **experimental, proxy-only, all-PEC arbitrary-box** lane.
 
 The final verifier recommendation is:
 
@@ -22,8 +22,8 @@ The final verifier recommendation is:
 |---|---|
 | SBP-SAT is experimental, not claims-bearing | `docs/guides/support_matrix.md`, `docs/guides/support_matrix.json`, `tests/test_support_matrix_sbp_sat.py` |
 | Public wording stays narrow and exact | `docs/public/guide/subgridding.mdx`, `docs/public/api/support-boundaries.mdx`, `README.md`, `tests/test_public_subgridding_docs_contract.py` |
-| Current runtime surface is all-PEC / z-slab / soft point source / point probe only | `docs/guides/support_matrix.json`, `tests/test_support_matrix_sbp_sat.py`, `tests/test_sbp_sat_api_guards.py`, `rfx/runners/subgridded.py` |
-| Current benchmark evidence is proxy-only | `tests/test_subgrid_crossval.py`, `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md`, `tests/test_support_matrix_sbp_sat.py` |
+| Current runtime surface is all-PEC / arbitrary-box / soft point source / point probe only | `docs/guides/support_matrix.json`, `tests/test_support_matrix_sbp_sat.py`, `tests/test_sbp_sat_api_guards.py`, `rfx/runners/subgridded.py` |
+| Current benchmark evidence is proxy-only | `tests/test_subgrid_crossval.py`, `tests/test_sbp_sat_box_crossval.py`, `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md`, `tests/test_support_matrix_sbp_sat.py` |
 | Future widening is blocked until explicit gates are met | Milestone 5-8 RFC docs + contract tests |
 
 ## Unsupported-case traceability
@@ -32,7 +32,6 @@ The following unsupported-case groups are all explicitly documented and tied to
 hard-fail or blocked-gate evidence:
 
 - non-PEC boundary coexistence
-- arbitrary 6-face box refinement
 - refined-region advanced ports and observables
 - material/time widening beyond the current proxy baseline
 
@@ -67,7 +66,7 @@ broader support status.
 
 The current verified statement is:
 
-> SBP-SAT subgridding is available as an experimental all-PEC z-slab lane with
+> SBP-SAT subgridding is available as an experimental all-PEC arbitrary-box lane with
 > soft point sources, point probes, and proxy benchmark evidence only.
 
 Anything broader would exceed the presently verified evidence.

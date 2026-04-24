@@ -63,16 +63,19 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
             "Phase-1 SBP-SAT z-slab subgridding does not support xy_margin"
         )
 
-    fk_lo = max(int(round(z_lo / dx_c)), 0)
-    fk_hi = min(int(round(z_hi / dx_c)) + 1, grid_coarse.nz)
-    if fk_hi <= fk_lo:
-        raise ValueError(f"z_range={ref['z_range']} maps to an empty coarse z slab")
+    def _range_to_indices(axis_range, n_cells, label):
+        if axis_range is None:
+            return 0, n_cells
+        lo, hi = axis_range
+        lo_i = max(int(round(lo / dx_c)), 0)
+        hi_i = min(int(round(hi / dx_c)) + 1, n_cells)
+        if hi_i <= lo_i:
+            raise ValueError(f"{label}={axis_range} maps to an empty coarse interval")
+        return lo_i, hi_i
 
-    # Phase 1: fine region spans the full supported x/y interior.
-    fi_lo = 0
-    fi_hi = grid_coarse.nx
-    fj_lo = 0
-    fj_hi = grid_coarse.ny
+    fi_lo, fi_hi = _range_to_indices(ref.get("x_range"), grid_coarse.nx, "x_range")
+    fj_lo, fj_hi = _range_to_indices(ref.get("y_range"), grid_coarse.ny, "y_range")
+    fk_lo, fk_hi = _range_to_indices(ref["z_range"], grid_coarse.nz, "z_range")
 
     nx_f = (fi_hi - fi_lo) * ratio
     ny_f = (fj_hi - fj_lo) * ratio
@@ -141,8 +144,8 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
         if not (0 <= idx[0] < nx_f and 0 <= idx[1] < ny_f and 0 <= idx[2] < nz_f):
             raise ValueError(
                 f"Position {pos} maps to fine-grid index {idx} outside "
-                f"the Phase-1 z-slab fine grid shape ({nx_f}, {ny_f}, {nz_f}). "
-                "Widen z_range to cover all sources and probes."
+                f"the SBP-SAT fine grid shape ({nx_f}, {ny_f}, {nz_f}). "
+                "Adjust x_range/y_range/z_range to cover all sources and probes."
             )
         return idx
 

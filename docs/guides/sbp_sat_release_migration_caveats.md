@@ -7,7 +7,7 @@ still intentionally narrow:
 
 - experimental only
 - all-PEC only
-- one full-span x/y refined z slab only
+- one axis-aligned refinement box only
 - soft point source + point probe only
 - proxy numerical-equivalence benchmark only
 
@@ -30,10 +30,9 @@ expected to hard-fail.
 
 `Simulation.add_refinement(...)` currently means:
 
-- one refined **z slab** only
-- full-span x/y only
-- no partial x/y refinement
-- no arbitrary 3-D box refinement
+- one axis-aligned all-PEC refinement box only
+- explicit `x_range` / `y_range` / `z_range` box bounds are allowed
+- geometry-driven `xy_margin` auto-box refinement is still unsupported
 
 ### Source / port caveat
 
@@ -72,10 +71,11 @@ The current SBP-SAT lane does not yet claim support for:
 
 ## Migration note for maintainers
 
-If older notes, examples, or branches describe SBP-SAT as “general subgridding”,
-translate that language to the current contract before reusing it:
+If older notes, examples, or branches describe SBP-SAT as “z-slab only” or
+“general subgridding”, translate that language to the current contract before
+reusing it:
 
-- replace “general subgridding” with “experimental all-PEC z-slab lane”
+- replace “general subgridding” with “experimental all-PEC arbitrary-box lane”
 - replace “benchmark validated” with “proxy benchmark validated” unless the
   statement specifically cites a true R/T benchmark
 - keep public wording aligned to `docs/guides/support_matrix.*`

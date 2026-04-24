@@ -204,7 +204,7 @@ Gitops-side snapshot/build CI lives in the deploy repo:
 - [Examples hub](docs/public/examples/index.mdx) — current runnable entry points
 - [Examples showcase](docs/public/examples/showcase.mdx) — bounded visual tour of the example surface
 - [Non-Uniform Mesh guide](docs/public/guide/nonuniform-mesh.mdx) — practical thin-substrate shadow-lane workflows
-- [SBP-SAT Subgridding guide](docs/public/guide/subgridding.mdx) — experimental all-PEC z-slab research lane; proxy benchmark only
+- [SBP-SAT Subgridding guide](docs/public/guide/subgridding.mdx) — experimental all-PEC arbitrary-box research lane; proxy benchmark only
 
 ### Tutorials
 - [Patch Antenna Design](docs/public/guide/tutorial-patch-antenna.mdx) — practical patch workflow from local resonance run to external cross-check

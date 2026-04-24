@@ -1,6 +1,6 @@
 ---
 title: "SBP-SAT Subgridding"
-description: "Experimental all-PEC z-slab subgridding research lane in rfx."
+description: "Experimental all-PEC arbitrary-box subgridding research lane in rfx."
 sidebar:
   order: 23
 ---
@@ -10,9 +10,9 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Experimental research lane">
   SBP-SAT subgridding is **not** part of the current claims-bearing public
   support surface. The retained public scope is limited to an
-  **all-PEC, full-span x/y, z-slab** refinement case with **soft point
-  sources**, **point probes**, and **proxy numerical-equivalence evidence**
-  against a uniform-fine reference.
+  **all-PEC, axis-aligned refinement box** with **soft point sources**,
+  **point probes**, and **proxy numerical-equivalence evidence** against a
+  uniform-fine reference.
 </Aside>
 
 ## Current retained subset
@@ -20,7 +20,7 @@ import { Aside } from '@astrojs/starlight/components';
 Today’s public, documented SBP-SAT subset is intentionally narrow:
 
 - **Boundary model** — `boundary="pec"` or an all-PEC `BoundarySpec` only
-- **Refinement geometry** — one full-span x/y refined **z slab** only
+- **Refinement geometry** — one axis-aligned all-PEC refinement box only
 - **Excitation** — soft point sources only
 - **Observables** — point probes only
 - **Evidence level** — proxy benchmark only; true physical reflection /
@@ -42,9 +42,15 @@ sim = Simulation(
     boundary="pec",
     dx=2e-3,
 )
-sim.add_refinement(z_range=(0.012, 0.028), ratio=2, tau=0.5)
-sim.add_source(position=(0.02, 0.02, 0.02), component="ez")
-sim.add_probe(position=(0.02, 0.02, 0.02), component="ez")
+sim.add_refinement(
+    x_range=(0.010, 0.028),
+    y_range=(0.010, 0.028),
+    z_range=(0.012, 0.028),
+    ratio=2,
+    tau=0.5,
+)
+sim.add_source(position=(0.016, 0.020, 0.020), component="ez")
+sim.add_probe(position=(0.022, 0.020, 0.020), component="ez")
 result = sim.run(n_steps=200)
 ```
 
@@ -58,7 +64,7 @@ silently for unsupported combinations, including:
 
 - CPML / UPML boundaries
 - PMC or periodic `BoundarySpec` faces
-- partial x/y refinement (`xy_margin`)
+- geometry-driven `xy_margin` auto-box refinement
 - DFT planes, flux monitors, and NTFF
 - TFSF excitation
 - impedance point ports, wire/extent ports, coaxial ports
@@ -77,6 +83,8 @@ physical R/T or S-parameter benchmark:
 - comparison: subgridded run vs uniform-fine reference
 - metric: single-probe DFT amplitude / phase error
 - current tolerance: amplitude error `<= 5%`, phase error `<= 5°`
+- additional internal arbitrary-box proxy fixtures live in
+  `tests/test_sbp_sat_box_crossval.py`
 
 That evidence is enough to keep the lane visible as experimental research, but
 not enough to promote it into the claims-bearing public surface.
@@ -87,9 +95,10 @@ If you need a practical thin-substrate workflow today, start with
 [Non-Uniform Mesh](../nonuniform-mesh/), which is the preserved shadow lane for
 that job shape.
 
-If you need physical reflection / transmission, open-boundary behavior, or
-port-based observables inside a refined region, treat SBP-SAT subgridding as a
-future roadmap item rather than a current public feature.
+If you need physical reflection / transmission, open-boundary behavior,
+boundary coexistence, or advanced refined-region ports/observables, treat
+SBP-SAT subgridding as a future roadmap item rather than a current public
+feature.
 
 ## Roadmap note
 

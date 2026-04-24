@@ -1,5 +1,6 @@
 """API guard tests for the canonical Phase-1 z-slab lane."""
 
+import numpy as np
 import pytest
 
 from rfx import Simulation
@@ -22,6 +23,27 @@ def test_subgrid_accepts_all_pec_boundaryspec():
     sim.add_refinement(z_range=(0.01, 0.03), ratio=3)
 
     assert sim._refinement["ratio"] == 3
+
+
+def test_all_pec_box_refinement_runs():
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary="pec",
+        dx=2e-3,
+    )
+    sim.add_refinement(
+        z_range=(0.012, 0.028),
+        x_range=(0.010, 0.028),
+        y_range=(0.010, 0.028),
+        ratio=2,
+    )
+    sim.add_source(position=(0.012, 0.020, 0.020), component="ez")
+    sim.add_probe(position=(0.026, 0.020, 0.020), component="ez")
+    result = sim.run(n_steps=80)
+
+    assert result.time_series.shape == (80, 1)
+    assert float(np.max(np.abs(np.asarray(result.time_series)))) > 0.0
 
 
 @pytest.mark.parametrize(
@@ -68,10 +90,15 @@ def test_partial_xy_refinement_fails():
 
 def test_source_outside_zslab_fails():
     sim = Simulation(freq_max=5e9, domain=(0.04, 0.04, 0.04), boundary="pec", dx=2e-3)
-    sim.add_refinement(z_range=(0.012, 0.020), ratio=2)
+    sim.add_refinement(
+        z_range=(0.012, 0.020),
+        x_range=(0.012, 0.028),
+        y_range=(0.012, 0.028),
+        ratio=2,
+    )
     sim.add_source(position=(0.02, 0.02, 0.032), component="ez")
     sim.add_probe(position=(0.02, 0.02, 0.032), component="ez")
-    with pytest.raises(ValueError, match="outside .*z-slab fine grid|Widen z_range"):
+    with pytest.raises(ValueError, match="outside .*fine grid|Adjust x_range/y_range/z_range"):
         sim.run(n_steps=10)
 
 

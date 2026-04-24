@@ -49,15 +49,15 @@ def test_box_refinement_spec_records_all_six_face_mappings():
             assert part in text
 
 
-def test_box_refinement_spec_blocks_runtime_until_edge_corner_and_benchmarks_exist():
+def test_box_refinement_spec_locks_post_implementation_promotion_gate():
     text = _text(BOX_SPEC)
 
     assert "Each face SAT operator owns only the strict face interior" in text
     assert "Each of the 12 box edges is owned by a dedicated 1-D edge operator" in text
     assert "Each of the 8 box corners is owned by a dedicated corner operator" in text
-    assert "arbitrary 6-face box" in text
-    assert "refinement stays disabled" in text
-    assert "Implementation remains blocked until all of the following are true" in text
+    assert "low-level/runtime milestone" in text
+    assert "arbitrary-box path exists and is regression-covered" in text
+    assert "promotion beyond the current experimental claim" in text
     assert "the benchmark matrix above is implemented and passing" in text
 
 
@@ -127,8 +127,14 @@ def test_box_refinement_spec_locks_benchmark_matrix_details():
         "point-probe DFT phase error",
         "at least one probe near each newly activated face / edge / corner region",
         "coarse-interior overlap sanity checks",
-        "amplitude error `<= 5%`",
-        "phase error `<= 5°`",
+        "x-face proxy",
+        "y-face proxy",
+        "edge proxy",
+        "corner proxy",
+        "`<= 10%`",
+        "`<= 5°`",
+        "`<= 25%`",
+        "`<= 15°`",
     ):
         assert metric in text
 

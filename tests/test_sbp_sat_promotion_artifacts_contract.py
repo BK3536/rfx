@@ -25,12 +25,13 @@ def test_promotion_proposal_recommends_retaining_experimental_status():
         "Do not promote SBP-SAT / subgridding beyond `experimental`",
         "status: experimental",
         "boundary: all_pec_only",
-        "geometry: full_span_xy_z_slab_only",
+        "geometry: all_pec_arbitrary_box_only",
         "claim_level: experimental_proxy_validated_only",
         "retain experimental status",
         "true R/T benchmark",
         "deferred",
-        "Milestones 5-8 produced **RFC/spec gates**, not runtime implementations",
+        "Milestones 6-8 still remain **RFC/spec gates**",
+        "all-PEC arbitrary-box runtime now exists",
     ):
         assert token in text
 
@@ -41,7 +42,7 @@ def test_release_and_migration_caveats_lock_current_surface():
     for token in (
         "experimental only",
         "all-PEC only",
-        "one full-span x/y refined z slab only",
+        "one axis-aligned refinement box only",
         "soft point source + point probe only",
         "proxy numerical-equivalence benchmark only",
         "boundary=\"pec\"",
@@ -59,7 +60,7 @@ def test_final_verifier_report_ties_claims_to_evidence():
     text = _text(VERIFIER)
 
     for token in (
-        "experimental, proxy-only, all-PEC z-slab",
+        "experimental, proxy-only, all-PEC arbitrary-box",
         "Claim-to-evidence map",
         "tests/test_support_matrix_sbp_sat.py",
         "tests/test_public_subgridding_docs_contract.py",
@@ -83,4 +84,4 @@ def test_full_spec_references_milestone9_artifacts_and_contract_test():
 
 def test_public_changelog_and_migration_keep_sbp_sat_narrow():
     assert "SBP-SAT subgridding remains experimental" in _text(CHANGELOG)
-    assert "experimental all-PEC z-slab, proxy-only" in _text(MIGRATION)
+    assert "experimental all-PEC arbitrary-box, proxy-only" in _text(MIGRATION)

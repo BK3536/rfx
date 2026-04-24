@@ -59,7 +59,7 @@ class TestJITEdgeCases:
 
 
 class TestJITRunnerDirect:
-    def test_direct_jit_rejects_partial_xy_config(self):
+    def test_direct_jit_accepts_arbitrary_box_config(self):
         from rfx.core.yee import MaterialArrays
         from rfx.grid import Grid
         from rfx.subgridding.face_ops import build_zface_ops
@@ -98,8 +98,8 @@ class TestJITRunnerDirect:
             mu_r=jnp.ones((nx_f, ny_f, nz_f), dtype=jnp.float32),
         )
 
-        with pytest.raises(ValueError, match="full-span x"):
-            run_subgridded_jit(grid_c, mats_c, mats_f, config, n_steps=1)
+        result = run_subgridded_jit(grid_c, mats_c, mats_f, config, n_steps=1)
+        assert result is not None
 
     def test_direct_jit_runner_pec(self):
         from rfx.grid import Grid

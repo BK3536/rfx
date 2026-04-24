@@ -1,4 +1,4 @@
-"""Face operators for the Phase-1 z-slab SBP-SAT lane.
+"""Face and edge operators for the current SBP-SAT lane.
 
 The canonical Phase-1 contract uses explicit face norms together with
 cell-centered linear prolongation.  The implementation stores separable
@@ -33,6 +33,20 @@ class ZFaceOps(NamedTuple):
     prolong_j: jnp.ndarray
     restrict_i: jnp.ndarray
     restrict_j: jnp.ndarray
+
+
+class EdgeOps(NamedTuple):
+    """Explicit 1-D edge operators for coarse/fine coupling."""
+
+    coarse_size: int
+    fine_size: int
+    ratio: int
+    coarse_length: float
+    fine_length: float
+    coarse_norm: jnp.ndarray
+    fine_norm: jnp.ndarray
+    prolong: jnp.ndarray
+    restrict: jnp.ndarray
 
 
 def _build_linear_prolongation_1d(n_coarse: int, ratio: int) -> jnp.ndarray:
@@ -76,6 +90,16 @@ def build_zface_norms(
     return coarse_norm, fine_norm
 
 
+def build_face_ops(
+    coarse_shape: tuple[int, int],
+    ratio: int,
+    dx_c: float,
+) -> ZFaceOps:
+    """Orientation-agnostic 2-D face operator bundle."""
+
+    return build_zface_ops(coarse_shape, ratio, dx_c)
+
+
 def build_zface_ops(
     coarse_shape: tuple[int, int],
     ratio: int,
@@ -102,6 +126,33 @@ def build_zface_ops(
     )
 
 
+def build_edge_ops(
+    coarse_size: int,
+    ratio: int,
+    dx_c: float,
+) -> EdgeOps:
+    """Build the 1-D edge operator bundle."""
+
+    if ratio <= 0:
+        raise ValueError(f"ratio must be positive, got {ratio}")
+    if coarse_size <= 0:
+        raise ValueError(f"coarse_size must be positive, got {coarse_size}")
+
+    dx_f = dx_c / ratio
+    prolong = _build_linear_prolongation_1d(coarse_size, ratio)
+    return EdgeOps(
+        coarse_size=coarse_size,
+        fine_size=coarse_size * ratio,
+        ratio=ratio,
+        coarse_length=float(dx_c),
+        fine_length=float(dx_f),
+        coarse_norm=jnp.full((coarse_size,), dx_c, dtype=jnp.float32),
+        fine_norm=jnp.full((coarse_size * ratio,), dx_f, dtype=jnp.float32),
+        prolong=prolong,
+        restrict=prolong.T / ratio,
+    )
+
+
 def build_zface_prolongation(
     coarse_shape: tuple[int, int],
     ratio: int,
@@ -120,6 +171,18 @@ def build_zface_restriction(
     """Return the operator bundle used for z-face restriction."""
 
     return build_zface_ops(coarse_shape, ratio, dx_c)
+
+
+def prolong_face(coarse_face: jnp.ndarray, ops: ZFaceOps) -> jnp.ndarray:
+    """Orientation-agnostic alias for ``prolong_zface``."""
+
+    return prolong_zface(coarse_face, ops)
+
+
+def restrict_face(fine_face: jnp.ndarray, ops: ZFaceOps) -> jnp.ndarray:
+    """Orientation-agnostic alias for ``restrict_zface``."""
+
+    return restrict_zface(fine_face, ops)
 
 
 def prolong_zface(coarse_face: jnp.ndarray, ops: ZFaceOps) -> jnp.ndarray:
@@ -143,6 +206,28 @@ def restrict_zface(fine_face: jnp.ndarray, ops: ZFaceOps) -> jnp.ndarray:
         )
 
     return ops.restrict_i @ fine_face @ ops.restrict_j.T
+
+
+def prolong_edge(coarse_line: jnp.ndarray, ops: EdgeOps) -> jnp.ndarray:
+    """Apply the cell-centered linear prolongation operator on a 1-D edge."""
+
+    coarse_line = jnp.asarray(coarse_line, dtype=jnp.float32)
+    if coarse_line.shape != (ops.coarse_size,):
+        raise ValueError(
+            f"coarse_line shape {coarse_line.shape} does not match {(ops.coarse_size,)}"
+        )
+    return ops.prolong @ coarse_line
+
+
+def restrict_edge(fine_line: jnp.ndarray, ops: EdgeOps) -> jnp.ndarray:
+    """Apply the norm-derived restriction on a 1-D edge."""
+
+    fine_line = jnp.asarray(fine_line, dtype=jnp.float32)
+    if fine_line.shape != (ops.fine_size,):
+        raise ValueError(
+            f"fine_line shape {fine_line.shape} does not match {(ops.fine_size,)}"
+        )
+    return ops.restrict @ fine_line
 
 
 def check_norm_compatibility(
@@ -173,6 +258,39 @@ def check_norm_compatibility(
 
     lhs = float(jnp.sum(coarse_face * ops.coarse_norm * restricted))
     rhs = float(jnp.sum(prolonged * ops.fine_norm * fine_face))
+    abs_error = abs(lhs - rhs)
+    return {
+        "lhs": lhs,
+        "rhs": rhs,
+        "abs_error": abs_error,
+        "passes": abs_error <= atol,
+    }
+
+
+def check_edge_norm_compatibility(
+    ops: EdgeOps,
+    coarse_line: jnp.ndarray | None = None,
+    fine_line: jnp.ndarray | None = None,
+    *,
+    atol: float = 1e-6,
+) -> dict[str, float | bool]:
+    """Evaluate the norm-compatibility identity for one edge bundle."""
+
+    if coarse_line is None:
+        coarse_line = jnp.asarray(np.arange(ops.coarse_size, dtype=np.float32))
+    else:
+        coarse_line = jnp.asarray(coarse_line, dtype=jnp.float32)
+
+    if fine_line is None:
+        fine_line = jnp.asarray(np.arange(ops.fine_size, dtype=np.float32))
+    else:
+        fine_line = jnp.asarray(fine_line, dtype=jnp.float32)
+
+    restricted = restrict_edge(fine_line, ops)
+    prolonged = prolong_edge(coarse_line, ops)
+
+    lhs = float(jnp.sum(coarse_line * ops.coarse_norm * restricted))
+    rhs = float(jnp.sum(prolonged * ops.fine_norm * fine_line))
     abs_error = abs(lhs - rhs)
     return {
         "lhs": lhs,
