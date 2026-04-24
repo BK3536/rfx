@@ -2684,14 +2684,46 @@ class Simulation:
                             C0 / self._freq_max / math.sqrt(max(eps_r, 1.0))
                         )
                         cells_per_lam = lam_eff / cell
-                        if cells_per_lam < 10.0:
+                        # rfx's Yee update is 2nd-order in bulk but
+                        # degrades to 1st-order at ε-discontinuities
+                        # because subpixel smoothing is default OFF
+                        # (Meep ships it ON and stays 2nd-order). For
+                        # phase-accurate propagation we need ≥15 cells
+                        # per λ_eff — the traditional λ/10 rule applies
+                        # to subpixel-smoothed codes. S-parameter
+                        # extraction with a port or flux monitor
+                        # amplifies dielectric-interface phase error
+                        # into |S| magnitude error (see
+                        # examples/crossval/11 rfx-vs-analytic audit,
+                        # 2026-04-24): at 17.7 cells/λ_eff we measure
+                        # ~5% |S21| deficit at Fabry-Perot peaks; at
+                        # 35 cells/λ_eff (dx halved) it halves to ~2%.
+                        # Require 20 cells/λ_eff when S-param
+                        # extraction is active.
+                        sparam_active = bool(
+                            self._waveguide_ports
+                            or self._flux_monitors
+                        )
+                        threshold = 20.0 if sparam_active else 15.0
+                        if cells_per_lam < threshold:
+                            suffix = (
+                                " S-parameter extraction amplifies "
+                                "ε-interface phase error into |S| "
+                                "magnitude error; ~5% |S21| deficit "
+                                "expected at 17 cells/λ_eff."
+                                if sparam_active else
+                                " Yee without subpixel smoothing has "
+                                "1st-order convergence at ε interfaces."
+                            )
                             _w.warn(
                                 f"dielectric '{mat_name}' on {axis_name}: "
                                 f"{cells_per_lam:.1f} cells per λ_eff "
                                 f"(eps_r={eps_r:.2f}, freq_max="
                                 f"{self._freq_max/1e9:.2f}GHz, "
-                                f"dx={cell*1e3:.3f}mm). Need ≥10 for "
-                                f"phase-accurate propagation.",
+                                f"dx={cell*1e3:.3f}mm). Need ≥"
+                                f"{threshold:.0f} cells/λ_eff for "
+                                f"phase-accurate propagation."
+                                f"{suffix}",
                                 stacklevel=3,
                             )
 
