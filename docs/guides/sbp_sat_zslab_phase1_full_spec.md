@@ -308,6 +308,8 @@ must be proven before broader claims.
   sub-stepped variants.
 - Explicit limits for nonuniform, dispersive, anisotropic, and nonlinear
   materials until each has its own validation.
+- Milestone 6 boundary coexistence RFC for PMC / periodic / CPML / UPML /
+  per-face absorber padding.
 
 Milestone 5 now records that contract in
 `docs/guides/sbp_sat_all_pec_box_refinement_spec.md`.
@@ -649,7 +651,8 @@ reflection/transmission validation.
 
 **Deliverables:**
 
-- `BoundarySpec` coexistence RFC for PMC, periodic, CPML, and UPML.
+- `BoundarySpec` coexistence RFC for PMC, periodic, CPML, and UPML in
+  `docs/guides/sbp_sat_boundary_coexistence_rfc.md`.
 - Per-face CPML layer/padding interaction contract.
 - Open-boundary benchmark definitions distinct from PEC-cavity proxies.
 - Hard-fail matrix for every boundary combination still unsupported.
@@ -658,6 +661,8 @@ reflection/transmission validation.
 
 - No non-PEC boundary support is advertised until explicit BoundarySpec tests
   and open-boundary benchmarks pass.
+- `tests/test_sbp_sat_boundary_coexistence_spec_contract.py` locks the RFC
+  artifact.
 
 #### Milestone 7 — Ports and observables inside refined regions
 
