@@ -24,7 +24,7 @@ def test_promotion_proposal_recommends_retaining_experimental_status():
     for token in (
         "Do not promote SBP-SAT / subgridding beyond `experimental`",
         "status: experimental",
-        "boundary: all_pec_only",
+        "boundary: all_pec_plus_selected_reflector_periodic_subset",
         "geometry: all_pec_arbitrary_box_only",
         "claim_level: experimental_proxy_validated_only",
         "retain experimental status",
@@ -32,6 +32,7 @@ def test_promotion_proposal_recommends_retaining_experimental_status():
         "deferred",
         "Milestones 6-8 still remain **RFC/spec gates**",
         "all-PEC arbitrary-box runtime now exists",
+        "all-PEC arbitrary-box lane with a selected reflector/periodic boundary subset",
     ):
         assert token in text
 
@@ -41,12 +42,12 @@ def test_release_and_migration_caveats_lock_current_surface():
 
     for token in (
         "experimental only",
-        "all-PEC only",
+        "selected reflector/periodic subset",
         "one axis-aligned refinement box only",
         "soft point source + point probe only",
         "proxy numerical-equivalence benchmark only",
         "boundary=\"pec\"",
-        "all-PEC `BoundarySpec`",
+        "selected reflector/periodic subset",
         "DFT planes",
         "flux monitors",
         "NTFF / Huygens-box far field",
@@ -61,10 +62,12 @@ def test_final_verifier_report_ties_claims_to_evidence():
 
     for token in (
         "experimental, proxy-only, all-PEC arbitrary-box",
+        "selected reflector/periodic boundary subset",
         "Claim-to-evidence map",
         "tests/test_support_matrix_sbp_sat.py",
         "tests/test_public_subgridding_docs_contract.py",
         "tests/test_subgrid_crossval.py",
+        "tests/test_sbp_sat_boundary_crossval.py",
         "tests/test_sbp_sat_api_guards.py",
         "Milestone 5-8 RFC docs + contract tests",
         "does **not** recommend promotion",
@@ -84,4 +87,4 @@ def test_full_spec_references_milestone9_artifacts_and_contract_test():
 
 def test_public_changelog_and_migration_keep_sbp_sat_narrow():
     assert "SBP-SAT subgridding remains experimental" in _text(CHANGELOG)
-    assert "experimental all-PEC arbitrary-box, proxy-only" in _text(MIGRATION)
+    assert "experimental all-PEC arbitrary-box" in _text(MIGRATION)

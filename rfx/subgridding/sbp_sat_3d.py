@@ -360,7 +360,13 @@ def _make_mats(shape):
     )
 
 
-def _update_h_only(ex, ey, ez, hx, hy, hz, dt, dx, mats=None):
+def _update_h_only(
+    ex, ey, ez, hx, hy, hz, dt, dx,
+    mats=None,
+    periodic: tuple[bool, bool, bool] = (False, False, False),
+    pmc_faces: frozenset[str] | None = None,
+):
+    from rfx.boundaries.pmc import apply_pmc_faces
     from rfx.core.yee import FDTDState, update_h
 
     shape = ex.shape
@@ -375,7 +381,9 @@ def _update_h_only(ex, ey, ez, hx, hy, hz, dt, dx, mats=None):
     )
     if mats is None:
         mats = _make_mats(shape)
-    state = update_h(state, mats, dt, dx)
+    state = update_h(state, mats, dt, dx, periodic=periodic)
+    if pmc_faces:
+        state = apply_pmc_faces(state, pmc_faces)
     return state.hx, state.hy, state.hz
 
 
@@ -392,6 +400,7 @@ def _update_e_only(
     pec_mask=None,
     boundary_axes: str | None = "xyz",
     boundary_faces: frozenset[str] | None = None,
+    periodic: tuple[bool, bool, bool] = (False, False, False),
 ):
     from rfx.boundaries.pec import apply_pec, apply_pec_faces, apply_pec_mask
     from rfx.core.yee import FDTDState, update_e
@@ -408,7 +417,7 @@ def _update_e_only(
     )
     if mats is None:
         mats = _make_mats(shape)
-    state = update_e(state, mats, dt, dx)
+    state = update_e(state, mats, dt, dx, periodic=periodic)
     if boundary_faces is not None:
         state = apply_pec_faces(state, boundary_faces)
     elif boundary_axes:
@@ -843,6 +852,10 @@ def step_subgrid_3d(
     mats_f=None,
     pec_mask_c=None,
     pec_mask_f=None,
+    outer_pec_faces: frozenset[str] = frozenset({"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"}),
+    outer_pmc_faces: frozenset[str] = frozenset(),
+    periodic: tuple[bool, bool, bool] = (False, False, False),
+    fine_periodic: tuple[bool, bool, bool] = (False, False, False),
 ) -> SubgridState3D:
     """Advance the current all-PEC subgrid lane by one timestep."""
 
@@ -856,6 +869,8 @@ def step_subgrid_3d(
         config.dt,
         config.dx_c,
         mats=mats_c,
+        periodic=periodic,
+        pmc_faces=outer_pmc_faces,
     )
     hx_f, hy_f, hz_f = _update_h_only(
         state.ex_f,
@@ -867,6 +882,8 @@ def step_subgrid_3d(
         config.dt,
         config.dx_f,
         mats=mats_f,
+        periodic=fine_periodic,
+        pmc_faces=frozenset(face for face in _touching_outer_faces(config) if face in outer_pmc_faces),
     )
     (hx_c, hy_c, hz_c), (hx_f, hy_f, hz_f) = apply_sat_h_interfaces(
         (hx_c, hy_c, hz_c),
@@ -886,7 +903,9 @@ def step_subgrid_3d(
         config.dx_c,
         mats=mats_c,
         pec_mask=pec_mask_c,
-        boundary_axes="xyz",
+        boundary_axes=None,
+        boundary_faces=outer_pec_faces,
+        periodic=periodic,
     )
     ex_f, ey_f, ez_f = _update_e_only(
         state.ex_f,
@@ -900,7 +919,8 @@ def step_subgrid_3d(
         mats=mats_f,
         pec_mask=pec_mask_f,
         boundary_axes=None,
-        boundary_faces=_touching_outer_faces(config),
+        boundary_faces=frozenset(face for face in _touching_outer_faces(config) if face in outer_pec_faces),
+        periodic=fine_periodic,
     )
     (ex_c, ey_c, ez_c), (ex_f, ey_f, ez_f) = apply_sat_e_interfaces(
         (ex_c, ey_c, ez_c),

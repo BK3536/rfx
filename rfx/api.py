@@ -683,7 +683,7 @@ class Simulation:
         if self._refinement is not None:
             raise ValueError("Only one refinement region is supported")
 
-        self._validate_phase1_subgrid_boundaries()
+        self._validate_subgrid_boundary_mode()
         if xy_margin is not None:
             raise ValueError(
                 "Phase-1 SBP-SAT z-slab subgridding does not support xy_margin"
@@ -712,26 +712,67 @@ class Simulation:
         }
         return self
 
-    def _validate_phase1_subgrid_boundaries(self) -> None:
-        """Reject all non-PEC boundary forms for Phase-1 SBP-SAT.
+    def _validate_subgrid_boundary_mode(self) -> None:
+        """Validate the currently implemented SBP-SAT boundary subset.
 
-        ``BoundarySpec`` is authoritative on mainline.  A mixed spec with
-        PMC, periodic, or absorbing faces derives the legacy scalar
-        ``self._boundary == "pec"`` when no absorber is present, so Phase-1
-        must inspect the canonical six-face spec instead of relying on the
-        legacy scalar view.
+        Accepted today:
+        - all-PEC boundaries
+        - mixed PEC/PMC reflector faces
+        - periodic axes when the refinement box is either interior to the
+          periodic axis or spans that axis end-to-end
+
+        Still rejected:
+        - any CPML/UPML absorbing face
+        - partial-touch periodic axes (touching only one periodic boundary)
         """
         spec = getattr(self, "_boundary_spec", None)
         if spec is not None:
+            unsupported_faces = []
+            periodic_axes = set(spec.periodic_axes())
+            pmc_faces = spec.pmc_faces()
+            for axis, side, token in spec.faces():
+                if token in ("cpml", "upml"):
+                    unsupported_faces.append(f"{axis}_{side}={token}")
+            if unsupported_faces:
+                raise ValueError(
+                    "SBP-SAT subgridding does not yet support absorbing "
+                    "BoundarySpec faces; unsupported boundary faces: "
+                    + ", ".join(unsupported_faces)
+                )
+            if periodic_axes and pmc_faces:
+                raise ValueError(
+                    "SBP-SAT subgridding does not yet support mixed PMC + periodic "
+                    "BoundarySpec faces in the same simulation"
+                )
+            if self._refinement is not None and periodic_axes:
+                ranges = {
+                    "x": self._refinement.get("x_range"),
+                    "y": self._refinement.get("y_range"),
+                    "z": self._refinement.get("z_range"),
+                }
+                extents = {"x": self._domain[0], "y": self._domain[1], "z": self._domain[2]}
+                for axis in periodic_axes:
+                    axis_range = ranges[axis]
+                    if axis_range is None:
+                        continue
+                    lo, hi = axis_range
+                    touches_lo = np.isclose(lo, 0.0)
+                    touches_hi = np.isclose(hi, extents[axis])
+                    if touches_lo != touches_hi:
+                        raise ValueError(
+                            "SBP-SAT subgridding does not yet support a periodic axis "
+                            "touched on only one side; either keep the box interior or "
+                            f"span the full periodic {axis}-axis"
+                        )
             unsupported_faces = [
                 f"{axis}_{side}={token}"
                 for axis, side, token in spec.faces()
-                if token != "pec"
+                if token not in ("pec", "pmc", "periodic")
             ]
             if unsupported_faces:
                 raise ValueError(
-                    "Phase-1 SBP-SAT z-slab subgridding supports "
-                    "boundary='pec' only / all-PEC BoundarySpec only; "
+                    "SBP-SAT subgridding supports only PEC/PMC/periodic "
+                    "BoundarySpec tokens in the current reflector/periodic subset; "
                     "unsupported boundary faces: "
                     + ", ".join(unsupported_faces)
                 )
@@ -739,8 +780,13 @@ class Simulation:
 
         if self._boundary != "pec" or self._cpml_layers > 0:
             raise ValueError(
-                "Phase-1 SBP-SAT z-slab subgridding supports boundary='pec' only"
+                "SBP-SAT subgridding supports boundary='pec' only on the legacy path"
             )
+
+    def _validate_phase1_subgrid_boundaries(self) -> None:
+        """Backward-compatible alias for the current boundary-mode validator."""
+
+        self._validate_subgrid_boundary_mode()
 
     # ---- material registration ----
 

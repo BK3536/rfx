@@ -20,7 +20,12 @@ def test_sbp_sat_support_matrix_records_experimental_proxy_evidence():
     lane = _sbp_lane()
 
     assert lane["status"] == "experimental"
-    assert lane["supported_subset"]["boundary"] == "all_pec_only"
+    assert lane["supported_subset"]["boundary"] == [
+        "all_pec",
+        "mixed_pec_pmc_reflector_faces",
+        "periodic_axes_when_box_is_interior_or_spans_axis",
+        "not_mixed_pmc_periodic",
+    ]
     assert lane["supported_subset"]["geometry"] == "all_pec_arbitrary_box_only"
     assert lane["supported_subset"]["sources"] == ["soft_point_source"]
     assert lane["supported_subset"]["observables"] == ["point_probe"]
@@ -42,6 +47,15 @@ def test_sbp_sat_support_matrix_records_experimental_proxy_evidence():
         "y_face_proxy",
         "edge_proxy",
         "corner_proxy",
+    ]
+
+    boundary_proxy = lane["benchmark_evidence"]["boundary_proxy_crossval"]
+    assert boundary_proxy["status"] == "implemented"
+    assert boundary_proxy["test_file"] == "tests/test_sbp_sat_boundary_crossval.py"
+    assert boundary_proxy["fixtures"] == [
+        "reflector_only_pmc_proxy",
+        "periodic_axis_proxy_full_span",
+        "periodic_axis_proxy_interior",
     ]
 
 
@@ -66,7 +80,9 @@ def test_sbp_sat_unsupported_surface_remains_hard_fail_in_support_matrix():
 
     for key in (
         "cpml_upml_boundary",
-        "pmc_or_periodic_boundaryspec",
+        "absorbing_boundaryspec",
+        "mixed_pmc_periodic_boundaryspec",
+        "partial_touch_periodic_axis",
         "xy_margin_geometry_autobox",
         "ntff",
         "dft_plane",

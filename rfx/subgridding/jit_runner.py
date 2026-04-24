@@ -39,6 +39,10 @@ def run_subgridded_jit(
     sources_f: list | None = None,
     probe_indices_f: list | None = None,
     probe_components: list | None = None,
+    outer_pec_faces: frozenset[str] | None = None,
+    outer_pmc_faces: frozenset[str] | None = None,
+    periodic: tuple[bool, bool, bool] = (False, False, False),
+    fine_periodic: tuple[bool, bool, bool] = (False, False, False),
 ) -> SubgridResult:
     """Run the canonical Phase-1 subgridding lane via ``jax.lax.scan``."""
 
@@ -120,6 +124,10 @@ def run_subgridded_jit(
             mats_f=mats_f,
             pec_mask_c=pec_mask_c,
             pec_mask_f=pec_mask_f,
+            outer_pec_faces=outer_pec_faces or frozenset(),
+            outer_pmc_faces=outer_pmc_faces or frozenset(),
+            periodic=periodic,
+            fine_periodic=fine_periodic,
         )
         state = _inject_sources(state, src_vals)
         return state, _sample_probes(state)

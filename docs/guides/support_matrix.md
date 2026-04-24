@@ -31,7 +31,10 @@ Status legend:
 ## SBP-SAT / subgridding experimental lane
 
 Current retained subset:
-- all-PEC `BoundarySpec` / scalar `boundary="pec"` only
+- all-PEC outer boundaries
+- mixed PEC/PMC reflector-face `BoundarySpec` subsets
+- periodic axes when the refinement box is either interior to that axis or spans it end-to-end
+- do not mix PMC faces and periodic axes in the same supported subset
 - axis-aligned all-PEC refinement box only
 - soft point sources and point probes only
 - proxy numerical-equivalence comparison against a uniform-fine reference
@@ -48,6 +51,7 @@ Current policy:
 | unit / integration | implemented | `tests/test_sbp_sat_api_guards.py`, `tests/test_sbp_sat_face_ops.py`, `tests/test_sbp_sat_3d.py`, `tests/test_sbp_sat_alpha.py`, `tests/test_sbp_sat_jit.py` | API guards, operator behavior, smoke stability, JIT seam |
 | proxy crossval | implemented | `tests/test_subgrid_crossval.py` | single-probe DFT amplitude/phase vs uniform-fine reference; **not** physical R/T |
 | box proxy crossval | implemented | `tests/test_sbp_sat_box_crossval.py` | internal arbitrary-box x/y-face plus edge/corner proxy fixtures; **not** public R/T |
+| boundary proxy crossval | implemented | `tests/test_sbp_sat_boundary_crossval.py` | internal PMC reflector plus periodic full-axis/interior proxy fixtures; mixed PMC+periodic remains blocked; **not** public R/T |
 | true reflection/transmission | deferred | `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md` | no public R/T, S-parameter, or open-boundary claim yet |
 
 Proxy tolerance is intentionally narrow and local: relative amplitude error
@@ -61,7 +65,9 @@ separation, energy balance, or calibrated S-parameters.
 | Combination | Status | Expected behavior |
 |---|---|---|
 | CPML/UPML boundary | unsupported | hard-fail |
-| PMC or periodic `BoundarySpec` | unsupported | hard-fail |
+| any absorbing `BoundarySpec` face | unsupported | hard-fail |
+| mixed PMC + periodic `BoundarySpec` | unsupported | hard-fail |
+| periodic axis touched on only one side | unsupported | hard-fail |
 | geometry-driven `xy_margin` auto-box refinement | unsupported | hard-fail |
 | NTFF | unsupported | hard-fail |
 | DFT planes | unsupported | hard-fail |

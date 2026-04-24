@@ -49,7 +49,12 @@
       "status": "experimental",
       "role": "research_lane",
       "supported_subset": {
-        "boundary": "all_pec_only",
+        "boundary": [
+          "all_pec",
+          "mixed_pec_pmc_reflector_faces",
+          "periodic_axes_when_box_is_interior_or_spans_axis",
+          "not_mixed_pmc_periodic"
+        ],
         "geometry": "all_pec_arbitrary_box_only",
         "sources": [
           "soft_point_source"
@@ -61,7 +66,6 @@
       },
       "unsupported_combinations": {
         "cpml_upml_boundary": "hard_fail",
-        "pmc_or_periodic_boundaryspec": "hard_fail",
         "ntff": "hard_fail",
         "dft_plane": "hard_fail",
         "flux_monitor": "hard_fail",
@@ -71,7 +75,10 @@
         "lumped_rlc": "hard_fail",
         "coaxial_port": "hard_fail",
         "impedance_or_wire_port": "hard_fail",
-        "xy_margin_geometry_autobox": "hard_fail"
+        "xy_margin_geometry_autobox": "hard_fail",
+        "absorbing_boundaryspec": "hard_fail",
+        "mixed_pmc_periodic_boundaryspec": "hard_fail",
+        "partial_touch_periodic_axis": "hard_fail"
       },
       "benchmark_evidence": {
         "unit_and_integration": [
@@ -112,6 +119,16 @@
             "y_face_proxy",
             "edge_proxy",
             "corner_proxy"
+          ],
+          "claim_level": "internal_proxy_only_not_public_rt"
+        },
+        "boundary_proxy_crossval": {
+          "status": "implemented",
+          "test_file": "tests/test_sbp_sat_boundary_crossval.py",
+          "fixtures": [
+            "reflector_only_pmc_proxy",
+            "periodic_axis_proxy_full_span",
+            "periodic_axis_proxy_interior"
           ],
           "claim_level": "internal_proxy_only_not_public_rt"
         }

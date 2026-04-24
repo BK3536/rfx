@@ -11,7 +11,7 @@ Milestone 9 proposal for the SBP-SAT subgridding lane.
 Keep the support-matrix lane as:
 
 - `status: experimental`
-- `boundary: all_pec_only`
+- `boundary: all_pec_plus_selected_reflector_periodic_subset`
 - `geometry: all_pec_arbitrary_box_only`
 - `sources: soft_point_source`
 - `observables: point_probe`
@@ -27,7 +27,8 @@ The current public/docs-safe claim set is:
 
 1. SBP-SAT subgridding exists as an **experimental research lane**.
 2. The retained visible surface is an **all-PEC, axis-aligned refinement box**
-   case only.
+   case together with a selected **reflector/periodic boundary subset** that
+   does not mix PMC faces and periodic axes in one supported configuration.
 3. The shipped runtime supports **soft point sources** and **point probes** only.
 4. The current executable benchmark evidence is **proxy numerical equivalence**
    against a uniform-fine reference, not physical reflection/transmission.
@@ -39,7 +40,8 @@ Do **not** claim any of the following today:
 
 - claims-bearing arbitrary 3-D box support beyond the current experimental
   all-PEC subset
-- PMC / periodic / CPML / UPML coexistence
+- CPML / UPML absorbing coexistence
+- broader PMC / periodic coexistence beyond the currently implemented subset
 - true R/T, S-parameter, or open-boundary validation
 - impedance point ports, wire/extent ports, coaxial ports, waveguide ports,
   or Floquet ports inside refined regions
@@ -61,8 +63,9 @@ Promotion beyond `experimental` is blocked by the following current facts:
    - materials / dispersion / time integration
    The all-PEC arbitrary-box runtime now exists, but its broader promotion
    still depends on the remaining gates and evidence.
-3. The support matrix still correctly records the lane as all-PEC-only,
-   arbitrary-box only, proxy-only.
+3. The support matrix still correctly records the lane as an experimental
+   all-PEC arbitrary-box lane with only a selected reflector/periodic subset,
+   proxy-only evidence, and many unsupported combinations still hard-failing.
 4. Public docs already use appropriately narrow wording; broadening them now
    would outrun the evidence.
 
@@ -100,4 +103,4 @@ A future promotion proposal may recommend widening the lane only after:
 ## Decision summary
 
 **Current decision:** retain SBP-SAT subgridding as an experimental, proxy-only,
-all-PEC arbitrary-box lane.
+all-PEC arbitrary-box lane with a selected reflector/periodic boundary subset.

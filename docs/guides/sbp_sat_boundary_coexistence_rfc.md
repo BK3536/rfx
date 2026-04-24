@@ -5,9 +5,11 @@
 This is the **Milestone 6** pre-implementation contract for future
 BoundarySpec coexistence with SBP-SAT subgridding.
 
-It does **not** widen shipped runtime support.  The current runtime remains
-limited to the all-PEC SBP-SAT lane and must keep hard-failing every non-PEC
-boundary combination until the gates in this RFC are satisfied.
+It began as a pure pre-implementation contract. The current runtime now includes
+a selected **reflector/periodic subset** (PMC reflector faces and periodic axes
+under the implemented box-shape restrictions), while absorbing coexistence and
+broader mixed boundary classes remain blocked until the remaining gates in this
+RFC are satisfied.
 
 ## Purpose
 
@@ -53,8 +55,8 @@ Milestone 6 does not:
 | Class | Outer boundary configuration | Intended future role | Current Milestone 6 status |
 |---|---|---|---|
 | A | all-PEC | current supported SBP-SAT baseline | already shipped for z-slab only |
-| B | reflector-only with PMC faces (all-PMC or mixed PEC/PMC) | future reflector coexistence | blocked by RFC gate |
-| C | periodic axes with reflector faces on remaining axes | future unit-cell / translational-symmetry coexistence | blocked by RFC gate |
+| B | reflector-only with PMC faces (all-PMC or mixed PEC/PMC) | reflector coexistence | implemented in the current experimental subset |
+| C | periodic axes with reflector faces on remaining axes | unit-cell / translational-symmetry coexistence | implemented only when the box is interior to that axis or spans it end-to-end |
 | D | all-absorbing CPML outer boundary | future open-boundary coexistence | blocked by RFC gate |
 | E | all-absorbing UPML outer boundary | future open-boundary coexistence | blocked by RFC gate |
 | F | mixed absorber + reflector faces under one `BoundarySpec` | future asymmetric/open-structure coexistence | blocked by RFC gate |
@@ -135,8 +137,8 @@ Periodic coexistence is defined only for full-axis periodicity on an axis:
 
 - `Boundary(lo='periodic', hi='periodic')`
 
-No asymmetric periodic face is allowed.  Future periodic coexistence with a
-subgrid requires:
+No asymmetric periodic face is allowed.  The currently implemented periodic
+subset requires:
 
 1. the periodic axis contributes zero absorber padding;
 2. the subgrid interface operators preserve phase consistency across the wrapped
@@ -144,14 +146,15 @@ subgrid requires:
 3. unit-cell benchmarks include at least one periodic axis and at least one
    non-periodic axis.
 
-Until then, any periodic axis with subgridding remains a hard-fail condition.
+Any periodic axis touched on only one side by the refinement box remains a
+hard-fail condition.
 
 ## PMC coexistence contract
 
 PMC coexistence is defined as a reflector coexistence problem, not an absorber
 problem.
 
-Future PMC coexistence requires:
+The currently implemented PMC subset requires:
 
 1. a face-orientation contract for tangential `H` vs tangential `E` treatment at
    the outer PMC face;
@@ -159,7 +162,8 @@ Future PMC coexistence requires:
    not apply contradictory updates in the same half step;
 3. reflector benchmarks separate from the open-boundary benchmark family.
 
-Until then, any PMC face with subgridding remains a hard-fail condition.
+Broader PMC coexistence beyond this reflector subset remains blocked until the
+later benchmark and support-promotion gates are satisfied.
 
 ## Open-boundary benchmark definitions
 
@@ -204,10 +208,12 @@ These benchmarks are implementation gates, not public claims at this stage.
 | scalar `boundary='upml'` + subgrid | `add_refinement(...)` or preflight | hard-fail | OB-1 + coexistence implementation |
 | any `BoundarySpec` face token `cpml` | `add_refinement(...)` | hard-fail | absorber RFC + OB-1/OB-2 |
 | any `BoundarySpec` face token `upml` | `add_refinement(...)` | hard-fail | absorber RFC + OB-1/OB-2 |
-| any PMC face in `BoundarySpec` | `add_refinement(...)` | hard-fail | PMC coexistence tests + reflector benchmarks |
-| any periodic axis in `BoundarySpec` | `add_refinement(...)` or `run(...)` | hard-fail | periodic coexistence tests + OB-3 |
+| selected PMC reflector faces in `BoundarySpec` | implemented path | accepted in the current experimental subset | already benchmarked via reflector proxy tests |
+| periodic axis in `BoundarySpec` with interior/full-axis box | implemented path | accepted in the current experimental subset | already benchmarked via periodic proxy tests |
+| periodic axis touched on one side only | `run(...)` | hard-fail | keep rejected until a one-side-touch contract exists |
 | per-face absorber thickness override on any absorbing face | `add_refinement(...)` | hard-fail as non-all-PEC | per-face padding contract + OB-1 |
-| `set_periodic_axes(...)` after refinement | `run(...)` | hard-fail | replace legacy late mutation with canonical tested coexistence path |
+| `set_periodic_axes(...)` after refinement with an interior/full-axis box | implemented path | accepted in the current experimental subset | already covered by periodic subset tests |
+| `set_periodic_axes(...)` after refinement with one-side-touch periodic geometry | `run(...)` | hard-fail | keep rejected until a one-side-touch contract exists |
 | mixed PMC + periodic faces with subgrid | `add_refinement(...)` | hard-fail | explicit combined coexistence spec and tests |
 | mixed reflector + absorber faces with subgrid | `add_refinement(...)` | hard-fail | asymmetric coexistence spec + OB-1/OB-3 |
 | mixed absorber families (`cpml` + `upml`) | `BoundarySpec` construction | invalid configuration | new derivation and new API contract required |
@@ -222,18 +228,18 @@ These benchmarks are implementation gates, not public claims at this stage.
 
 ### Phase 6B — reflector coexistence
 
-- specify PEC/PMC interaction ordering against the subgrid interface
-- add dedicated tests for PMC coexistence before any runtime enablement
+- retain PEC/PMC interaction ordering against the subgrid interface
+- extend reflector coverage only after new PMC benchmark evidence exists
 
 ### Phase 6C — absorber coexistence
 
 - add per-face absorber separation preflight using the resolved layer contract
 - support one absorber family only (`cpml` or `upml`) per simulation
-- keep periodic axes out of scope in this phase
+- keep one-side-touch periodic geometry and absorber coexistence out of scope in this phase
 
 ### Phase 6D — periodic coexistence
 
-- define periodic-axis phase continuity and benchmark it separately
+- retain periodic-axis phase continuity and benchmark it separately
 - keep reflector/absorber ordering explicit rather than implicit
 
 ### Phase 6E — combined coexistence audit
@@ -245,7 +251,8 @@ These benchmarks are implementation gates, not public claims at this stage.
 ## Implementation gate
 
 Milestone 6 completes when this RFC exists and is regression-locked.
-It does **not** mean non-PEC boundary coexistence is implemented.
+It does **not** mean absorbing or broad mixed boundary coexistence is
+implemented.
 
 Non-PEC coexistence remains blocked until all of the following are true:
 

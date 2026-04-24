@@ -9,7 +9,7 @@ from rfx.boundaries.spec import Boundary, BoundarySpec
 
 def test_subgrid_touching_cpml_fails():
     sim = Simulation(freq_max=5e9, domain=(0.04, 0.04, 0.04), boundary="cpml", dx=2e-3)
-    with pytest.raises(ValueError, match="boundary='pec' only|CPML/UPML coexistence|all-PEC BoundarySpec"):
+    with pytest.raises(ValueError, match="does not yet support absorbing BoundarySpec faces|boundary='pec' only"):
         sim.add_refinement(z_range=(0.01, 0.03), ratio=3)
 
 
@@ -23,6 +23,102 @@ def test_subgrid_accepts_all_pec_boundaryspec():
     sim.add_refinement(z_range=(0.01, 0.03), ratio=3)
 
     assert sim._refinement["ratio"] == 3
+
+
+def test_subgrid_accepts_reflector_only_pmc_boundaryspec():
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary=BoundarySpec(
+            x="pec",
+            y="pec",
+            z=Boundary(lo="pmc", hi="pec"),
+        ),
+        dx=2e-3,
+    )
+    sim.add_refinement(z_range=(0.0, 0.028), ratio=2)
+    sim.add_source(position=(0.020, 0.020, 0.012), component="ez")
+    sim.add_probe(position=(0.020, 0.020, 0.020), component="ez")
+    result = sim.run(n_steps=80)
+
+    assert result.time_series.shape == (80, 1)
+    assert float(np.max(np.abs(np.asarray(result.time_series)))) > 0.0
+
+
+def test_subgrid_accepts_periodic_axis_when_box_spans_it():
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary=BoundarySpec(x="periodic", y="pec", z="pec"),
+        dx=2e-3,
+    )
+    sim.add_refinement(
+        x_range=(0.0, 0.04),
+        y_range=(0.012, 0.028),
+        z_range=(0.012, 0.028),
+        ratio=2,
+    )
+    sim.add_source(position=(0.020, 0.020, 0.020), component="ez")
+    sim.add_probe(position=(0.020, 0.020, 0.020), component="ez")
+    result = sim.run(n_steps=80)
+
+    assert result.time_series.shape == (80, 1)
+    assert float(np.max(np.abs(np.asarray(result.time_series)))) > 0.0
+
+
+def test_subgrid_accepts_periodic_axis_when_box_is_interior():
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary=BoundarySpec(x="periodic", y="pec", z="pec"),
+        dx=2e-3,
+    )
+    sim.add_refinement(
+        x_range=(0.012, 0.028),
+        y_range=(0.012, 0.028),
+        z_range=(0.012, 0.028),
+        ratio=2,
+    )
+    sim.add_source(position=(0.020, 0.020, 0.020), component="ez")
+    sim.add_probe(position=(0.020, 0.020, 0.020), component="ez")
+    result = sim.run(n_steps=80)
+
+    assert result.time_series.shape == (80, 1)
+    assert float(np.max(np.abs(np.asarray(result.time_series)))) > 0.0
+
+
+def test_subgrid_rejects_periodic_axis_touched_on_one_side_only():
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary=BoundarySpec(x="periodic", y="pec", z="pec"),
+        dx=2e-3,
+    )
+    sim.add_refinement(
+        x_range=(0.0, 0.028),
+        y_range=(0.012, 0.028),
+        z_range=(0.012, 0.028),
+        ratio=2,
+    )
+
+    with pytest.raises(ValueError, match="periodic axis.*one side"):
+        sim.run(n_steps=5)
+
+
+def test_subgrid_rejects_mixed_pmc_periodic_boundaryspec():
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary=BoundarySpec(
+            x="periodic",
+            y="pec",
+            z=Boundary(lo="pmc", hi="pec"),
+        ),
+        dx=2e-3,
+    )
+
+    with pytest.raises(ValueError, match="mixed PMC \\+ periodic"):
+        sim.add_refinement(z_range=(0.01, 0.03), ratio=2)
 
 
 def test_all_pec_box_refinement_runs():
@@ -50,8 +146,7 @@ def test_all_pec_box_refinement_runs():
     "boundary",
     [
         BoundarySpec(x="pec", y="pec", z=Boundary(lo="pec", hi="cpml")),
-        BoundarySpec(x="pec", y="pec", z=Boundary(lo="pmc", hi="pec")),
-        BoundarySpec(x="periodic", y="pec", z="pec"),
+        BoundarySpec(x=Boundary(lo="pmc", hi="cpml"), y="pec", z="pec"),
         BoundarySpec(
             x="pec",
             y="pec",
@@ -66,11 +161,11 @@ def test_subgrid_rejects_non_pec_boundaryspec(boundary):
         boundary=boundary,
         dx=2e-3,
     )
-    with pytest.raises(ValueError, match="all-PEC BoundarySpec"):
+    with pytest.raises(ValueError, match="does not yet support absorbing BoundarySpec faces"):
         sim.add_refinement(z_range=(0.01, 0.03), ratio=3)
 
 
-def test_subgrid_rejects_late_periodic_axes_on_run():
+def test_subgrid_accepts_late_periodic_axes_on_run_when_box_spans_axis():
     sim = Simulation(freq_max=5e9, domain=(0.04, 0.04, 0.04), boundary="pec", dx=2e-3)
     sim.add_refinement(z_range=(0.012, 0.028), ratio=2)
     sim.add_source(position=(0.02, 0.02, 0.02), component="ez")
@@ -78,8 +173,8 @@ def test_subgrid_rejects_late_periodic_axes_on_run():
     with pytest.warns(DeprecationWarning):
         sim.set_periodic_axes("x")
 
-    with pytest.raises(ValueError, match="all-PEC BoundarySpec"):
-        sim.run(n_steps=10)
+    result = sim.run(n_steps=10)
+    assert result.time_series.shape == (10, 1)
 
 
 def test_partial_xy_refinement_fails():

@@ -67,8 +67,10 @@ def test_boundary_coexistence_rfc_locks_boundary_classes_and_hard_fail_matrix():
         "mixed absorber families (`cpml` and `upml`)",
         "scalar `boundary='cpml'` + subgrid",
         "scalar `boundary='upml'` + subgrid",
-        "any PMC face in `BoundarySpec`",
-        "any periodic axis in `BoundarySpec`",
+        "selected PMC reflector faces in `BoundarySpec`",
+        "periodic axis in `BoundarySpec` with interior/full-axis box",
+        "periodic axis touched on one side only",
+        "mixed PMC + periodic faces with subgrid",
         "per-face absorber thickness override on any absorbing face",
         "`set_periodic_axes(...)` after refinement",
         "mixed absorber families (`cpml` + `upml`)",
@@ -103,7 +105,9 @@ def test_boundary_coexistence_rfc_locks_periodic_axis_rules():
         "preserve phase consistency across the wrapped",
         "domain direction",
         "unit-cell benchmarks include at least one periodic axis and at least one",
-        "Until then, any periodic axis with subgridding remains a hard-fail condition",
+        "interior/full-axis box",
+        "Any periodic axis touched on only one side by the refinement box remains a",
+        "hard-fail condition",
     ):
         assert token in text
 
@@ -116,7 +120,7 @@ def test_boundary_coexistence_rfc_locks_pmc_rules():
         "face-orientation contract for tangential `H` vs tangential `E` treatment",
         "not apply contradictory updates in the same half step",
         "reflector benchmarks separate from the open-boundary benchmark family",
-        "Until then, any PMC face with subgridding remains a hard-fail condition",
+        "Broader PMC coexistence beyond this reflector subset remains blocked",
     ):
         assert token in text
 
@@ -125,11 +129,12 @@ def test_boundary_coexistence_rfc_blocks_runtime_enablement():
     text = _text(RFC)
 
     for token in (
-        "It does **not** widen shipped runtime support",
-        "must keep hard-failing every non-PEC",
-        "boundary combination until the gates in this RFC are satisfied",
+        "selected **reflector/periodic subset**",
+        "absorbing coexistence",
+        "broader mixed boundary classes remain blocked",
         "Milestone 6 completes when this RFC exists and is regression-locked",
-        "It does **not** mean non-PEC boundary coexistence is implemented",
+        "It does **not** mean absorbing or broad mixed boundary coexistence is",
+        "implemented",
         "explicit `BoundarySpec` coexistence tests exist",
         "the support matrix is updated from `all_pec_only` only after",
     ):

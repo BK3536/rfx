@@ -6,7 +6,7 @@ The current branch includes a documented SBP-SAT subgridding lane, but it is
 still intentionally narrow:
 
 - experimental only
-- all-PEC only
+- all-PEC plus a selected reflector/periodic boundary subset only
 - one axis-aligned refinement box only
 - soft point source + point probe only
 - proxy numerical-equivalence benchmark only
@@ -21,10 +21,13 @@ promotion.
 Subgridding currently accepts only:
 
 - `boundary="pec"`; or
-- an all-PEC `BoundarySpec`
+- an all-PEC `BoundarySpec`; or
+- a selected reflector/periodic subset (`PEC/PMC` reflector faces, or periodic
+  axes when the box is interior to that axis or spans it end-to-end, but not a
+  mixed PMC+periodic combination)
 
-Any CPML, UPML, PMC, periodic, or mixed `BoundarySpec` with subgridding must be
-expected to hard-fail.
+Any CPML, UPML, absorbing `BoundarySpec`, or one-side-touch periodic axis with
+subgridding must be expected to hard-fail.
 
 ### Geometry caveat
 

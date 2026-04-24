@@ -164,7 +164,7 @@ new work.
 |---|---|---|
 | Geometry | Experimental current implementation | all-PEC axis-aligned refinement box only |
 | Interfaces | Experimental current implementation | oriented face/edge/corner coupling under the all-PEC box lane |
-| Boundaries | Candidate all-PEC only | reject CPML/UPML now; after `origin/main`, reject PMC/periodic/mixed specs too |
+| Boundaries | Experimental reflector/periodic subset | reject absorbing faces and mixed PMC+periodic now; broader coexistence remains a later milestone |
 | Sources | Candidate soft point sources only | source/probe positions must lie inside the refined box |
 | Probes | Candidate point probes only | probe positions must lie inside the refined box |
 | Impedance ports | **Unsupported in Milestone 1** | hard-fail nonzero impedance point ports and wire/extent ports; repair/support moves to a later port-support milestone |

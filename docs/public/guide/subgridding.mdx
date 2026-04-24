@@ -10,16 +10,19 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Experimental research lane">
   SBP-SAT subgridding is **not** part of the current claims-bearing public
   support surface. The retained public scope is limited to an
-  **all-PEC, axis-aligned refinement box** with **soft point sources**,
-  **point probes**, and **proxy numerical-equivalence evidence** against a
-  uniform-fine reference.
+  **experimental all-PEC arbitrary-box lane** together with selected
+  **reflector/periodic boundary subsets**, still limited to **soft point
+  sources**, **point probes**, and **proxy numerical-equivalence evidence**
+  against a uniform-fine reference.
 </Aside>
 
 ## Current retained subset
 
 Today’s public, documented SBP-SAT subset is intentionally narrow:
 
-- **Boundary model** — `boundary="pec"` or an all-PEC `BoundarySpec` only
+- **Boundary model** — `boundary="pec"`, all-PEC `BoundarySpec`, mixed PEC/PMC
+  reflector faces, and periodic axes when the refinement box stays interior to
+  that axis or spans it end-to-end; mixed PMC+periodic remains unsupported
 - **Refinement geometry** — one axis-aligned all-PEC refinement box only
 - **Excitation** — soft point sources only
 - **Observables** — point probes only
@@ -63,7 +66,8 @@ The current SBP-SAT lane is expected to **hard-fail** rather than degrade
 silently for unsupported combinations, including:
 
 - CPML / UPML boundaries
-- PMC or periodic `BoundarySpec` faces
+- any absorbing `BoundarySpec` face
+- periodic axes touched on only one side by the refinement box
 - geometry-driven `xy_margin` auto-box refinement
 - DFT planes, flux monitors, and NTFF
 - TFSF excitation

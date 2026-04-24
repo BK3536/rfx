@@ -55,7 +55,7 @@ public claims-bearing baseline.
 
 Publicly documented SBP-SAT scope is intentionally narrow:
 
-- all-PEC boundary only
+- all-PEC boundary only, plus selected reflector/periodic subsets
 - one axis-aligned refinement box only
 - soft point sources only
 - point probes only
@@ -78,7 +78,9 @@ Unsupported combinations must hard-fail.
 | Waveguide ports + nonuniform | hard-fail |
 | Lumped RLC + nonuniform | hard-fail |
 | CPML/UPML + SBP-SAT subgridding | hard-fail |
-| PMC/periodic `BoundarySpec` + SBP-SAT subgridding | hard-fail |
+| absorbing `BoundarySpec` faces + SBP-SAT subgridding | hard-fail |
+| mixed PMC + periodic `BoundarySpec` + SBP-SAT subgridding | hard-fail |
+| periodic axis touched on only one side by the refinement box | hard-fail |
 | geometry-driven `xy_margin` auto-box refinement + SBP-SAT subgridding | hard-fail |
 | DFT planes / flux monitors / NTFF + SBP-SAT subgridding | hard-fail |
 | TFSF / waveguide / Floquet / coaxial / impedance / wire ports + SBP-SAT subgridding | hard-fail |

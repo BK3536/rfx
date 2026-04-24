@@ -37,10 +37,10 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
     from rfx.subgridding.jit_runner import run_subgridded_jit as _run_sg
 
     if hasattr(sim, "_validate_phase1_subgrid_boundaries"):
-        sim._validate_phase1_subgrid_boundaries()
+        sim._validate_subgrid_boundary_mode()
     elif sim._boundary != "pec":
         raise ValueError(
-            "Phase-1 SBP-SAT z-slab subgridding supports boundary='pec' only"
+            "SBP-SAT subgridding supports boundary='pec' only in the legacy path"
         )
     if getattr(sim, "_coaxial_ports", None):
         raise ValueError(
@@ -180,6 +180,20 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
         sources_f=sources_f,
         probe_indices_f=probe_indices_f,
         probe_components=probe_components,
+        outer_pec_faces=frozenset(sim._boundary_spec.pec_faces()),
+        outer_pmc_faces=frozenset(sim._boundary_spec.pmc_faces()),
+        periodic=tuple(axis in (sim._periodic_axes or "") for axis in "xyz"),
+        fine_periodic=tuple(
+            axis in (sim._periodic_axes or "") and lo == 0 and hi == n
+            for axis, (lo, hi, n) in zip(
+                "xyz",
+                (
+                    (fi_lo, fi_hi, grid_coarse.nx),
+                    (fj_lo, fj_hi, grid_coarse.ny),
+                    (fk_lo, fk_hi, grid_coarse.nz),
+                ),
+            )
+        ),
     )
 
     return Result(
