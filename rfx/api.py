@@ -683,7 +683,6 @@ class Simulation:
         if self._refinement is not None:
             raise ValueError("Only one refinement region is supported")
 
-        self._validate_subgrid_boundary_mode()
         if xy_margin is not None:
             raise ValueError(
                 "Phase-1 SBP-SAT z-slab subgridding does not support xy_margin"
@@ -702,7 +701,7 @@ class Simulation:
                     f"0 <= lo < hi <= {domain_extent}"
                 )
 
-        self._refinement = {
+        refinement = {
             "z_range": z_range,
             "ratio": ratio,
             "x_range": x_range,
@@ -710,9 +709,11 @@ class Simulation:
             "xy_margin": xy_margin,
             "tau": tau,
         }
+        self._validate_subgrid_boundary_mode(refinement)
+        self._refinement = refinement
         return self
 
-    def _validate_subgrid_boundary_mode(self) -> None:
+    def _validate_subgrid_boundary_mode(self, refinement: dict | None = None) -> None:
         """Validate the currently implemented SBP-SAT boundary subset.
 
         Accepted today:
@@ -720,35 +721,86 @@ class Simulation:
         - mixed PEC/PMC reflector faces
         - periodic axes when the refinement box is either interior to the
           periodic axis or spans that axis end-to-end
+        - CPML absorbing faces when the refinement box is strictly inside
+          the user domain and separated from every active absorber face by
+          that face's pad thickness plus one coarse-cell guard
 
         Still rejected:
-        - any CPML/UPML absorbing face
+        - UPML absorbing faces
+        - CPML boxes that touch or overlap the absorber guard band
+        - mixed reflector + absorber or PMC + periodic configurations
         - partial-touch periodic axes (touching only one periodic boundary)
         """
         spec = getattr(self, "_boundary_spec", None)
+        active_refinement = refinement if refinement is not None else self._refinement
         if spec is not None:
-            unsupported_faces = []
             periodic_axes = set(spec.periodic_axes())
             pmc_faces = spec.pmc_faces()
-            for axis, side, token in spec.faces():
-                if token in ("cpml", "upml"):
-                    unsupported_faces.append(f"{axis}_{side}={token}")
-            if unsupported_faces:
-                raise ValueError(
-                    "SBP-SAT subgridding does not yet support absorbing "
-                    "BoundarySpec faces; unsupported boundary faces: "
-                    + ", ".join(unsupported_faces)
+            absorber_type = spec.absorber_type
+            absorber_faces = [
+                (axis, side, token)
+                for axis, side, token in spec.faces()
+                if token in ("cpml", "upml")
+            ]
+
+            if absorber_type == "upml":
+                unsupported = ", ".join(
+                    f"{axis}_{side}={token}" for axis, side, token in absorber_faces
                 )
+                raise ValueError(
+                    "SBP-SAT subgridding supports only the bounded CPML "
+                    "absorbing subset; UPML absorbing faces remain unsupported: "
+                    + unsupported
+                )
+            if absorber_type == "cpml":
+                if self._cpml_layers <= 0:
+                    raise ValueError(
+                        "SBP-SAT subgridding with CPML absorbing faces requires "
+                        "cpml_layers > 0"
+                    )
+                thickness_overrides = []
+                reflector_faces = []
+                for axis_name, boundary in (("x", spec.x), ("y", spec.y), ("z", spec.z)):
+                    for side, token, override in (
+                        ("lo", boundary.lo, boundary.lo_thickness),
+                        ("hi", boundary.hi, boundary.hi_thickness),
+                    ):
+                        face = f"{axis_name}_{side}"
+                        if token == "cpml" and override is not None:
+                            thickness_overrides.append(face)
+                        if token in ("pec", "pmc"):
+                            reflector_faces.append(f"{face}={token}")
+                if thickness_overrides:
+                    raise ValueError(
+                        "SBP-SAT subgridding does not yet support per-face CPML "
+                        "thickness overrides; unsupported faces: "
+                        + ", ".join(thickness_overrides)
+                    )
+                if periodic_axes:
+                    raise ValueError(
+                        "SBP-SAT subgridding does not yet support mixed "
+                        "periodic + CPML absorbing BoundarySpec faces"
+                    )
+                if reflector_faces:
+                    raise ValueError(
+                        "SBP-SAT subgridding does not yet support mixed "
+                        "reflector + CPML absorbing BoundarySpec faces; "
+                        "unsupported reflector faces: "
+                        + ", ".join(reflector_faces)
+                    )
+                if active_refinement is not None:
+                    self._validate_subgrid_cpml_separation(active_refinement)
+
             if periodic_axes and pmc_faces:
                 raise ValueError(
                     "SBP-SAT subgridding does not yet support mixed PMC + periodic "
                     "BoundarySpec faces in the same simulation"
                 )
-            if self._refinement is not None and periodic_axes:
+            if active_refinement is not None and periodic_axes:
                 ranges = {
-                    "x": self._refinement.get("x_range"),
-                    "y": self._refinement.get("y_range"),
-                    "z": self._refinement.get("z_range"),
+                    "x": active_refinement.get("x_range"),
+                    "y": active_refinement.get("y_range"),
+                    "z": active_refinement.get("z_range"),
                 }
                 extents = {"x": self._domain[0], "y": self._domain[1], "z": self._domain[2]}
                 for axis in periodic_axes:
@@ -767,21 +819,64 @@ class Simulation:
             unsupported_faces = [
                 f"{axis}_{side}={token}"
                 for axis, side, token in spec.faces()
-                if token not in ("pec", "pmc", "periodic")
+                if token not in ("pec", "pmc", "periodic", "cpml")
             ]
             if unsupported_faces:
                 raise ValueError(
-                    "SBP-SAT subgridding supports only PEC/PMC/periodic "
-                    "BoundarySpec tokens in the current reflector/periodic subset; "
-                    "unsupported boundary faces: "
+                    "SBP-SAT subgridding supports only PEC/PMC/periodic plus "
+                    "the bounded CPML absorbing subset; unsupported boundary faces: "
                     + ", ".join(unsupported_faces)
                 )
             return
 
+        if self._boundary == "cpml" and self._cpml_layers > 0:
+            if active_refinement is not None:
+                self._validate_subgrid_cpml_separation(active_refinement)
+            return
         if self._boundary != "pec" or self._cpml_layers > 0:
             raise ValueError(
-                "SBP-SAT subgridding supports boundary='pec' only on the legacy path"
+                "SBP-SAT subgridding supports boundary='pec' or the bounded "
+                "boundary='cpml' absorbing subset on the legacy path"
             )
+
+    def _validate_subgrid_cpml_separation(self, refinement: dict) -> None:
+        """Require the fine box to stay outside active CPML pad + guard bands."""
+
+        from rfx.grid import C0
+
+        dx_c = float(self._dx) if self._dx is not None else C0 / float(self._freq_max) / 20.0
+        guard = dx_c
+        for axis_name, boundary, domain_extent in (
+            ("x", self._boundary_spec.x, self._domain[0]),
+            ("y", self._boundary_spec.y, self._domain[1]),
+            ("z", self._boundary_spec.z, self._domain[2]),
+        ):
+            axis_range = refinement.get(f"{axis_name}_range")
+            lo, hi = axis_range if axis_range is not None else (0.0, domain_extent)
+            lo_layers = (
+                boundary.resolved_lo_thickness(self._cpml_layers)
+                if boundary.lo == "cpml" else 0
+            )
+            hi_layers = (
+                boundary.resolved_hi_thickness(self._cpml_layers)
+                if boundary.hi == "cpml" else 0
+            )
+            lo_guard = lo_layers * dx_c + guard if lo_layers else 0.0
+            hi_guard = hi_layers * dx_c + guard if hi_layers else 0.0
+            if lo_layers and lo < lo_guard - 1e-12:
+                raise ValueError(
+                    "SBP-SAT subgridding with CPML requires the refinement box "
+                    "to stay outside the active absorber plus one coarse-cell "
+                    f"guard on {axis_name}_lo; got lo={lo:.6g}, required >= "
+                    f"{lo_guard:.6g}"
+                )
+            if hi_layers and hi > domain_extent - hi_guard + 1e-12:
+                raise ValueError(
+                    "SBP-SAT subgridding with CPML requires the refinement box "
+                    "to stay outside the active absorber plus one coarse-cell "
+                    f"guard on {axis_name}_hi; got hi={hi:.6g}, required <= "
+                    f"{domain_extent - hi_guard:.6g}"
+                )
 
     def _validate_phase1_subgrid_boundaries(self) -> None:
         """Backward-compatible alias for the current boundary-mode validator."""

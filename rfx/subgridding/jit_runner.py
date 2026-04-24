@@ -1,4 +1,4 @@
-"""JIT runner for the canonical Phase-1 z-slab SBP-SAT lane."""
+"""JIT runner for the canonical experimental SBP-SAT subgridding lane."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from rfx.subgridding.sbp_sat_3d import (
     SubgridConfig3D,
     SubgridState3D,
     step_subgrid_3d,
+    step_subgrid_3d_with_cpml,
     validate_subgrid_config_3d,
 )
 
@@ -43,12 +44,31 @@ def run_subgridded_jit(
     outer_pmc_faces: frozenset[str] | None = None,
     periodic: tuple[bool, bool, bool] = (False, False, False),
     fine_periodic: tuple[bool, bool, bool] = (False, False, False),
+    absorber_boundary: str = "pec",
 ) -> SubgridResult:
     """Run the canonical Phase-1 subgridding lane via ``jax.lax.scan``."""
 
-    if grid_c.cpml_layers > 0:
+    outer_pec_faces = outer_pec_faces or frozenset()
+    outer_pmc_faces = outer_pmc_faces or frozenset()
+    use_cpml = (
+        absorber_boundary == "cpml"
+        and grid_c.cpml_layers > 0
+        and bool(getattr(grid_c, "cpml_axes", ""))
+    )
+    if grid_c.cpml_layers > 0 and absorber_boundary != "cpml":
         raise ValueError(
-            "Phase-1 SBP-SAT z-slab subgridding does not support CPML/UPML boundaries"
+            "SBP-SAT subgridding supports only the bounded CPML absorbing subset; "
+            "UPML remains unsupported"
+        )
+    if use_cpml and (outer_pec_faces or outer_pmc_faces):
+        raise ValueError(
+            "SBP-SAT subgridding does not yet support mixed reflector + CPML "
+            "absorbing faces"
+        )
+    if use_cpml and (any(periodic) or any(fine_periodic)):
+        raise ValueError(
+            "SBP-SAT subgridding does not yet support mixed periodic + CPML "
+            "absorbing faces"
         )
     validate_subgrid_config_3d(config)
 
@@ -76,6 +96,19 @@ def run_subgridded_jit(
         hz_f=init_f.hz,
         step=0,
     )
+    cpml_params = cpml_state_init = None
+    cpml_grid_c = grid_c
+    if use_cpml:
+        import copy
+
+        from rfx.boundaries.cpml import init_cpml
+
+        # The subgridded lane advances both coarse and fine states with the
+        # fine-grid shared timestep, so CPML ADE coefficients must be built
+        # with config.dt rather than Grid's coarse-CFL dt.
+        cpml_grid_c = copy.copy(grid_c)
+        cpml_grid_c.dt = float(config.dt)
+        cpml_params, cpml_state_init = init_cpml(cpml_grid_c)
 
     if sources_f:
         src_waveforms = jnp.stack([jnp.asarray(s[4], dtype=jnp.float32) for s in sources_f], axis=-1)
@@ -115,25 +148,51 @@ def run_subgridded_jit(
                 samples.append(state.hz_f[pi, pj, pk])
         return jnp.stack(samples)
 
-    def step_fn(state: SubgridState3D, xs):
-        _, src_vals = xs
-        state = step_subgrid_3d(
-            state,
-            config,
-            mats_c=mats_c,
-            mats_f=mats_f,
-            pec_mask_c=pec_mask_c,
-            pec_mask_f=pec_mask_f,
-            outer_pec_faces=outer_pec_faces or frozenset(),
-            outer_pmc_faces=outer_pmc_faces or frozenset(),
-            periodic=periodic,
-            fine_periodic=fine_periodic,
+    def _advance(state: SubgridState3D, cpml_state):
+        if use_cpml:
+            return step_subgrid_3d_with_cpml(
+                state,
+                config,
+                cpml_params=cpml_params,
+                cpml_state=cpml_state,
+                grid_c=cpml_grid_c,
+                cpml_axes=cpml_grid_c.cpml_axes,
+                mats_c=mats_c,
+                mats_f=mats_f,
+                pec_mask_c=pec_mask_c,
+                pec_mask_f=pec_mask_f,
+                outer_pec_faces=outer_pec_faces,
+                outer_pmc_faces=outer_pmc_faces,
+                periodic=periodic,
+                fine_periodic=fine_periodic,
+            )
+        return (
+            step_subgrid_3d(
+                state,
+                config,
+                mats_c=mats_c,
+                mats_f=mats_f,
+                pec_mask_c=pec_mask_c,
+                pec_mask_f=pec_mask_f,
+                outer_pec_faces=outer_pec_faces,
+                outer_pmc_faces=outer_pmc_faces,
+                periodic=periodic,
+                fine_periodic=fine_periodic,
+            ),
+            cpml_state,
         )
+
+    def step_fn(carry, xs):
+        _, src_vals = xs
+        state, cpml_state = carry
+        state, cpml_state = _advance(state, cpml_state)
         state = _inject_sources(state, src_vals)
-        return state, _sample_probes(state)
+        return (state, cpml_state), _sample_probes(state)
 
     xs = (jnp.arange(n_steps, dtype=jnp.int32), src_waveforms)
-    final_state, time_series = jax.lax.scan(step_fn, state_init, xs)
+    (final_state, _final_cpml_state), time_series = jax.lax.scan(
+        step_fn, (state_init, cpml_state_init), xs
+    )
 
     final_c = FDTDState(
         ex=final_state.ex_c,

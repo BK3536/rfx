@@ -7,9 +7,11 @@ BoundarySpec coexistence with SBP-SAT subgridding.
 
 It began as a pure pre-implementation contract. The current runtime now includes
 a selected **reflector/periodic subset** (PMC reflector faces and periodic axes
-under the implemented box-shape restrictions), while absorbing coexistence and
-broader mixed boundary classes remain blocked until the remaining gates in this
-RFC are satisfied.
+under the implemented box-shape restrictions) and a bounded **CPML absorbing
+subset** for interior boxes outside the active absorber pad plus one coarse-cell
+guard. UPML, per-face CPML thickness overrides, mixed CPML+reflector, mixed
+CPML+periodic, and broader mixed boundary classes remain blocked until the
+remaining gates in this RFC are satisfied.
 
 ## Purpose
 
@@ -34,8 +36,10 @@ The current codebase already establishes four important facts:
    per-face thickness overrides.
 2. `BoundarySpec` already forbids mixing CPML and UPML in the same simulation.
 3. `Simulation._validate_subgrid_boundary_mode()` now accepts the currently
-   implemented reflector/periodic subset and still rejects absorbing faces,
-   mixed PMC+periodic configurations, and one-side-touch periodic axes.
+   implemented reflector/periodic subset plus bounded CPML boxes that satisfy
+   the absorber separation rule. It still rejects UPML, per-face CPML thickness
+   overrides, mixed CPML+reflector, mixed CPML+periodic, mixed PMC+periodic
+   configurations, and one-side-touch periodic axes.
 4. `Simulation._resolve_face_layers()` and related preflight code already define
    the non-subgridded meaning of per-face absorber layer counts.
 
@@ -46,10 +50,10 @@ system.
 
 Milestone 6 does not:
 
-- implement non-PEC boundary coexistence
-- prove full SBP-SAT stability for PMC / periodic / CPML / UPML cases
-- enable open-boundary benchmarks in the shipped runtime
-- alter the public support matrix away from `all_pec_only`
+- prove full SBP-SAT stability for every PMC / periodic / CPML / UPML case
+- enable physical R/T, S-parameter, or calibrated open-boundary claims
+- enable UPML, per-face CPML thickness overrides, or mixed absorber+reflector/periodic classes
+- promote the public support matrix beyond experimental proxy evidence
 
 ## Boundary coexistence classes
 
@@ -58,7 +62,7 @@ Milestone 6 does not:
 | A | all-PEC | current supported SBP-SAT baseline | already shipped for z-slab only |
 | B | reflector-only with PMC faces (all-PMC or mixed PEC/PMC) | reflector coexistence | implemented in the current experimental subset |
 | C | periodic axes with reflector faces on remaining axes | unit-cell / translational-symmetry coexistence | implemented only when the box is interior to that axis or spans it end-to-end |
-| D | all-absorbing CPML outer boundary | future open-boundary coexistence | blocked by RFC gate |
+| D | all-absorbing CPML outer boundary | bounded open-boundary coexistence | implemented only when the box is interior to every CPML face by pad + one-cell guard |
 | E | all-absorbing UPML outer boundary | future open-boundary coexistence | blocked by RFC gate |
 | F | mixed absorber + reflector faces under one `BoundarySpec` | future asymmetric/open-structure coexistence | blocked by RFC gate |
 | G | per-face absorber thickness overrides | future asymmetric absorber contract | blocked by RFC gate |
@@ -168,8 +172,8 @@ later benchmark and support-promotion gates are satisfied.
 
 ## Open-boundary benchmark definitions
 
-These benchmarks are required for future CPML/UPML coexistence and are distinct
-from the current PEC-cavity proxy benchmarks.
+These benchmarks are required for future calibrated CPML/UPML claims and are
+distinct from the current PEC-cavity and CPML-decay proxy benchmarks.
 
 ### OB-1: normal-incidence slab benchmark
 
@@ -205,18 +209,20 @@ These benchmarks are implementation gates, not public claims at this stage.
 
 | Combination | Current phase of rejection | Current behavior | Future gate to enable |
 |---|---|---|---|
-| scalar `boundary='cpml'` + subgrid | `add_refinement(...)` | hard-fail | OB-1 + coexistence implementation |
+| scalar `boundary='cpml'` + interior guarded subgrid | implemented path | accepted in the current experimental subset | proxy CPML decay evidence now exists; true OB-1 still deferred |
+| scalar `boundary='cpml'` + box inside absorber guard | `add_refinement(...)` | hard-fail | keep rejected until a new absorber-interface contract exists |
 | scalar `boundary='upml'` + subgrid | `add_refinement(...)` or preflight | hard-fail | OB-1 + coexistence implementation |
-| any `BoundarySpec` face token `cpml` | `add_refinement(...)` | hard-fail | absorber RFC + OB-1/OB-2 |
+| all-CPML `BoundarySpec` with guarded interior box | implemented path | accepted in the current experimental subset | proxy CPML decay evidence now exists; true OB-1 still deferred |
 | any `BoundarySpec` face token `upml` | `add_refinement(...)` | hard-fail | absorber RFC + OB-1/OB-2 |
 | selected PMC reflector faces in `BoundarySpec` | implemented path | accepted in the current experimental subset | already benchmarked via reflector proxy tests |
 | periodic axis in `BoundarySpec` with interior/full-axis box | implemented path | accepted in the current experimental subset | already benchmarked via periodic proxy tests |
 | periodic axis touched on one side only | `run(...)` | hard-fail | keep rejected until a one-side-touch contract exists |
-| per-face absorber thickness override on any absorbing face | `add_refinement(...)` | hard-fail as non-all-PEC | per-face padding contract + OB-1 |
+| per-face CPML thickness override on any absorbing face | `add_refinement(...)` | hard-fail | per-face padding contract + OB-1 |
 | `set_periodic_axes(...)` after refinement with an interior/full-axis box | implemented path | accepted in the current experimental subset | already covered by periodic subset tests |
 | `set_periodic_axes(...)` after refinement with one-side-touch periodic geometry | `run(...)` | hard-fail | keep rejected until a one-side-touch contract exists |
 | mixed PMC + periodic faces with subgrid | `add_refinement(...)` | hard-fail | explicit combined coexistence spec and tests |
 | mixed reflector + absorber faces with subgrid | `add_refinement(...)` | hard-fail | asymmetric coexistence spec + OB-1/OB-3 |
+| mixed periodic + CPML faces with subgrid | `add_refinement(...)` | hard-fail | OB-3 periodic absorber benchmark |
 | mixed absorber families (`cpml` + `upml`) | `BoundarySpec` construction | invalid configuration | new derivation and new API contract required |
 
 ## Implementation plan
@@ -234,9 +240,9 @@ These benchmarks are implementation gates, not public claims at this stage.
 
 ### Phase 6C — absorber coexistence
 
-- add per-face absorber separation preflight using the resolved layer contract
-- support one absorber family only (`cpml` or `upml`) per simulation
-- keep one-side-touch periodic geometry and absorber coexistence out of scope in this phase
+- add absorber separation preflight using the resolved layer contract
+- support the first CPML-only subset for boxes outside active absorber pads plus a one-cell guard
+- keep UPML, per-face CPML thickness overrides, one-side-touch periodic geometry, and CPML+periodic/reflector mixtures out of scope in this phase
 
 ### Phase 6D — periodic coexistence
 
@@ -252,8 +258,9 @@ These benchmarks are implementation gates, not public claims at this stage.
 ## Implementation gate
 
 Milestone 6 completes when this RFC exists and is regression-locked.
-It does **not** mean absorbing or broad mixed boundary coexistence is
-implemented.
+It now includes the bounded CPML subset described above, but it does **not**
+mean UPML, per-face absorber overrides, calibrated open-boundary R/T, or broad
+mixed boundary coexistence is implemented.
 
 Non-PEC coexistence remains blocked until all of the following are true:
 
@@ -262,5 +269,5 @@ Non-PEC coexistence remains blocked until all of the following are true:
   passing
 - per-face absorber padding is computed by the coexistence contract, not a
   legacy symmetric shortcut
-- the support matrix is updated from `all_pec_only` only after those tests and
+- the support matrix is updated only for enabled subsets after those tests and
   benchmarks pass

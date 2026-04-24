@@ -50,11 +50,11 @@ class TestJITEdgeCases:
         ts = np.asarray(result.time_series).ravel()
         assert np.allclose(ts, 0)
 
-    def test_jit_cpml_is_rejected(self):
+    def test_jit_cpml_requires_absorber_guarded_box(self):
         from rfx import Simulation
 
         sim = Simulation(freq_max=5e9, domain=(0.04, 0.04, 0.04), boundary="cpml", dx=2e-3)
-        with pytest.raises(ValueError, match="boundary='pec' only|CPML/UPML coexistence"):
+        with pytest.raises(ValueError, match="CPML requires the refinement box.*guard"):
             sim.add_refinement(z_range=(0.012, 0.028), ratio=2)
 
 
@@ -164,3 +164,50 @@ class TestJITRunnerDirect:
         ts = np.asarray(result.time_series).ravel()
         assert np.all(np.isfinite(ts))
         assert np.max(np.abs(ts)) > 1e-10
+
+    def test_direct_jit_rejects_cpml_reflector_mix(self):
+        from rfx.core.yee import MaterialArrays
+        from rfx.grid import Grid
+        from rfx.subgridding.face_ops import build_zface_ops
+        from rfx.subgridding.jit_runner import run_subgridded_jit
+        from rfx.subgridding.sbp_sat_3d import SubgridConfig3D, phase1_3d_dt
+
+        grid_c = Grid(freq_max=5e9, domain=(0.04, 0.04, 0.04), dx=2e-3, cpml_layers=2)
+        nx, ny, nz = grid_c.shape
+        ratio = 2
+        dx_f = grid_c.dx / ratio
+        fi_lo, fi_hi = grid_c.pad_x_lo + 3, nx - grid_c.pad_x_hi - 3
+        fj_lo, fj_hi = grid_c.pad_y_lo + 3, ny - grid_c.pad_y_hi - 3
+        fk_lo, fk_hi = grid_c.pad_z_lo + 3, nz - grid_c.pad_z_hi - 3
+        nx_f = (fi_hi - fi_lo) * ratio
+        ny_f = (fj_hi - fj_lo) * ratio
+        nz_f = (fk_hi - fk_lo) * ratio
+        config = SubgridConfig3D(
+            nx_c=nx, ny_c=ny, nz_c=nz, dx_c=grid_c.dx,
+            fi_lo=fi_lo, fi_hi=fi_hi,
+            fj_lo=fj_lo, fj_hi=fj_hi,
+            fk_lo=fk_lo, fk_hi=fk_hi,
+            nx_f=nx_f, ny_f=ny_f, nz_f=nz_f,
+            dx_f=dx_f, dt=float(phase1_3d_dt(dx_f)), ratio=ratio, tau=0.5,
+            face_ops=build_zface_ops((fi_hi - fi_lo, fj_hi - fj_lo), ratio, grid_c.dx),
+        )
+        mats_c = MaterialArrays(
+            eps_r=jnp.ones((nx, ny, nz), dtype=jnp.float32),
+            sigma=jnp.zeros((nx, ny, nz), dtype=jnp.float32),
+            mu_r=jnp.ones((nx, ny, nz), dtype=jnp.float32),
+        )
+        mats_f = MaterialArrays(
+            eps_r=jnp.ones((nx_f, ny_f, nz_f), dtype=jnp.float32),
+            sigma=jnp.zeros((nx_f, ny_f, nz_f), dtype=jnp.float32),
+            mu_r=jnp.ones((nx_f, ny_f, nz_f), dtype=jnp.float32),
+        )
+        with pytest.raises(ValueError, match="reflector.*CPML"):
+            run_subgridded_jit(
+                grid_c,
+                mats_c,
+                mats_f,
+                config,
+                n_steps=1,
+                absorber_boundary="cpml",
+                outer_pec_faces=frozenset({"z_lo"}),
+            )

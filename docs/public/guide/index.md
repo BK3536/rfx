@@ -9,8 +9,8 @@ engineering. This index tracks the **v1.5.0** release surface and highlights
 selected post-release updates already merged on `main`.
 
 The current claims-bearing surface remains the uniform Cartesian Yee lane.
-SBP-SAT subgridding is visible here only as an **experimental all-PEC arbitrary-box
-research lane** with a selected reflector/periodic boundary subset and
+SBP-SAT subgridding is visible here only as an **experimental arbitrary-box
+research lane** with a selected reflector/periodic and bounded CPML boundary subsets and
 **proxy benchmark** evidence, not as a generally
 supported local-refinement feature.
 
@@ -76,7 +76,7 @@ same structure in one place so you can jump directly to the right section.
 |---|---|
 | [Advanced Features](/rfx/guide/advanced/) | Multi-GPU, material fitting, mixed precision, nonlinear materials, and research examples |
 | [Conformal PEC](/rfx/guide/conformal-pec/) | Dey-Mittra method for curved PEC conductors |
-| [SBP-SAT Subgridding](/rfx/guide/subgridding/) | Experimental all-PEC arbitrary-box + selected reflector/periodic subset; proxy benchmark only |
+| [SBP-SAT Subgridding](/rfx/guide/subgridding/) | Experimental arbitrary-box + selected reflector/periodic/CPML subset; proxy benchmark only |
 | [Gradient Behavior](/rfx/guide/gradient-behavior/) | Where gradients are strong, weak, or noisy |
 | [Geometry & Limitations](/rfx/guide/geometry-and-limitations/) | Supported workflows, strengths, and current trade-offs |
 

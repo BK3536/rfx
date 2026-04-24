@@ -55,15 +55,16 @@ public claims-bearing baseline.
 
 Publicly documented SBP-SAT scope is intentionally narrow:
 
-- all-PEC boundary only, plus selected reflector/periodic subsets
-- one axis-aligned refinement box only
+- all-PEC boundary, selected reflector/periodic subsets, and a bounded CPML absorbing subset
+- one axis-aligned refinement box only; CPML cases require an absorber-pad guard
 - soft point sources only
 - point probes only
 - proxy numerical-equivalence evidence only
 
 The lane is still **experimental**. It is not yet a claims-bearing public
-surface for physical reflection / transmission, open-boundary behavior,
-non-PEC coexistence, or advanced refined-region port/observable workflows.
+surface for physical reflection / transmission, calibrated open-boundary
+S-parameters, UPML, mixed absorber/reflector or absorber/periodic coexistence,
+or advanced refined-region port/observable workflows.
 
 ## Unsupported combinations
 
@@ -77,8 +78,10 @@ Unsupported combinations must hard-fail.
 | TFSF + nonuniform | hard-fail |
 | Waveguide ports + nonuniform | hard-fail |
 | Lumped RLC + nonuniform | hard-fail |
-| CPML/UPML + SBP-SAT subgridding | hard-fail |
-| absorbing `BoundarySpec` faces + SBP-SAT subgridding | hard-fail |
+| UPML + SBP-SAT subgridding | hard-fail |
+| CPML refinement box inside the absorber guard | hard-fail |
+| per-face CPML thickness overrides + SBP-SAT subgridding | hard-fail |
+| mixed CPML + reflector or CPML + periodic `BoundarySpec` + SBP-SAT subgridding | hard-fail |
 | mixed PMC + periodic `BoundarySpec` + SBP-SAT subgridding | hard-fail |
 | periodic axis touched on only one side by the refinement box | hard-fail |
 | geometry-driven `xy_margin` auto-box refinement + SBP-SAT subgridding | hard-fail |

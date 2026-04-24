@@ -34,8 +34,9 @@ Current retained subset:
 - all-PEC outer boundaries
 - mixed PEC/PMC reflector-face `BoundarySpec` subsets
 - periodic axes when the refinement box is either interior to that axis or spans it end-to-end
-- do not mix PMC faces and periodic axes in the same supported subset
-- axis-aligned all-PEC refinement box only
+- bounded CPML absorbing faces when the refinement box stays outside every active absorber pad plus a one-coarse-cell guard
+- do not mix PMC faces with periodic axes, or CPML faces with reflector/periodic faces, in the same supported subset
+- one axis-aligned refinement box only; CPML cases require the explicit absorber guard
 - soft point sources and point probes only
 - proxy numerical-equivalence comparison against a uniform-fine reference
 
@@ -52,7 +53,8 @@ Current policy:
 | proxy crossval | implemented | `tests/test_subgrid_crossval.py` | single-probe DFT amplitude/phase vs uniform-fine reference; **not** physical R/T |
 | box proxy crossval | implemented | `tests/test_sbp_sat_box_crossval.py` | internal arbitrary-box x/y-face plus edge/corner proxy fixtures; **not** public R/T |
 | boundary proxy crossval | implemented | `tests/test_sbp_sat_boundary_crossval.py` | internal PMC reflector plus periodic full-axis/interior proxy fixtures; mixed PMC+periodic remains blocked; **not** public R/T |
-| true reflection/transmission | deferred | `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md` | no public R/T, S-parameter, or open-boundary claim yet |
+| absorbing proxy crossval | implemented | `tests/test_sbp_sat_absorbing_crossval.py` | internal CPML interior-box decay and late-tail proxy fixtures; **not** public R/T or S-parameters |
+| true reflection/transmission | deferred | `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md` | no public R/T, S-parameter, or calibrated open-boundary claim yet |
 
 Proxy tolerance is intentionally narrow and local: relative amplitude error
 `<= 5%` and phase error `<= 5°` against a uniform-fine reference for the
@@ -64,8 +66,11 @@ separation, energy balance, or calibrated S-parameters.
 
 | Combination | Status | Expected behavior |
 |---|---|---|
-| CPML/UPML boundary | unsupported | hard-fail |
-| any absorbing `BoundarySpec` face | unsupported | hard-fail |
+| UPML boundary | unsupported | hard-fail |
+| CPML refinement box inside absorber guard | unsupported | hard-fail |
+| per-face CPML thickness override with subgrid | unsupported | hard-fail |
+| mixed reflector + CPML `BoundarySpec` | unsupported | hard-fail |
+| mixed periodic + CPML `BoundarySpec` | unsupported | hard-fail |
 | mixed PMC + periodic `BoundarySpec` | unsupported | hard-fail |
 | periodic axis touched on only one side | unsupported | hard-fail |
 | geometry-driven `xy_margin` auto-box refinement | unsupported | hard-fail |

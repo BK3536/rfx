@@ -12,7 +12,7 @@ from rfx.subgridding.sbp_sat_3d import phase1_3d_dt
 
 def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse,
                         n_steps):
-    """Run the canonical Phase-1 z-slab SBP-SAT path (JIT-compiled).
+    """Run the canonical experimental SBP-SAT subgridding path (JIT-compiled).
 
     Parameters
     ----------
@@ -63,19 +63,31 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
             "Phase-1 SBP-SAT z-slab subgridding does not support xy_margin"
         )
 
-    def _range_to_indices(axis_range, n_cells, label):
+    def _range_to_indices(axis_range, n_cells, pad_lo, pad_hi, label):
+        interior_lo = int(pad_lo)
+        interior_hi = int(n_cells - pad_hi)
         if axis_range is None:
-            return 0, n_cells
-        lo, hi = axis_range
-        lo_i = max(int(round(lo / dx_c)), 0)
-        hi_i = min(int(round(hi / dx_c)) + 1, n_cells)
+            lo_i, hi_i = interior_lo, interior_hi
+        else:
+            lo, hi = axis_range
+            lo_i = max(int(round(lo / dx_c)) + interior_lo, interior_lo)
+            hi_i = min(int(round(hi / dx_c)) + 1 + interior_lo, interior_hi)
         if hi_i <= lo_i:
             raise ValueError(f"{label}={axis_range} maps to an empty coarse interval")
         return lo_i, hi_i
 
-    fi_lo, fi_hi = _range_to_indices(ref.get("x_range"), grid_coarse.nx, "x_range")
-    fj_lo, fj_hi = _range_to_indices(ref.get("y_range"), grid_coarse.ny, "y_range")
-    fk_lo, fk_hi = _range_to_indices(ref["z_range"], grid_coarse.nz, "z_range")
+    fi_lo, fi_hi = _range_to_indices(
+        ref.get("x_range"), grid_coarse.nx,
+        grid_coarse.pad_x_lo, grid_coarse.pad_x_hi, "x_range"
+    )
+    fj_lo, fj_hi = _range_to_indices(
+        ref.get("y_range"), grid_coarse.ny,
+        grid_coarse.pad_y_lo, grid_coarse.pad_y_hi, "y_range"
+    )
+    fk_lo, fk_hi = _range_to_indices(
+        ref["z_range"], grid_coarse.nz,
+        grid_coarse.pad_z_lo, grid_coarse.pad_z_hi, "z_range"
+    )
 
     nx_f = (fi_hi - fi_lo) * ratio
     ny_f = (fj_hi - fj_lo) * ratio
@@ -120,9 +132,9 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
 
     # Rasterize geometry into fine grid materials using shared function.
     # Uses cell-center coordinates (not cell edges) for correct placement.
-    x_off = fi_lo * dx_c
-    y_off = fj_lo * dx_c
-    z_off = fk_lo * dx_c
+    x_off = (fi_lo - grid_coarse.pad_x_lo) * dx_c
+    y_off = (fj_lo - grid_coarse.pad_y_lo) * dx_c
+    z_off = (fk_lo - grid_coarse.pad_z_lo) * dx_c
 
     from rfx.geometry.rasterize import coords_from_fine_grid, rasterize_geometry
 
@@ -184,16 +196,17 @@ def run_subgridded_path(sim, grid_coarse, base_materials_coarse, pec_mask_coarse
         outer_pmc_faces=frozenset(sim._boundary_spec.pmc_faces()),
         periodic=tuple(axis in (sim._periodic_axes or "") for axis in "xyz"),
         fine_periodic=tuple(
-            axis in (sim._periodic_axes or "") and lo == 0 and hi == n
-            for axis, (lo, hi, n) in zip(
+            axis in (sim._periodic_axes or "") and lo == pad_lo and hi == n - pad_hi
+            for axis, (lo, hi, n, pad_lo, pad_hi) in zip(
                 "xyz",
                 (
-                    (fi_lo, fi_hi, grid_coarse.nx),
-                    (fj_lo, fj_hi, grid_coarse.ny),
-                    (fk_lo, fk_hi, grid_coarse.nz),
+                    (fi_lo, fi_hi, grid_coarse.nx, grid_coarse.pad_x_lo, grid_coarse.pad_x_hi),
+                    (fj_lo, fj_hi, grid_coarse.ny, grid_coarse.pad_y_lo, grid_coarse.pad_y_hi),
+                    (fk_lo, fk_hi, grid_coarse.nz, grid_coarse.pad_z_lo, grid_coarse.pad_z_hi),
                 ),
             )
         ),
+        absorber_boundary=sim._boundary,
     )
 
     return Result(

@@ -11,8 +11,8 @@ Milestone 9 proposal for the SBP-SAT subgridding lane.
 Keep the support-matrix lane as:
 
 - `status: experimental`
-- `boundary: all_pec_plus_selected_reflector_periodic_subset`
-- `geometry: all_pec_arbitrary_box_only`
+- `boundary: all_pec_plus_selected_reflector_periodic_cpml_subset`
+- `geometry: axis_aligned_arbitrary_box_with_cpml_guard_for_absorbing_faces`
 - `sources: soft_point_source`
 - `observables: point_probe`
 - `claim_level: experimental_proxy_validated_only`
@@ -26,9 +26,11 @@ supported or shadow.
 The current public/docs-safe claim set is:
 
 1. SBP-SAT subgridding exists as an **experimental research lane**.
-2. The retained visible surface is an **all-PEC, axis-aligned refinement box**
-   case together with a selected **reflector/periodic boundary subset** that
-   does not mix PMC faces and periodic axes in one supported configuration.
+2. The retained visible surface is an **axis-aligned refinement box** case
+   together with selected **reflector/periodic boundary subsets** and a bounded
+   **CPML absorbing subset** for boxes outside the active absorber pad plus one
+   coarse-cell guard. The supported subset does not mix PMC with periodic axes,
+   or CPML with reflector/periodic faces, in one configuration.
 3. The shipped runtime supports **soft point sources** and **point probes** only.
 4. The current executable benchmark evidence is **proxy numerical equivalence**
    against a uniform-fine reference, not physical reflection/transmission.
@@ -38,11 +40,12 @@ The current public/docs-safe claim set is:
 
 Do **not** claim any of the following today:
 
-- claims-bearing arbitrary 3-D box support beyond the current experimental
-  all-PEC subset
-- CPML / UPML absorbing coexistence
+- claims-bearing arbitrary 3-D box support beyond the current experimental subset
+- UPML absorbing coexistence
+- CPML coexistence outside the guarded interior-box subset
+- mixed CPML+reflector or CPML+periodic coexistence
 - broader PMC / periodic coexistence beyond the currently implemented subset
-- true R/T, S-parameter, or open-boundary validation
+- true R/T, S-parameter, or calibrated open-boundary validation
 - impedance point ports, wire/extent ports, coaxial ports, waveguide ports,
   or Floquet ports inside refined regions
 - DFT planes, flux monitors, or NTFF support inside refined regions
@@ -60,12 +63,12 @@ Promotion beyond `experimental` is blocked by the following current facts:
    implementations:
    - ports and observables inside refined regions
    - materials / dispersion / time integration
-   The all-PEC arbitrary-box runtime and the selected reflector/periodic
-   boundary subset now exist, but broader promotion still depends on the
+   The arbitrary-box runtime, selected reflector/periodic subset, and bounded
+   CPML absorbing subset now exist, but broader promotion still depends on the
    remaining gates and evidence.
 3. The support matrix still correctly records the lane as an experimental
-   all-PEC arbitrary-box lane with only a selected reflector/periodic subset,
-   proxy-only evidence, and many unsupported combinations still hard-failing.
+   arbitrary-box lane with selected reflector/periodic/CPML subsets, proxy-only
+   evidence, and many unsupported combinations still hard-failing.
 4. Public docs already use appropriately narrow wording; broadening them now
    would outrun the evidence.
 
@@ -87,6 +90,7 @@ Promotion beyond `experimental` is blocked by the following current facts:
 - `tests/test_sbp_sat_api_guards.py`
 - `tests/test_sbp_sat_box_refinement_spec_contract.py`
 - `tests/test_sbp_sat_boundary_coexistence_spec_contract.py`
+- `tests/test_sbp_sat_absorbing_crossval.py`
 - `tests/test_sbp_sat_ports_observables_spec_contract.py`
 - `tests/test_sbp_sat_materials_time_integration_spec_contract.py`
 
@@ -103,4 +107,4 @@ A future promotion proposal may recommend widening the lane only after:
 ## Decision summary
 
 **Current decision:** retain SBP-SAT subgridding as an experimental, proxy-only,
-all-PEC arbitrary-box lane with a selected reflector/periodic boundary subset.
+arbitrary-box lane with selected reflector/periodic and bounded CPML boundary subsets.

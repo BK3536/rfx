@@ -20,8 +20,9 @@ runtime surfaces are reconciled.
 ### Current evidence
 
 - `Simulation.add_refinement(...)` currently accepts `z_range`, `ratio`,
-  `tau`, and optional `x_range` / `y_range`, while rejecting `xy_margin` and
-  all non-PEC `BoundarySpec` faces in the current all-PEC path (`rfx/api.py`).
+  `tau`, and optional `x_range` / `y_range`, while rejecting `xy_margin`; it
+  now accepts selected reflector/periodic boundaries and a bounded CPML subset
+  for boxes outside active absorber pads plus one coarse-cell guard (`rfx/api.py`).
 - Additional subgridding preflight rejects NTFF, DFT planes, flux monitors,
   waveguide ports, Floquet ports, TFSF, lumped RLC, coaxial ports, and
   impedance/wire ports (`rfx/api.py`).
@@ -29,14 +30,15 @@ runtime surfaces are reconciled.
 - The current 3D SBP-SAT core contains z-slab config/state, canonical `dt`,
   face trace helpers, SAT helpers, compatibility wrappers, the stepper, and
   overlap-safe energy accounting (`rfx/subgridding/sbp_sat_3d.py`).
-- The runtime path builds the current all-PEC fine box from `add_refinement(...)`
+- The runtime path builds the current fine box from `add_refinement(...)`
   and dispatches to `run_subgridded_jit(...)`
   (`rfx/runners/subgridded.py`).
 - JIT execution calls `step_subgrid_3d(...)` inside one `jax.lax.scan`
   (`rfx/subgridding/jit_runner.py`).
-- The low-level all-PEC runtime now also accepts an arbitrary refinement box,
-  while the public/documented claim boundary remains intentionally narrower
-  until later promotion gates are re-evaluated.
+- The low-level arbitrary-box runtime now accepts selected reflector/periodic
+  boundaries and a bounded CPML subset, while the public/documented claim
+  boundary remains experimental and proxy-only until later promotion gates are
+  re-evaluated.
 - Current tests cover API guards, face operators, z-slab smoke, alpha/tau,
   JIT, proxy cross-validation, and support-matrix benchmark metadata
   (`tests/test_sbp_sat_api_guards.py`, `tests/test_sbp_sat_face_ops.py`,
@@ -162,23 +164,23 @@ new work.
 
 | Surface | Status | Required wording |
 |---|---|---|
-| Geometry | Experimental current implementation | all-PEC axis-aligned refinement box only |
-| Interfaces | Experimental current implementation | oriented face/edge/corner coupling under the all-PEC box lane |
-| Boundaries | Experimental reflector/periodic subset | reject absorbing faces and mixed PMC+periodic now; broader coexistence remains a later milestone |
+| Geometry | Experimental current implementation | axis-aligned refinement box only; CPML cases require absorber guard |
+| Interfaces | Experimental current implementation | oriented face/edge/corner coupling under the arbitrary-box lane |
+| Boundaries | Experimental reflector/periodic/CPML subset | reject UPML, CPML guard violations, per-face CPML overrides, mixed PMC+periodic, mixed CPML+periodic, and mixed CPML+reflector now; broader coexistence remains a later milestone |
 | Sources | Candidate soft point sources only | source/probe positions must lie inside the refined box |
 | Probes | Candidate point probes only | probe positions must lie inside the refined box |
 | Impedance ports | **Unsupported in Milestone 1** | hard-fail nonzero impedance point ports and wire/extent ports; repair/support moves to a later port-support milestone |
 | NTFF/DFT/waveguide/Floquet/TFSF/RLC/coaxial ports | Unsupported | fail fast |
-| Arbitrary 3D box refinement | Implemented internally, still experimental | keep public claims narrower until box proxy evidence and later promotion review are updated |
-| CPML + subgrid coexistence | Unsupported | later research milestone only |
+| Arbitrary 3D box refinement | Implemented internally, still experimental | keep public claims proxy-only until later promotion review is updated |
+| CPML + subgrid coexistence | Implemented bounded subset | interior guarded boxes only; true R/T and S-parameter claims still deferred |
 
 **Evidence:**
 
-- `add_refinement(...)` rejects `xy_margin` and CPML/UPML
-  (`rfx/api.py:567-576`).
+- `add_refinement(...)` rejects `xy_margin`, UPML, CPML boxes inside the
+  absorber guard, and mixed CPML+reflector/periodic configurations.
 - Preflight rejects several non-Phase-1 features (`rfx/api.py:2933-2961`).
-- Runtime currently hard-checks scalar `sim._boundary == "pec"`
-  (`rfx/runners/subgridded.py:39-42`).
+- Runtime currently routes scalar `boundary="cpml"` through a CPML-aware
+  subgridded scan only for the bounded absorber subset.
 - The runner still contains partial impedance-port logic that is not currently
   safe (`rfx/runners/subgridded.py:164-211`).
 - Milestone 1 therefore chooses rejection, not repair, as the executable
@@ -414,7 +416,8 @@ Milestone 5 now records that contract in
 
 - `ratio <= 1`
 - `xy_margin is not None`
-- scalar boundary in `("cpml", "upml")`
+- scalar boundary `"upml"`
+- scalar `boundary="cpml"` when the box violates the absorber guard
 - invalid `z_range`
 
 **Preflight/run-time failures:**
@@ -432,11 +435,11 @@ Milestone 5 now records that contract in
 
 **Post-main failures to add:**
 
-- non-all-PEC `BoundarySpec`
-- PMC faces
-- periodic axes
-- mixed per-face boundary specifications
-- CPML/UPML per-face thickness or padding with subgrid
+- UPML `BoundarySpec` faces
+- mixed PMC+periodic faces
+- mixed CPML+reflector or CPML+periodic faces
+- CPML box inside the absorber guard
+- CPML per-face thickness overrides with subgrid
 
 **Acceptance criteria:**
 
@@ -448,7 +451,9 @@ Milestone 5 now records that contract in
 
 | Rule | Failure phase | Expected test | Status |
 |---|---|---|---|
-| CPML/UPML scalar boundary | construction | `test_subgrid_touching_cpml_fails` | existing |
+| UPML scalar boundary | construction | `test_subgrid_rejects_unsupported_absorbing_boundaryspec` | updated |
+| CPML scalar boundary inside absorber guard | construction | `test_subgrid_rejects_cpml_box_inside_absorber_guard` | new |
+| bounded CPML scalar boundary | construction/run | `test_subgrid_accepts_interior_cpml_absorbing_subset` | new |
 | `xy_margin` / partial x/y request | construction | `test_partial_xy_refinement_fails` | existing |
 | source/probe outside z slab | run mapping/preflight | `test_source_outside_zslab_fails` | existing |
 | NTFF with subgrid | run preflight | `test_unsupported_phase1_features_fail_fast[ntff]` | existing pattern |
@@ -462,11 +467,12 @@ Milestone 5 now records that contract in
 | nonzero impedance point port | run preflight before JIT | `test_subgrid_rejects_impedance_point_port` | new |
 | impedance wire/extent port | run preflight before JIT | `test_subgrid_rejects_impedance_wire_port` | new |
 | direct partial-x/y `SubgridConfig3D` into JIT | JIT entry validation | `test_run_subgridded_jit_rejects_partial_xy_config` | new |
-| non-all-PEC `BoundarySpec` | post-rebase construction/preflight | `test_subgrid_rejects_boundaryspec_absorber_faces` | new after rebase |
-| PMC face in `BoundarySpec` | post-rebase construction/preflight | `test_subgrid_rejects_boundaryspec_pmc_faces` | new after rebase |
-| periodic axes | post-rebase construction/preflight | `test_subgrid_rejects_periodic_axes` | new after rebase |
-| mixed per-face boundary specs | post-rebase construction/preflight | `test_subgrid_rejects_mixed_boundaryspec` | new after rebase |
-| per-face CPML thickness/padding | post-rebase construction/preflight | `test_subgrid_rejects_per_face_cpml_padding` | new after rebase |
+| selected PMC face in `BoundarySpec` | construction/run | `test_subgrid_accepts_reflector_only_pmc_boundaryspec` | implemented |
+| periodic axes with interior/full-axis box | construction/run | `test_subgrid_accepts_periodic_axis_when_box_is_interior` / `test_subgrid_accepts_periodic_axis_when_box_spans_it` | implemented |
+| mixed PMC+periodic specs | construction/preflight | `test_subgrid_rejects_mixed_pmc_periodic_boundaryspec` | implemented |
+| all-CPML `BoundarySpec` bounded subset | construction/run | `test_subgrid_accepts_boundaryspec_cpml_absorbing_subset` | implemented |
+| mixed CPML+periodic specs | construction/preflight | `test_subgrid_rejects_mixed_periodic_cpml_boundaryspec` | new |
+| per-face CPML thickness/padding | construction/preflight | `test_subgrid_rejects_unsupported_absorbing_boundaryspec` | updated |
 
 ### 2.10 Verification ladder
 
@@ -648,8 +654,8 @@ reflection/transmission validation.
 
 **Exit gate:**
 
-- The all-PEC arbitrary-box runtime remains experimental until the six-face
-  math, edge/corner policy, and benchmark matrix stay regression-locked.
+- The arbitrary-box runtime remains experimental until the six-face math,
+  edge/corner policy, and benchmark matrix stay regression-locked.
 - `tests/test_sbp_sat_box_refinement_spec_contract.py` locks the spec artifact.
 
 #### Milestone 6 — Boundary coexistence

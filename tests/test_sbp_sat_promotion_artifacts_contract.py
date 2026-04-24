@@ -24,16 +24,16 @@ def test_promotion_proposal_recommends_retaining_experimental_status():
     for token in (
         "Do not promote SBP-SAT / subgridding beyond `experimental`",
         "status: experimental",
-        "boundary: all_pec_plus_selected_reflector_periodic_subset",
-        "geometry: all_pec_arbitrary_box_only",
+        "boundary: all_pec_plus_selected_reflector_periodic_cpml_subset",
+        "geometry: axis_aligned_arbitrary_box_with_cpml_guard_for_absorbing_faces",
         "claim_level: experimental_proxy_validated_only",
         "retain experimental status",
         "true R/T benchmark",
         "deferred",
         "Milestones 7-8 still remain **RFC/spec gates**",
-        "all-PEC arbitrary-box runtime and the selected reflector/periodic",
-        "boundary subset now exist",
-        "all-PEC arbitrary-box lane with a selected reflector/periodic boundary subset",
+        "arbitrary-box runtime, selected reflector/periodic subset, and bounded",
+        "CPML absorbing subset now exist",
+        "arbitrary-box lane with selected reflector/periodic and bounded CPML boundary subsets",
     ):
         assert token in text
 
@@ -43,12 +43,13 @@ def test_release_and_migration_caveats_lock_current_surface():
 
     for token in (
         "experimental only",
-        "selected reflector/periodic subset",
+        "selected reflector/periodic and bounded CPML boundary subsets",
         "one axis-aligned refinement box only",
         "soft point source + point probe only",
         "proxy numerical-equivalence benchmark only",
         "boundary=\"pec\"",
         "selected reflector/periodic subset",
+        "bounded CPML subset",
         "DFT planes",
         "flux monitors",
         "NTFF / Huygens-box far field",
@@ -62,13 +63,14 @@ def test_final_verifier_report_ties_claims_to_evidence():
     text = _text(VERIFIER)
 
     for token in (
-        "experimental, proxy-only, all-PEC arbitrary-box",
-        "selected reflector/periodic boundary subset",
+        "experimental, proxy-only, axis-aligned arbitrary-box",
+        "selected reflector/periodic and bounded CPML boundary subsets",
         "Claim-to-evidence map",
         "tests/test_support_matrix_sbp_sat.py",
         "tests/test_public_subgridding_docs_contract.py",
         "tests/test_subgrid_crossval.py",
         "tests/test_sbp_sat_boundary_crossval.py",
+        "tests/test_sbp_sat_absorbing_crossval.py",
         "tests/test_sbp_sat_api_guards.py",
         "Milestone 5-8 RFC docs + contract tests",
         "does **not** recommend promotion",
@@ -88,4 +90,4 @@ def test_full_spec_references_milestone9_artifacts_and_contract_test():
 
 def test_public_changelog_and_migration_keep_sbp_sat_narrow():
     assert "SBP-SAT subgridding remains experimental" in _text(CHANGELOG)
-    assert "experimental all-PEC arbitrary-box" in _text(MIGRATION)
+    assert "experimental arbitrary-box" in _text(MIGRATION)

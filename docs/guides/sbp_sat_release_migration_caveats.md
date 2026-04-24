@@ -6,8 +6,8 @@ The current branch includes a documented SBP-SAT subgridding lane, but it is
 still intentionally narrow:
 
 - experimental only
-- all-PEC plus a selected reflector/periodic boundary subset only
-- one axis-aligned refinement box only
+- all-PEC plus selected reflector/periodic and bounded CPML boundary subsets only
+- one axis-aligned refinement box only; CPML cases require an absorber guard
 - soft point source + point probe only
 - proxy numerical-equivalence benchmark only
 
@@ -24,16 +24,19 @@ Subgridding currently accepts only:
 - an all-PEC `BoundarySpec`; or
 - a selected reflector/periodic subset (`PEC/PMC` reflector faces, or periodic
   axes when the box is interior to that axis or spans it end-to-end, but not a
-  mixed PMC+periodic combination)
+  mixed PMC+periodic combination); or
+- a bounded CPML subset (`boundary="cpml"` or all-CPML `BoundarySpec`) when the
+  refinement box stays outside every active absorber pad plus one coarse-cell guard
 
-Any CPML, UPML, absorbing `BoundarySpec`, or one-side-touch periodic axis with
+UPML, mixed CPML+reflector, mixed CPML+periodic, per-face CPML thickness
+overrides, CPML guard violations, or one-side-touch periodic axes with
 subgridding must be expected to hard-fail.
 
 ### Geometry caveat
 
 `Simulation.add_refinement(...)` currently means:
 
-- one axis-aligned all-PEC refinement box only
+- one axis-aligned refinement box only
 - explicit `x_range` / `y_range` / `z_range` box bounds are allowed
 - geometry-driven `xy_margin` auto-box refinement is still unsupported
 
@@ -78,7 +81,7 @@ If older notes, examples, or branches describe SBP-SAT as “z-slab only” or
 “general subgridding”, translate that language to the current contract before
 reusing it:
 
-- replace “general subgridding” with “experimental all-PEC arbitrary-box lane”
+- replace “general subgridding” with “experimental arbitrary-box lane”
 - replace “benchmark validated” with “proxy benchmark validated” unless the
   statement specifically cites a true R/T benchmark
 - keep public wording aligned to `docs/guides/support_matrix.*`

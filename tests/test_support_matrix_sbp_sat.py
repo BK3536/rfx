@@ -24,9 +24,11 @@ def test_sbp_sat_support_matrix_records_experimental_proxy_evidence():
         "all_pec",
         "mixed_pec_pmc_reflector_faces",
         "periodic_axes_when_box_is_interior_or_spans_axis",
+        "bounded_cpml_absorbing_faces_when_box_is_outside_absorber_guard",
         "not_mixed_pmc_periodic",
+        "not_mixed_reflector_or_periodic_with_cpml",
     ]
-    assert lane["supported_subset"]["geometry"] == "all_pec_arbitrary_box_only"
+    assert lane["supported_subset"]["geometry"] == "axis_aligned_arbitrary_box_with_cpml_guard_for_absorbing_faces"
     assert lane["supported_subset"]["sources"] == ["soft_point_source"]
     assert lane["supported_subset"]["observables"] == ["point_probe"]
 
@@ -58,6 +60,14 @@ def test_sbp_sat_support_matrix_records_experimental_proxy_evidence():
         "periodic_axis_proxy_interior",
     ]
 
+    absorbing_proxy = lane["benchmark_evidence"]["absorbing_proxy_crossval"]
+    assert absorbing_proxy["status"] == "implemented"
+    assert absorbing_proxy["test_file"] == "tests/test_sbp_sat_absorbing_crossval.py"
+    assert absorbing_proxy["fixtures"] == [
+        "interior_box_cpml_decay_proxy",
+        "cpml_late_tail_vs_pec_cavity_tail",
+    ]
+
 
 def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
     true_rt = _sbp_lane()["benchmark_evidence"]["true_reflection_transmission"]
@@ -79,8 +89,11 @@ def test_sbp_sat_unsupported_surface_remains_hard_fail_in_support_matrix():
     unsupported = _sbp_lane()["unsupported_combinations"]
 
     for key in (
-        "cpml_upml_boundary",
-        "absorbing_boundaryspec",
+        "upml_boundary",
+        "cpml_box_inside_absorber_guard",
+        "per_face_cpml_thickness_override",
+        "mixed_reflector_cpml_boundaryspec",
+        "mixed_periodic_cpml_boundaryspec",
         "mixed_pmc_periodic_boundaryspec",
         "partial_touch_periodic_axis",
         "xy_margin_geometry_autobox",

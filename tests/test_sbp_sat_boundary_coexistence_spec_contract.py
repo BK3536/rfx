@@ -39,10 +39,13 @@ def test_boundary_coexistence_rfc_current_baseline_matches_implemented_subset():
 
     for token in (
         "Simulation._validate_subgrid_boundary_mode()",
-        "accepts the currently",
-        "implemented reflector/periodic subset",
-        "rejects absorbing faces",
-        "mixed PMC+periodic configurations",
+        "implemented reflector/periodic subset plus bounded CPML boxes",
+        "absorber separation rule",
+        "rejects UPML",
+        "per-face CPML thickness",
+        "mixed CPML+reflector",
+        "mixed CPML+periodic",
+        "mixed PMC+periodic",
         "one-side-touch periodic axes",
     ):
         assert token in text
@@ -75,19 +78,23 @@ def test_boundary_coexistence_rfc_locks_boundary_classes_and_hard_fail_matrix():
         "reflector-only with PMC faces",
         "periodic axes with reflector faces",
         "all-absorbing CPML outer boundary",
+        "implemented only when the box is interior",
         "all-absorbing UPML outer boundary",
         "mixed absorber + reflector faces",
         "per-face absorber thickness overrides",
         "mixed absorber families (`cpml` and `upml`)",
-        "scalar `boundary='cpml'` + subgrid",
+        "scalar `boundary='cpml'` + interior guarded subgrid",
+        "scalar `boundary='cpml'` + box inside absorber guard",
         "scalar `boundary='upml'` + subgrid",
+        "all-CPML `BoundarySpec` with guarded interior box",
         "selected PMC reflector faces in `BoundarySpec`",
         "periodic axis in `BoundarySpec` with interior/full-axis box",
         "periodic axis touched on one side only",
         "mixed PMC + periodic faces with subgrid",
-        "per-face absorber thickness override on any absorbing face",
+        "per-face CPML thickness override on any absorbing face",
         "`set_periodic_axes(...)` after refinement",
         "mixed absorber families (`cpml` + `upml`)",
+        "mixed periodic + CPML faces with subgrid",
     ):
         assert row_token in text
 
@@ -144,13 +151,15 @@ def test_boundary_coexistence_rfc_blocks_runtime_enablement():
 
     for token in (
         "selected **reflector/periodic subset**",
-        "absorbing coexistence",
+        "bounded **CPML absorbing",
+        "UPML, per-face CPML thickness overrides",
         "broader mixed boundary classes remain blocked",
         "Milestone 6 completes when this RFC exists and is regression-locked",
-        "It does **not** mean absorbing or broad mixed boundary coexistence is",
-        "implemented",
+        "does **not**",
+        "broad",
+        "mixed boundary coexistence is implemented",
         "explicit `BoundarySpec` coexistence tests exist",
-        "the support matrix is updated from `all_pec_only` only after",
+        "the support matrix is updated only for enabled subsets",
     ):
         assert token in text
 

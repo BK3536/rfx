@@ -844,6 +844,151 @@ def _shared_node_coupling_3d(state_c_fields, state_f_fields, config):
     return apply_sat_e_interfaces(state_c_fields, state_f_fields, config)
 
 
+def step_subgrid_3d_with_cpml(
+    state: SubgridState3D,
+    config: SubgridConfig3D,
+    *,
+    cpml_params,
+    cpml_state,
+    grid_c,
+    cpml_axes: str,
+    mats_c=None,
+    mats_f=None,
+    pec_mask_c=None,
+    pec_mask_f=None,
+    outer_pec_faces: frozenset[str] = frozenset(),
+    outer_pmc_faces: frozenset[str] = frozenset(),
+    periodic: tuple[bool, bool, bool] = (False, False, False),
+    fine_periodic: tuple[bool, bool, bool] = (False, False, False),
+):
+    """Advance one subgrid step with CPML on the coarse outer boundary.
+
+    This is the first bounded absorbing-coexistence path: CPML is applied only
+    to the coarse domain boundary, while the fine box is required by API
+    preflight to remain inside the physical domain and outside the active CPML
+    pad plus one coarse-cell guard.  The fine grid therefore still uses only
+    SBP-SAT interface coupling and any physical PEC faces it actually touches.
+    """
+
+    from rfx.boundaries.cpml import apply_cpml_e, apply_cpml_h
+    from rfx.boundaries.pmc import apply_pmc_faces
+    from rfx.boundaries.pec import apply_pec_faces, apply_pec_mask
+    from rfx.core.yee import FDTDState, update_e, update_h
+
+    if outer_pec_faces or outer_pmc_faces:
+        raise ValueError(
+            "SBP-SAT subgridding does not yet support mixed reflector + CPML "
+            "absorbing faces"
+        )
+    if any(periodic) or any(fine_periodic):
+        raise ValueError(
+            "SBP-SAT subgridding does not yet support mixed periodic + CPML "
+            "absorbing faces"
+        )
+
+    if mats_c is None:
+        mats_c = _make_mats(state.ex_c.shape)
+    if mats_f is None:
+        mats_f = _make_mats(state.ex_f.shape)
+
+    coarse_h = FDTDState(
+        ex=state.ex_c,
+        ey=state.ey_c,
+        ez=state.ez_c,
+        hx=state.hx_c,
+        hy=state.hy_c,
+        hz=state.hz_c,
+        step=jnp.array(0, dtype=jnp.int32),
+    )
+    coarse_h = update_h(coarse_h, mats_c, config.dt, config.dx_c, periodic=periodic)
+    coarse_h, cpml_new = apply_cpml_h(
+        coarse_h, cpml_params, cpml_state, grid_c, cpml_axes, materials=mats_c
+    )
+    if outer_pmc_faces:
+        coarse_h = apply_pmc_faces(coarse_h, outer_pmc_faces)
+    hx_c, hy_c, hz_c = coarse_h.hx, coarse_h.hy, coarse_h.hz
+
+    hx_f, hy_f, hz_f = _update_h_only(
+        state.ex_f,
+        state.ey_f,
+        state.ez_f,
+        state.hx_f,
+        state.hy_f,
+        state.hz_f,
+        config.dt,
+        config.dx_f,
+        mats=mats_f,
+        periodic=fine_periodic,
+        pmc_faces=frozenset(face for face in _touching_outer_faces(config) if face in outer_pmc_faces),
+    )
+    (hx_c, hy_c, hz_c), (hx_f, hy_f, hz_f) = apply_sat_h_interfaces(
+        (hx_c, hy_c, hz_c),
+        (hx_f, hy_f, hz_f),
+        config,
+    )
+    hx_c, hy_c, hz_c = _zero_coarse_overlap_interior((hx_c, hy_c, hz_c), config)
+
+    coarse_e = FDTDState(
+        ex=state.ex_c,
+        ey=state.ey_c,
+        ez=state.ez_c,
+        hx=hx_c,
+        hy=hy_c,
+        hz=hz_c,
+        step=jnp.array(0, dtype=jnp.int32),
+    )
+    coarse_e = update_e(coarse_e, mats_c, config.dt, config.dx_c, periodic=periodic)
+    coarse_e, cpml_new = apply_cpml_e(
+        coarse_e, cpml_params, cpml_new, grid_c, cpml_axes, materials=mats_c
+    )
+    if outer_pec_faces:
+        coarse_e = apply_pec_faces(coarse_e, outer_pec_faces)
+    if pec_mask_c is not None:
+        coarse_e = apply_pec_mask(coarse_e, pec_mask_c)
+    ex_c, ey_c, ez_c = coarse_e.ex, coarse_e.ey, coarse_e.ez
+
+    ex_f, ey_f, ez_f = _update_e_only(
+        state.ex_f,
+        state.ey_f,
+        state.ez_f,
+        hx_f,
+        hy_f,
+        hz_f,
+        config.dt,
+        config.dx_f,
+        mats=mats_f,
+        pec_mask=pec_mask_f,
+        boundary_axes=None,
+        boundary_faces=frozenset(face for face in _touching_outer_faces(config) if face in outer_pec_faces),
+        periodic=fine_periodic,
+    )
+    (ex_c, ey_c, ez_c), (ex_f, ey_f, ez_f) = apply_sat_e_interfaces(
+        (ex_c, ey_c, ez_c),
+        (ex_f, ey_f, ez_f),
+        config,
+    )
+    ex_c, ey_c, ez_c = _zero_coarse_overlap_interior((ex_c, ey_c, ez_c), config)
+
+    return (
+        SubgridState3D(
+            ex_c=ex_c,
+            ey_c=ey_c,
+            ez_c=ez_c,
+            hx_c=hx_c,
+            hy_c=hy_c,
+            hz_c=hz_c,
+            ex_f=ex_f,
+            ey_f=ey_f,
+            ez_f=ez_f,
+            hx_f=hx_f,
+            hy_f=hy_f,
+            hz_f=hz_f,
+            step=state.step + 1,
+        ),
+        cpml_new,
+    )
+
+
 def step_subgrid_3d(
     state: SubgridState3D,
     config: SubgridConfig3D,

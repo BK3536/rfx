@@ -1,6 +1,6 @@
 ---
 title: "SBP-SAT Subgridding"
-description: "Experimental all-PEC arbitrary-box subgridding research lane in rfx."
+description: "Experimental arbitrary-box subgridding research lane in rfx."
 sidebar:
   order: 23
 ---
@@ -10,8 +10,8 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Experimental research lane">
   SBP-SAT subgridding is **not** part of the current claims-bearing public
   support surface. The retained public scope is limited to an
-  **experimental all-PEC arbitrary-box lane** together with selected
-  **reflector/periodic boundary subsets**, still limited to **soft point
+  **experimental axis-aligned arbitrary-box lane** together with selected
+  **reflector/periodic and bounded CPML absorbing subsets**, still limited to **soft point
   sources**, **point probes**, and **proxy numerical-equivalence evidence**
   against a uniform-fine reference.
 </Aside>
@@ -21,9 +21,13 @@ import { Aside } from '@astrojs/starlight/components';
 Today’s public, documented SBP-SAT subset is intentionally narrow:
 
 - **Boundary model** — `boundary="pec"`, all-PEC `BoundarySpec`, mixed PEC/PMC
-  reflector faces, and periodic axes when the refinement box stays interior to
-  that axis or spans it end-to-end; mixed PMC+periodic remains unsupported
-- **Refinement geometry** — one axis-aligned all-PEC refinement box only
+  reflector faces, periodic axes when the refinement box stays interior to
+  that axis or spans it end-to-end, and bounded `boundary="cpml"` / all-CPML
+  `BoundarySpec` cases when the box stays outside the active absorber pad plus
+  one coarse-cell guard; mixed PMC+periodic, mixed CPML+periodic, mixed
+  CPML+reflector, UPML, and per-face CPML thickness overrides remain unsupported
+- **Refinement geometry** — one axis-aligned refinement box only; CPML cases
+  require explicit box bounds inside the absorber guard
 - **Excitation** — soft point sources only
 - **Observables** — point probes only
 - **Evidence level** — proxy benchmark only; true physical reflection /
@@ -65,8 +69,10 @@ local refinement.
 The current SBP-SAT lane is expected to **hard-fail** rather than degrade
 silently for unsupported combinations, including:
 
-- CPML / UPML boundaries
-- any absorbing `BoundarySpec` face
+- UPML boundaries
+- CPML boxes that touch or enter the active absorber guard
+- mixed CPML+periodic or CPML+reflector `BoundarySpec` faces
+- per-face CPML thickness overrides
 - periodic axes touched on only one side by the refinement box
 - geometry-driven `xy_margin` auto-box refinement
 - DFT planes, flux monitors, and NTFF
@@ -89,6 +95,8 @@ physical R/T or S-parameter benchmark:
 - current tolerance: amplitude error `<= 5%`, phase error `<= 5°`
 - additional internal arbitrary-box proxy fixtures live in
   `tests/test_sbp_sat_box_crossval.py`
+- bounded CPML absorbing proxy fixtures live in
+  `tests/test_sbp_sat_absorbing_crossval.py`
 
 That evidence is enough to keep the lane visible as experimental research, but
 not enough to promote it into the claims-bearing public surface.
@@ -99,9 +107,10 @@ If you need a practical thin-substrate workflow today, start with
 [Non-Uniform Mesh](../nonuniform-mesh/), which is the preserved shadow lane for
 that job shape.
 
-If you need physical reflection / transmission, absorbing-boundary coexistence,
-or advanced refined-region ports/observables, treat SBP-SAT subgridding as a
-future roadmap item rather than a current public feature.
+If you need physical reflection / transmission, calibrated S-parameters,
+UPML, mixed CPML+periodic, mixed CPML+reflector, or advanced refined-region
+ports/observables, treat SBP-SAT subgridding as a future roadmap item rather
+than a current public feature.
 
 ## Roadmap note
 

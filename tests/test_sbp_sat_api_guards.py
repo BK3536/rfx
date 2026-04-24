@@ -7,10 +7,44 @@ from rfx import Simulation
 from rfx.boundaries.spec import Boundary, BoundarySpec
 
 
-def test_subgrid_touching_cpml_fails():
-    sim = Simulation(freq_max=5e9, domain=(0.04, 0.04, 0.04), boundary="cpml", dx=2e-3)
-    with pytest.raises(ValueError, match="does not yet support absorbing BoundarySpec faces|boundary='pec' only"):
-        sim.add_refinement(z_range=(0.01, 0.03), ratio=3)
+def test_subgrid_rejects_cpml_box_inside_absorber_guard():
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary="cpml",
+        cpml_layers=4,
+        dx=2e-3,
+    )
+    with pytest.raises(ValueError, match="CPML requires the refinement box.*guard"):
+        sim.add_refinement(
+            x_range=(0.006, 0.028),
+            y_range=(0.012, 0.028),
+            z_range=(0.012, 0.028),
+            ratio=2,
+        )
+
+
+def test_subgrid_accepts_interior_cpml_absorbing_subset():
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary="cpml",
+        cpml_layers=2,
+        dx=2e-3,
+    )
+    sim.add_refinement(
+        x_range=(0.012, 0.028),
+        y_range=(0.012, 0.028),
+        z_range=(0.012, 0.028),
+        ratio=2,
+    )
+    sim.add_source(position=(0.020, 0.020, 0.020), component="ez")
+    sim.add_probe(position=(0.020, 0.020, 0.024), component="ez")
+    result = sim.run(n_steps=40)
+
+    assert result.time_series.shape == (40, 1)
+    assert np.all(np.isfinite(np.asarray(result.time_series)))
+    assert float(np.max(np.abs(np.asarray(result.time_series)))) > 0.0
 
 
 def test_subgrid_accepts_all_pec_boundaryspec():
@@ -94,15 +128,13 @@ def test_subgrid_rejects_periodic_axis_touched_on_one_side_only():
         boundary=BoundarySpec(x="periodic", y="pec", z="pec"),
         dx=2e-3,
     )
-    sim.add_refinement(
-        x_range=(0.0, 0.028),
-        y_range=(0.012, 0.028),
-        z_range=(0.012, 0.028),
-        ratio=2,
-    )
-
     with pytest.raises(ValueError, match="periodic axis.*one side"):
-        sim.run(n_steps=5)
+        sim.add_refinement(
+            x_range=(0.0, 0.028),
+            y_range=(0.012, 0.028),
+            z_range=(0.012, 0.028),
+            ratio=2,
+        )
 
 
 def test_subgrid_rejects_mixed_pmc_periodic_boundaryspec():
@@ -119,6 +151,25 @@ def test_subgrid_rejects_mixed_pmc_periodic_boundaryspec():
 
     with pytest.raises(ValueError, match="mixed PMC \\+ periodic"):
         sim.add_refinement(z_range=(0.01, 0.03), ratio=2)
+
+
+
+
+def test_subgrid_rejects_mixed_periodic_cpml_boundaryspec():
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary=BoundarySpec(x="periodic", y="pec", z="cpml"),
+        cpml_layers=2,
+        dx=2e-3,
+    )
+    with pytest.raises(ValueError, match=r"periodic \+ CPML"):
+        sim.add_refinement(
+            x_range=(0.012, 0.028),
+            y_range=(0.012, 0.028),
+            z_range=(0.012, 0.028),
+            ratio=2,
+        )
 
 
 def test_all_pec_box_refinement_runs():
@@ -142,26 +193,57 @@ def test_all_pec_box_refinement_runs():
     assert float(np.max(np.abs(np.asarray(result.time_series)))) > 0.0
 
 
+def test_subgrid_accepts_boundaryspec_cpml_absorbing_subset():
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary=BoundarySpec.uniform("cpml"),
+        cpml_layers=2,
+        dx=2e-3,
+    )
+    sim.add_refinement(
+        x_range=(0.012, 0.028),
+        y_range=(0.012, 0.028),
+        z_range=(0.012, 0.028),
+        ratio=2,
+    )
+    sim.add_source(position=(0.020, 0.020, 0.018), component="ez")
+    sim.add_probe(position=(0.020, 0.020, 0.024), component="ez")
+    result = sim.run(n_steps=40)
+
+    assert result.time_series.shape == (40, 1)
+    assert np.all(np.isfinite(np.asarray(result.time_series)))
+
+
 @pytest.mark.parametrize(
-    "boundary",
+    ("boundary", "message"),
     [
-        BoundarySpec(x="pec", y="pec", z=Boundary(lo="pec", hi="cpml")),
-        BoundarySpec(x=Boundary(lo="pmc", hi="cpml"), y="pec", z="pec"),
-        BoundarySpec(
-            x="pec",
-            y="pec",
-            z=Boundary(lo="cpml", hi="pec", lo_thickness=4),
+        (
+            BoundarySpec(x="pec", y="pec", z=Boundary(lo="pec", hi="cpml")),
+            r"mixed reflector \+ CPML",
+        ),
+        (
+            BoundarySpec(x=Boundary(lo="pmc", hi="cpml"), y="pec", z="pec"),
+            r"mixed reflector \+ CPML",
+        ),
+        (
+            BoundarySpec(
+                x="pec",
+                y="pec",
+                z=Boundary(lo="cpml", hi="pec", lo_thickness=4),
+            ),
+            "per-face CPML thickness overrides",
         ),
     ],
 )
-def test_subgrid_rejects_non_pec_boundaryspec(boundary):
+def test_subgrid_rejects_unsupported_absorbing_boundaryspec(boundary, message):
     sim = Simulation(
         freq_max=5e9,
         domain=(0.04, 0.04, 0.04),
         boundary=boundary,
         dx=2e-3,
     )
-    with pytest.raises(ValueError, match="does not yet support absorbing BoundarySpec faces"):
+    with pytest.raises(ValueError, match=message):
         sim.add_refinement(z_range=(0.01, 0.03), ratio=3)
 
 
