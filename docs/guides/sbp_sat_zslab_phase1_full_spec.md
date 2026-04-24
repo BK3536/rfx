@@ -669,7 +669,8 @@ reflection/transmission validation.
 **Deliverables:**
 
 - Port-support RFC for impedance point ports, wire/extent ports, coaxial ports,
-  waveguide ports, and Floquet ports.
+  waveguide ports, and Floquet ports in
+  `docs/guides/sbp_sat_ports_observables_rfc.md`.
 - Source normalization contract for fine-grid material and loss values.
 - Probe/DFT/NTFF placement rules across coarse/fine regions.
 
@@ -677,6 +678,8 @@ reflection/transmission validation.
 
 - Each supported port/observable has positive tests and at least one
   unsupported-placement failure test.
+- `tests/test_sbp_sat_ports_observables_spec_contract.py` locks the RFC
+  artifact.
 
 #### Milestone 8 — Materials, dispersion, and time integration
 
