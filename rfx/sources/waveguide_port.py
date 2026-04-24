@@ -664,7 +664,13 @@ def init_waveguide_port(
         z_lo, z_hi = 0, 0
 
     nf = len(freqs)
-    zeros_c = jnp.zeros(nf, dtype=jnp.complex64)
+    # Canonical complex dtype: complex64 in default precision, complex128
+    # under JAX_ENABLE_X64. Hard-coding complex64 here while the scan body
+    # promotes (cfg.freqs is the user's `freqs` array — float64 under x64,
+    # so `exp(-1j * 2π * freqs * t)` is complex128) breaks the lax.scan
+    # carry-type contract on accuracy-first runs (crossval/11 invocation
+    # JAX_ENABLE_X64=1 raised "carry input complex64 vs output complex128").
+    zeros_c = jnp.zeros(nf, dtype=jnp.array(0j).dtype)
 
     # Precompute companion H waveform for TFSF-style E correction.
     # For a forward-only wave whose E-amplitude at x_src matches the source
@@ -1705,7 +1711,8 @@ class OverlapDFTAccumulators(NamedTuple):
 def init_overlap_dft(freqs: jnp.ndarray) -> OverlapDFTAccumulators:
     """Initialize zero-valued overlap DFT accumulators."""
     nf = len(freqs)
-    zeros_c = jnp.zeros(nf, dtype=jnp.complex64)
+    # Canonical complex dtype — see init_waveguide_port for rationale.
+    zeros_c = jnp.zeros(nf, dtype=jnp.array(0j).dtype)
     return OverlapDFTAccumulators(
         p1_ref_dft=zeros_c,
         p2_ref_dft=zeros_c,
