@@ -686,7 +686,8 @@ reflection/transmission validation.
 **Deliverables:**
 
 - Material-scaled SAT penalty policy for lossy, magnetic, Debye, Lorentz,
-  anisotropic, and nonlinear materials.
+  anisotropic, and nonlinear materials in
+  `docs/guides/sbp_sat_materials_time_integration_rfc.md`.
 - CFL/sub-stepping decision record.
 - Discrete energy estimate for accepted material/time-integration cases.
 - Benchmark ladder that separates material error from interface error.
@@ -695,6 +696,8 @@ reflection/transmission validation.
 
 - Any material or sub-stepping expansion has a spec, implementation plan, and
   benchmark gate before support matrix promotion.
+- `tests/test_sbp_sat_materials_time_integration_spec_contract.py` locks the
+  RFC artifact.
 
 #### Milestone 9 — Public support promotion
 
