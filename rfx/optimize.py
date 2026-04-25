@@ -85,6 +85,7 @@ def optimize(
     design_mask: jnp.ndarray | None = None,
     distributed: bool = False,
     port_s11_freqs: object | None = None,
+    checkpoint_segments: int | None = None,
 ) -> OptimizeResult:
     """Run gradient-based optimization on a design region.
 
@@ -118,6 +119,12 @@ def optimize(
         JIT scan body so that ``result.s_params`` is populated with
         wave-decomposition |S11| values.  Required when the objective is
         :func:`minimize_s11_at_freq_wave_decomp` (issue #72).
+    checkpoint_segments : int or None
+        If set, route ``sim.forward`` through the segmented-checkpoint
+        path (issue #73) which trades ≈2× compute for ≈√n_steps memory.
+        Must divide ``n_steps``; useful when ``n_steps`` is large enough
+        that the linear-memory scan would OOM.  ``None`` (default)
+        preserves the legacy per-step ``jax.checkpoint`` behaviour.
 
     Returns
     -------
@@ -206,6 +213,7 @@ def optimize(
             pec_mask_override=base_pec_mask,
             n_steps=_n_steps,
             checkpoint=True,
+            checkpoint_segments=checkpoint_segments,
             checkpoint_every=checkpoint_every,
             emit_time_series=emit_time_series,
             n_warmup=n_warmup,
