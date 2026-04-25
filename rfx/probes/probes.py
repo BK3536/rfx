@@ -828,6 +828,43 @@ def extract_s_matrix(
     return S
 
 
+def extract_lumped_s11(
+    v_dft: jnp.ndarray,
+    i_dft: jnp.ndarray,
+    z0: float = 50.0,
+) -> jnp.ndarray:
+    """S11 from accumulated V/I DFTs at a single-cell lumped port (issue #72).
+
+    Wave decomposition with FDTD sign convention (V = -E·dx):
+
+        a = (-V + Z0·I) / (2·√Z0)        # incident (into DUT)
+        b = (-V - Z0·I) / (2·√Z0)        # reflected (out of DUT)
+        S11 = b / a = (V + Z0·I) / (V - Z0·I)
+
+    Equivalent to ``extract_s11`` but operates on raw DFT arrays produced
+    by the JIT-integrated lumped-port path
+    (``SimResult.lumped_port_sparams``), enabling AD-friendly objectives
+    on ``Simulation.forward()`` without the time-gating heuristic of
+    ``minimize_s11_at_freq``.
+
+    Parameters
+    ----------
+    v_dft : (n_freqs,) complex
+        Accumulated port voltage DFT (FDTD sign convention).
+    i_dft : (n_freqs,) complex
+        Accumulated port current DFT.
+    z0 : float
+        Reference impedance (ohms). Default 50.
+
+    Returns
+    -------
+    s11 : (n_freqs,) complex
+    """
+    denom = v_dft - z0 * i_dft
+    safe_denom = jnp.where(jnp.abs(denom) > 0.0, denom, jnp.ones_like(denom))
+    return (v_dft + z0 * i_dft) / safe_denom
+
+
 def extract_s11_normalised(probe: SParamProbe, z0: float = 50.0) -> jnp.ndarray:
     """Compute S11 normalised against the incident source DFT.
 

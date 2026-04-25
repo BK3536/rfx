@@ -475,7 +475,23 @@ def minimize_s11_at_freq(
     Returns
     -------
     callable(Result) -> scalar (JAX-differentiable)
+
+    .. deprecated::
+        The time-gating heuristic fails for short-round-trip antennas
+        (DRA, thin-substrate patches) where source pulse and reflection
+        overlap. Prefer :func:`minimize_s11_at_freq_wave_decomp` together
+        with ``Simulation.forward(port_s11_freqs=...)`` (issue #72).
     """
+    import warnings as _w
+    _w.warn(
+        "minimize_s11_at_freq uses a time-gating heuristic that is biased "
+        "for short-round-trip antennas (issue #72). Prefer "
+        "minimize_s11_at_freq_wave_decomp + "
+        "Simulation.forward(port_s11_freqs=...).",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     def objective(result) -> jnp.ndarray:
         _require_time_series(result, "minimize_s11_at_freq")
         ts = result.time_series[:, port_probe_idx]
@@ -501,6 +517,58 @@ def minimize_s11_at_freq(
         power_refl = X_refl_re ** 2 + X_refl_im ** 2
         power_inc = X_inc_re ** 2 + X_inc_im ** 2
         return power_refl / (power_inc + 1e-30)
+
+    return objective
+
+
+def minimize_s11_at_freq_wave_decomp(
+    target_freq: float,
+    port_idx: int = 0,
+) -> Callable:
+    """Single-frequency |S11|² objective via V/I wave decomposition (issue #72).
+
+    Reads ``result.s_params`` populated by
+    ``Simulation.forward(port_s11_freqs=...)`` (which uses the
+    JIT-integrated lumped port DFT path) and returns ``|S11(f)|²`` at the
+    nearest stored frequency.  The wave decomposition
+
+        a = (-V + Z0·I) / (2·√Z0)        # incident
+        b = (-V - Z0·I) / (2·√Z0)        # reflected
+        S11 = b / a
+
+    is exact: there is no source-pulse-vs-reflection separability
+    assumption, so it works for short-round-trip antennas (DRA,
+    thin-substrate patches) where the legacy
+    :func:`minimize_s11_at_freq` is biased.
+
+    Parameters
+    ----------
+    target_freq : float
+        Frequency of interest (Hz).
+    port_idx : int
+        Index into the port list (default 0 = first lumped port).
+
+    Returns
+    -------
+    callable(ForwardResult) -> scalar (JAX-differentiable)
+    """
+    def objective(result) -> jnp.ndarray:
+        s_params = getattr(result, "s_params", None)
+        freqs = getattr(result, "freqs", None)
+        if s_params is None or freqs is None:
+            raise ValueError(
+                "minimize_s11_at_freq_wave_decomp requires forward(...) "
+                "to be called with port_s11_freqs=... so that "
+                "result.s_params / result.freqs are populated. See "
+                "issue #72."
+            )
+        if s_params.ndim == 1:
+            s11 = s_params
+        else:
+            s11 = s_params[port_idx]
+        idx = jnp.argmin(jnp.abs(freqs - float(target_freq)))
+        s_at = s11[idx]
+        return jnp.real(s_at) ** 2 + jnp.imag(s_at) ** 2
 
     return objective
 

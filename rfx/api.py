@@ -4275,6 +4275,7 @@ class Simulation:
         checkpoint: bool = True,
         pec_mask: jnp.ndarray | None = None,
         pec_occupancy: jnp.ndarray | None = None,
+        port_s11_freqs: object | None = None,
     ) -> ForwardResult:
         """Run a minimal differentiable forward path from explicit materials."""
         if self._solver == "adi":
@@ -4294,6 +4295,7 @@ class Simulation:
             make_probe,
             make_port_source,
             make_wire_port_sources,
+            LumpedPortSParamSpec,
         )
         from rfx.sources.sources import (
             LumpedPort,
@@ -4307,6 +4309,12 @@ class Simulation:
         probes = []
         pec_mask_local = pec_mask
         pec_occupancy_local = pec_occupancy
+        lumped_port_sparam_specs: list = []
+        # Resolve a freq array once for downstream auto-build (issue #72)
+        if port_s11_freqs is not None:
+            _s11_freqs_arr = jnp.asarray(port_s11_freqs, dtype=jnp.float32)
+        else:
+            _s11_freqs_arr = None
 
         for pe in self._ports:
             if pe.impedance == 0.0:
@@ -4353,6 +4361,17 @@ class Simulation:
                 pec_mask_local = pec_mask_local.at[idx[0], idx[1], idx[2]].set(False)
             if pec_occupancy_local is not None:
                 pec_occupancy_local = pec_occupancy_local.at[idx[0], idx[1], idx[2]].set(0.0)
+            # Register a JIT-integrated S-param accumulator for this
+            # lumped port when the user requested forward(port_s11_freqs=...)
+            # (issue #72). Skipping passive ports keeps S11 indexing
+            # aligned with the active-port list.
+            if _s11_freqs_arr is not None:
+                lumped_port_sparam_specs.append(LumpedPortSParamSpec(
+                    i=int(idx[0]), j=int(idx[1]), k=int(idx[2]),
+                    component=pe.component,
+                    freqs=_s11_freqs_arr,
+                    impedance=float(pe.impedance),
+                ))
 
         for pe in self._probes:
             probes.append(make_probe(grid, pe.position, pe.component))
@@ -4438,15 +4457,29 @@ class Simulation:
             checkpoint=checkpoint,
             pec_mask=pec_mask_local,
             pec_occupancy=pec_occupancy_local,
+            lumped_port_sparams=lumped_port_sparam_specs or None,
             return_state=False,
         )
+
+        s_params_out = getattr(result, "s_params", None)
+        freqs_out = getattr(result, "freqs", None)
+        if result.lumped_port_sparams:
+            from rfx.probes.probes import extract_lumped_s11
+            s_list = []
+            for spec, accs in result.lumped_port_sparams:
+                v_dft, i_dft = accs
+                s_list.append(extract_lumped_s11(v_dft, i_dft, z0=spec.impedance))
+            # Stacked as (n_ports, n_freqs); single-port shapes (n_freqs,).
+            s_params_out = s_list[0] if len(s_list) == 1 else jnp.stack(s_list, axis=0)
+            freqs_out = result.lumped_port_sparams[0][0].freqs
+
         return ForwardResult(
             time_series=result.time_series,
             ntff_data=result.ntff_data,
             ntff_box=result.ntff_box,
             grid=result.grid,
-            s_params=getattr(result, "s_params", None),
-            freqs=getattr(result, "freqs", None),
+            s_params=s_params_out,
+            freqs=freqs_out,
         )
 
     def _forward_nonuniform_from_materials(
@@ -4898,6 +4931,7 @@ class Simulation:
         distributed: bool = False,
         devices: list | None = None,
         exchange_interval: int = 1,
+        port_s11_freqs: object | None = None,
     ) -> ForwardResult:
         """Run a minimal differentiable forward simulation.
 
@@ -4987,6 +5021,21 @@ class Simulation:
             or self._dx_profile is not None
             or self._dy_profile is not None
         )
+
+        # Issue #72: forward(port_s11_freqs=...) is currently wired only on
+        # the uniform single-device path. Reject loudly elsewhere so users
+        # don't get a silent s_params=None.
+        if port_s11_freqs is not None and (distributed or (
+            self._dz_profile is not None
+            or self._dx_profile is not None
+            or self._dy_profile is not None
+        )):
+            raise NotImplementedError(
+                "forward(port_s11_freqs=...) is currently wired only on the "
+                "uniform single-device forward path (issue #72). Drop "
+                "port_s11_freqs or run on a uniform mesh without "
+                "distributed=True."
+            )
 
         # Phase 3: distributed dispatch (V3 lines 842-847).
         if distributed:
@@ -5110,6 +5159,7 @@ class Simulation:
             checkpoint=checkpoint,
             pec_mask=pec_mask,
             pec_occupancy=pec_occupancy_override,
+            port_s11_freqs=port_s11_freqs,
         )
 
     # ---- run ----

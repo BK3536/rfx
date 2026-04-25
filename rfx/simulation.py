@@ -67,6 +67,39 @@ class WirePortSParamSpec(NamedTuple):
     impedance: float
 
 
+class LumpedPortSParamSpec(NamedTuple):
+    """Lumped port S-param DFT specification for the compiled runner.
+
+    Pre-computed metadata for inline V/I DFT accumulation inside
+    jax.lax.scan, providing an AD-compatible alternative to the
+    Python-loop ``extract_s_matrix`` path for single-cell lumped ports.
+
+    Attributes
+    ----------
+    i, j, k : int
+        Lumped port cell index.
+    component : str
+        E-field component ("ex", "ey", or "ez").
+    freqs : (n_freqs,) jnp.ndarray
+        Frequencies (Hz) at which to accumulate V and I DFTs.
+    impedance : float
+        Port reference impedance Z0 (ohms).
+
+    Notes
+    -----
+    V is sampled as ``-E·dx`` and I as the curl-H loop integral times
+    ``dx`` at the port cell.  S11 is computed post-hoc via the wave
+    decomposition ``a = (-V + Z0·I)/(2√Z0)``, ``b = (-V - Z0·I)/(2√Z0)``,
+    ``S11 = b/a`` — exact, no time-gating heuristic.  Issue #72.
+    """
+    i: int
+    j: int
+    k: int
+    component: str
+    freqs: jnp.ndarray
+    impedance: float
+
+
 class SimResult(NamedTuple):
     """Compiled simulation output.
 
@@ -80,6 +113,9 @@ class SimResult(NamedTuple):
         Final accumulated waveguide-port configs.
     wire_port_sparams : tuple | None
         Final V/I/V_inc DFT accumulators for wire port S-params.
+    lumped_port_sparams : tuple | None
+        Final V/I DFT accumulators for lumped port S-params (issue #72).
+        Each entry is ``(LumpedPortSParamSpec, (v_dft, i_dft))``.
     snapshots : dict[str, ndarray] or None
         Field snapshots keyed by component name.
     ntff_box : NTFFBox or None
@@ -94,6 +130,7 @@ class SimResult(NamedTuple):
     flux_monitors: tuple | None = None
     waveguide_ports: tuple | None = None
     wire_port_sparams: tuple | None = None
+    lumped_port_sparams: tuple | None = None
     snapshots: dict | None = None
     ntff_box: object = None
     grid: Grid | None = None
@@ -403,6 +440,7 @@ def run(
     pec_occupancy: object | None = None,
     conformal_weights: tuple | None = None,
     wire_port_sparams: list | None = None,
+    lumped_port_sparams: list | None = None,
     lumped_rlc: list | None = None,
     kerr_chi3: jnp.ndarray | None = None,
     field_dtype=None,
@@ -513,6 +551,8 @@ def run(
     use_conformal = conformal_weights is not None
     wire_port_sparams = wire_port_sparams or []
     use_wire_sparams = len(wire_port_sparams) > 0
+    lumped_port_sparams = lumped_port_sparams or []
+    use_lumped_sparams = len(lumped_port_sparams) > 0
     lumped_rlc = lumped_rlc or []
     use_lumped_rlc = len(lumped_rlc) > 0
     use_kerr = kerr_chi3 is not None
@@ -634,6 +674,20 @@ def run(
             for wp in wire_port_sparams
         )
         wire_sparam_meta = tuple(wire_port_sparams)
+
+    if use_lumped_sparams:
+        # Initialize V, I DFT accumulators per lumped port (issue #72).
+        # No V_inc accumulator is needed: the wave decomposition
+        # ``a = (-V + Z0·I)/(2√Z0)`` is exact regardless of source pulse
+        # shape (this is the whole point — no time-gating heuristic).
+        carry_init["lumped_sparam_accs"] = tuple(
+            (
+                jnp.zeros(len(lp.freqs), dtype=jnp.complex64),  # v_dft
+                jnp.zeros(len(lp.freqs), dtype=jnp.complex64),  # i_dft
+            )
+            for lp in lumped_port_sparams
+        )
+        lumped_sparam_meta = tuple(lumped_port_sparams)
 
     if use_lumped_rlc:
         from rfx.lumped import init_rlc_state, update_rlc_element
@@ -795,6 +849,31 @@ def run(
                     vinc_dft,
                 ))
 
+        # Lumped port S-param DFT accumulation BEFORE source injection
+        # (issue #72).  Same wave-decomposition pattern as the wire-port
+        # path but for single-cell lumped ports.
+        if use_lumped_sparams:
+            new_lumped_accs = []
+            for accs, lp_meta in zip(carry["lumped_sparam_accs"], lumped_sparam_meta):
+                v_dft_l, i_dft_l = accs
+                li, lj, lk = lp_meta.i, lp_meta.j, lp_meta.k
+                v_l = -getattr(st, lp_meta.component)[li, lj, lk] * dx
+                if lp_meta.component == "ez":
+                    i_val_l = (st.hy[li,lj,lk] - st.hy[li-1,lj,lk]
+                               - st.hx[li,lj,lk] + st.hx[li,lj-1,lk]) * dx
+                elif lp_meta.component == "ex":
+                    i_val_l = (st.hz[li,lj,lk] - st.hz[li,lj-1,lk]
+                               - st.hy[li,lj,lk] + st.hy[li,lj,lk-1]) * dx
+                else:
+                    i_val_l = (st.hx[li,lj,lk] - st.hx[li,lj,lk-1]
+                               - st.hz[li,lj,lk] + st.hz[li-1,lj,lk]) * dx
+                t_f64 = t.astype(jnp.float64) if hasattr(t, 'astype') else jnp.float64(t)
+                phase_l = jnp.exp(-1j * 2.0 * jnp.pi * lp_meta.freqs.astype(jnp.float64) * t_f64).astype(jnp.complex64) * dt
+                new_lumped_accs.append((
+                    v_dft_l + v_l * phase_l,
+                    i_dft_l + i_val_l * phase_l,
+                ))
+
         # Soft sources — cast source value to field dtype to avoid
         # mixed-precision scatter warnings (float32 -> float16).
         for idx_s, (si, sj, sk, sc) in enumerate(src_meta):
@@ -934,6 +1013,8 @@ def run(
             new_carry["waveguide_port_accs"] = tuple(new_waveguide_port_accs)
         if use_wire_sparams:
             new_carry["wire_sparam_accs"] = tuple(new_wire_accs)
+        if use_lumped_sparams:
+            new_carry["lumped_sparam_accs"] = tuple(new_lumped_accs)
         if use_lumped_rlc:
             new_carry["rlc_states"] = tuple(new_rlc_states)
 
@@ -987,6 +1068,13 @@ def run(
             for wp_meta, accs in zip(wire_sparam_meta, final_carry["wire_sparam_accs"])
         )
 
+    final_lumped_sparams = None
+    if use_lumped_sparams:
+        final_lumped_sparams = tuple(
+            (lp_meta, accs)
+            for lp_meta, accs in zip(lumped_sparam_meta, final_carry["lumped_sparam_accs"])
+        )
+
     return SimResult(
         state=final_carry["fdtd"] if return_state else None,
         time_series=time_series,
@@ -995,6 +1083,7 @@ def run(
         flux_monitors=final_flux_monitors,
         waveguide_ports=final_waveguide_ports,
         wire_port_sparams=final_wire_sparams,
+        lumped_port_sparams=final_lumped_sparams,
         snapshots=snapshots,
         ntff_box=ntff,
         grid=grid,
@@ -1035,6 +1124,7 @@ def run_until_decay(
     pec_occupancy: object | None = None,
     conformal_weights: tuple | None = None,
     wire_port_sparams: list | None = None,
+    lumped_port_sparams: list | None = None,
     lumped_rlc: list | None = None,
     kerr_chi3: jnp.ndarray | None = None,
     field_dtype=None,
@@ -1125,6 +1215,8 @@ def run_until_decay(
     use_conformal = conformal_weights is not None
     wire_port_sparams = wire_port_sparams or []
     use_wire_sparams = len(wire_port_sparams) > 0
+    lumped_port_sparams = lumped_port_sparams or []
+    use_lumped_sparams = len(lumped_port_sparams) > 0
     lumped_rlc = lumped_rlc or []
     use_lumped_rlc = len(lumped_rlc) > 0
     use_kerr_decay = kerr_chi3 is not None
@@ -1198,6 +1290,17 @@ def run_until_decay(
             for wp in wire_port_sparams
         )
         wire_sparam_meta = tuple(wire_port_sparams)
+
+    if use_lumped_sparams:
+        # Initialize V, I DFT accumulators per lumped port (issue #72).
+        carry["lumped_sparam_accs"] = tuple(
+            (
+                jnp.zeros(len(lp.freqs), dtype=jnp.complex64),  # v_dft
+                jnp.zeros(len(lp.freqs), dtype=jnp.complex64),  # i_dft
+            )
+            for lp in lumped_port_sparams
+        )
+        lumped_sparam_meta = tuple(lumped_port_sparams)
 
     if use_flux_monitors:
         from rfx.probes.probes import _FLUX_COMPONENTS as _FC_decay
@@ -1373,6 +1476,29 @@ def run_until_decay(
                     vinc_dft,
                 ))
 
+        # Lumped port S-param DFT accumulation (issue #72).
+        if use_lumped_sparams:
+            new_lumped_accs = []
+            for accs, lp_meta in zip(carry_in["lumped_sparam_accs"], lumped_sparam_meta):
+                v_dft_l, i_dft_l = accs
+                li, lj, lk = lp_meta.i, lp_meta.j, lp_meta.k
+                v_l = -getattr(st, lp_meta.component)[li, lj, lk] * dx
+                if lp_meta.component == "ez":
+                    i_val_l = (st.hy[li,lj,lk] - st.hy[li-1,lj,lk]
+                               - st.hx[li,lj,lk] + st.hx[li,lj-1,lk]) * dx
+                elif lp_meta.component == "ex":
+                    i_val_l = (st.hz[li,lj,lk] - st.hz[li,lj-1,lk]
+                               - st.hy[li,lj,lk] + st.hy[li,lj,lk-1]) * dx
+                else:
+                    i_val_l = (st.hx[li,lj,lk] - st.hx[li,lj,lk-1]
+                               - st.hz[li,lj,lk] + st.hz[li-1,lj,lk]) * dx
+                t_f64 = t.astype(jnp.float64) if hasattr(t, 'astype') else jnp.float64(t)
+                phase_l = jnp.exp(-1j * 2.0 * jnp.pi * lp_meta.freqs.astype(jnp.float64) * t_f64).astype(jnp.complex64) * dt
+                new_lumped_accs.append((
+                    v_dft_l + v_l * phase_l,
+                    i_dft_l + i_val_l * phase_l,
+                ))
+
         # Probe samples
         samples = [getattr(st, pc)[pi, pj, pk]
                    for pi, pj, pk, pc in prb_meta]
@@ -1459,6 +1585,8 @@ def run_until_decay(
             new_carry["waveguide_port_accs"] = tuple(new_waveguide_port_accs)
         if use_wire_sparams:
             new_carry["wire_sparam_accs"] = tuple(new_wire_accs)
+        if use_lumped_sparams:
+            new_carry["lumped_sparam_accs"] = tuple(new_lumped_accs)
         if use_lumped_rlc:
             new_carry["rlc_states"] = tuple(new_rlc_states)
 
@@ -1522,6 +1650,13 @@ def run_until_decay(
             for wp_meta, accs in zip(wire_sparam_meta, carry["wire_sparam_accs"])
         )
 
+    final_lumped_sparams = None
+    if use_lumped_sparams:
+        final_lumped_sparams = tuple(
+            (lp_meta, accs)
+            for lp_meta, accs in zip(lumped_sparam_meta, carry["lumped_sparam_accs"])
+        )
+
     final_flux_monitors = None
     if use_flux_monitors:
         final_flux_monitors = tuple(
@@ -1537,6 +1672,7 @@ def run_until_decay(
         flux_monitors=final_flux_monitors,
         waveguide_ports=final_waveguide_ports,
         wire_port_sparams=final_wire_sparams,
+        lumped_port_sparams=final_lumped_sparams,
         snapshots=None,
         ntff_box=ntff,
         grid=grid,
