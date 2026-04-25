@@ -101,21 +101,33 @@ def _passive_lumped_port_cells(port_metadata: object | None) -> tuple[tuple[int,
     )
 
 
-def _resolve_optimize_hybrid_context(
+def _resolve_optimize_hybrid_forward(
     sim,
     *,
     eps_r: jnp.ndarray,
     n_steps: int,
     adjoint_mode: str,
     design_bounds: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
+    strategy: str = "a",
+    checkpoint_every: int | None = None,
 ):
-    """Build the supported hybrid replay context once when optimize opts in."""
+    """Build the supported hybrid replay callable once when optimize opts in."""
     if adjoint_mode not in {"pure_ad", "hybrid", "auto"}:
         raise ValueError(
             f"adjoint_mode must be 'pure_ad', 'hybrid', or 'auto', got {adjoint_mode!r}"
         )
+    if strategy not in {"a", "strategy_a", "b", "strategy_b"}:
+        raise ValueError(
+            "strategy must be 'a', 'strategy_a', 'b', or 'strategy_b', "
+            f"got {strategy!r}"
+        )
+    strategy_key = "b" if strategy in {"b", "strategy_b"} else "a"
     if adjoint_mode == "pure_ad":
+        if strategy_key == "b" or checkpoint_every is not None:
+            raise ValueError("Strategy B optimize requires adjoint_mode='hybrid' or 'auto'")
         return None
+    if strategy_key == "a" and checkpoint_every is not None:
+        raise ValueError("checkpoint_every is only supported with strategy='b'")
 
     inputs, report = _inspect_optimize_hybrid_support(
         sim,
@@ -124,8 +136,34 @@ def _resolve_optimize_hybrid_context(
         design_bounds=design_bounds,
     )
     if report.supported:
-        return sim.build_hybrid_phase1_context_from_inputs(inputs)
-    if adjoint_mode == "hybrid":
+        if strategy_key == "b":
+            strategy_b_report = sim.inspect_hybrid_strategy_b_phase6_from_inputs(
+                inputs,
+                report=report,
+                checkpoint_every=checkpoint_every,
+            )
+            if strategy_b_report.supported:
+                def forward_strategy_b(eps_override):
+                    return sim.forward_hybrid_phase1_from_inputs(
+                        inputs,
+                        eps_override=eps_override,
+                        strategy="b",
+                        checkpoint_every=checkpoint_every,
+                    )
+
+                return forward_strategy_b
+            raise ValueError(strategy_b_report.reason_text)
+
+        context = sim.build_hybrid_phase1_context_from_inputs(inputs)
+
+        def forward_strategy_a(eps_override):
+            return sim.forward_hybrid_phase1_from_context(
+                context,
+                eps_override=eps_override,
+            )
+
+        return forward_strategy_a
+    if adjoint_mode == "hybrid" or strategy_key == "b":
         raise ValueError(report.reason_text)
     return None
 
@@ -186,6 +224,8 @@ def optimize(
     num_periods: float = 20.0,
     verbose: bool = True,
     adjoint_mode: str = "pure_ad",
+    strategy: str = "a",
+    checkpoint_every: int | None = None,
 ) -> OptimizeResult:
     """Run gradient-based optimization on a design region.
 
@@ -224,6 +264,12 @@ def optimize(
         families: it first inspects support, uses the hybrid seam only when
         inspection passes, and otherwise falls back to the current pure-AD
         path.
+    strategy : {"a", "strategy_a", "b", "strategy_b"}
+        Hybrid execution strategy used only when ``adjoint_mode`` opts into
+        hybrid routing.  Strategy B is explicit and requires
+        ``checkpoint_every``.
+    checkpoint_every : int or None
+        Segment size for explicit Strategy B replay.
 
     Returns
     -------
@@ -272,12 +318,14 @@ def optimize(
     base_mu_r = base_materials.mu_r
     _n_steps = n_steps if n_steps is not None else grid.num_timesteps(num_periods=num_periods)
     objective_accepts_ntff_box = "ntff_box" in inspect.signature(objective).parameters
-    hybrid_context = _resolve_optimize_hybrid_context(
+    hybrid_forward = _resolve_optimize_hybrid_forward(
         sim,
         eps_r=base_eps_r,
         n_steps=_n_steps,
         adjoint_mode=adjoint_mode,
         design_bounds=(lo_idx, hi_idx),
+        strategy=strategy,
+        checkpoint_every=checkpoint_every,
     )
 
     # Adam state
@@ -302,8 +350,8 @@ def optimize(
             print(f"  optimize: n_steps={_n_steps}, grid={grid.shape} "
                   f"({cells/1e6:.1f}M cells)")
 
-        if hybrid_context is not None:
-            result = sim.forward_hybrid_phase1_from_context(hybrid_context, eps_override=eps_r)
+        if hybrid_forward is not None:
+            result = hybrid_forward(eps_r)
         elif is_nonuniform:
             result = sim._forward_nonuniform_from_materials(
                 eps_override=eps_r,

@@ -3618,6 +3618,99 @@ class Simulation:
             )
         return tuple(dict.fromkeys(reasons))
 
+    def _phase6_strategy_b_inputs_reasons(
+        self,
+        inputs: "Phase1HybridInputs",
+        report: "Phase1HybridInspection",
+        *,
+        checkpoint_every: int | None,
+    ) -> tuple[str, ...]:
+        """Return fail-closed reasons for the Phase VI Strategy B input seam."""
+
+        reasons = list(report.reasons)
+        if checkpoint_every is None:
+            reasons.append("checkpoint_every is required for Phase VI Strategy B")
+        elif checkpoint_every <= 0:
+            reasons.append("checkpoint_every must be positive for Phase VI Strategy B")
+        if isinstance(inputs.grid, NonUniformGrid):
+            reasons.append("Phase VI Strategy B supports only uniform grids")
+        if inputs.boundary not in {"pec", "cpml"}:
+            reasons.append("Phase VI Strategy B supports only PEC/CPML boundaries")
+        if inputs.ntff_box is not None:
+            reasons.append("Phase VI Strategy B does not support NTFF/directivity workflows")
+        if inputs.debye_spec is not None or inputs.lorentz_spec is not None:
+            reasons.append("Phase VI Strategy B supports only lossless nondispersive materials")
+        if inputs.pec_mask is not None:
+            reasons.append("Phase VI Strategy B does not support pec_mask replay")
+        if inputs.pec_occupancy is not None:
+            reasons.append("Phase VI Strategy B does not support pec_occupancy/PEC topology replay")
+
+        port_metadata = inputs.port_metadata
+        total_ports = 0 if port_metadata is None else getattr(port_metadata, "total_ports", 0)
+        if total_ports > 0:
+            from rfx.hybrid_adjoint import (
+                _port_metadata_had_preexisting_pec,
+                _supports_phase2_lumped_port_proxy_subset,
+            )
+
+            if getattr(port_metadata, "soft_source_count", 0) > 0:
+                reasons.append(
+                    "Phase VI Strategy B port proxy does not support mixed add_source() and port excitation"
+                )
+            if not _supports_phase2_lumped_port_proxy_subset(port_metadata):
+                reasons.append(
+                    "Phase VI Strategy B port proxy supports exactly one excited lumped port "
+                    "with at most one passive lumped port"
+                )
+            if _port_metadata_had_preexisting_pec(port_metadata):
+                reasons.append("Phase VI Strategy B port proxy rejects pre-existing PEC at port cells")
+            if getattr(port_metadata, "design_region_overlaps_excited_port_cell", False):
+                reasons.append(
+                    "Phase VI Strategy B port proxy rejects design-region overlap with the excited port cell"
+                )
+            if getattr(port_metadata, "design_region_overlaps_passive_lumped_port_cell", False):
+                reasons.append(
+                    "Phase VI Strategy B port proxy rejects design-region overlap with a passive port cell"
+                )
+        elif (
+            inputs.materials is not None
+            and np.any(np.abs(np.asarray(inputs.materials.sigma)) > 0.0)
+        ):
+            reasons.append(
+                "Phase VI Strategy B supports conductivity only for the bounded lumped-port proxy"
+            )
+        return tuple(dict.fromkeys(reasons))
+
+    def inspect_hybrid_strategy_b_phase6_from_inputs(
+        self,
+        inputs: "Phase1HybridInputs",
+        *,
+        report: "Phase1HybridInspection | None" = None,
+        checkpoint_every: int | None = None,
+    ) -> "Phase1HybridInspection":
+        """Inspect the Phase VI inputs/prepared Strategy B runtime seam."""
+
+        if report is None:
+            report = self.inspect_hybrid_phase1_from_inputs(inputs)
+        reasons = self._phase6_strategy_b_inputs_reasons(
+            inputs,
+            report,
+            checkpoint_every=checkpoint_every,
+        )
+        if not reasons:
+            return report
+
+        from rfx.hybrid_adjoint import Phase1HybridInspection
+
+        return Phase1HybridInspection.unsupported(
+            reasons=reasons,
+            source_count=report.source_count,
+            probe_count=report.probe_count,
+            boundary=report.boundary,
+            periodic=report.periodic,
+            port_metadata=report.port_metadata,
+        )
+
     def inspect_hybrid_strategy_b_phase3(
         self,
         *,
@@ -4054,12 +4147,46 @@ class Simulation:
         inputs: "Phase1HybridInputs",
         *,
         eps_override: jnp.ndarray | None = None,
+        strategy: str = "a",
+        checkpoint_every: int | None = None,
     ) -> ForwardResult:
         """Execute the Phase 1 seam from the seam-owned input surface."""
 
-        from rfx.hybrid_adjoint import forward_phase1_hybrid_from_inputs
+        if strategy not in {"a", "strategy_a", "b", "strategy_b"}:
+            raise ValueError(
+                "strategy must be 'a', 'strategy_a', 'b', or 'strategy_b', "
+                f"got {strategy!r}"
+            )
+        strategy_key = "b" if strategy in {"b", "strategy_b"} else "a"
+        if strategy_key == "a":
+            if checkpoint_every is not None:
+                raise ValueError("checkpoint_every is only supported with strategy='b'")
+            from rfx.hybrid_adjoint import forward_phase1_hybrid_from_inputs
 
-        return forward_phase1_hybrid_from_inputs(inputs, eps_override)
+            return forward_phase1_hybrid_from_inputs(inputs, eps_override)
+
+        report = self.inspect_hybrid_strategy_b_phase6_from_inputs(
+            inputs,
+            checkpoint_every=checkpoint_every,
+        )
+        if not report.supported:
+            raise ValueError(report.reason_text)
+        assert checkpoint_every is not None
+
+        from rfx.hybrid_adjoint import (
+            _make_phase3_strategy_b_source_probe_forward,
+            phase1_forward_result,
+        )
+
+        context = self.build_hybrid_phase1_context_from_inputs(inputs)
+        forward = _make_phase3_strategy_b_source_probe_forward(
+            context,
+            checkpoint_every,
+        )
+        return phase1_forward_result(
+            context.grid,
+            forward(context.resolved_eps_r(eps_override)),
+        )
 
     def forward_hybrid_phase1_from_context(
         self,

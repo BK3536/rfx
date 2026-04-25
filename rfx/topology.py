@@ -531,8 +531,12 @@ def topology_optimize(
     learning_rate: float = 0.01,
     beta_schedule: list[tuple[int, float]] | None = None,
     init_density: jnp.ndarray | None = None,
+    n_steps: int | None = None,
+    num_periods: float = 20.0,
     verbose: bool = True,
     adjoint_mode: str = "pure_ad",
+    strategy: str = "a",
+    checkpoint_every: int | None = None,
 ) -> TopologyResult:
     """Run density-based topology optimization.
 
@@ -561,6 +565,11 @@ def topology_optimize(
     init_density : array or None
         Initial density field.  If None, initialized to 0.5 everywhere
         (uniform mixture of bg and fg materials).
+    n_steps : int or None
+        Number of simulation timesteps per topology iteration.  If None,
+        auto-computed from ``num_periods``.
+    num_periods : float
+        Periods at freq_max for auto n_steps (default 20).
     verbose : bool
         Print progress every 10 iterations.
     adjoint_mode : {"pure_ad", "hybrid", "auto"}
@@ -573,6 +582,12 @@ def topology_optimize(
         topology families: it first inspects support, uses the hybrid seam
         only when the Phase 4C support inspection passes, and otherwise falls
         back to the current pure-AD path.
+    strategy : {"a", "strategy_a", "b", "strategy_b"}
+        Hybrid execution strategy used only when ``adjoint_mode`` opts into
+        hybrid routing.  Strategy B is explicit and requires
+        ``checkpoint_every``.
+    checkpoint_every : int or None
+        Segment size for explicit Strategy B replay.
 
     Returns
     -------
@@ -662,23 +677,57 @@ def topology_optimize(
     history = []
     beta_history = []
 
-    n_steps = grid.num_timesteps(num_periods=20.0)
+    resolved_n_steps = n_steps if n_steps is not None else grid.num_timesteps(num_periods=num_periods)
     objective_accepts_ntff_box = "ntff_box" in inspect.signature(objective).parameters
-    hybrid_context = None
+    hybrid_forward = None
     if adjoint_mode not in {"pure_ad", "hybrid", "auto"}:
         raise ValueError(
             f"adjoint_mode must be 'pure_ad', 'hybrid', or 'auto', got {adjoint_mode!r}"
         )
+    if strategy not in {"a", "strategy_a", "b", "strategy_b"}:
+        raise ValueError(
+            "strategy must be 'a', 'strategy_a', 'b', or 'strategy_b', "
+            f"got {strategy!r}"
+        )
+    strategy_key = "b" if strategy in {"b", "strategy_b"} else "a"
+    if adjoint_mode == "pure_ad":
+        if strategy_key == "b" or checkpoint_every is not None:
+            raise ValueError("Strategy B topology optimization requires adjoint_mode='hybrid' or 'auto'")
+    elif strategy_key == "a" and checkpoint_every is not None:
+        raise ValueError("checkpoint_every is only supported with strategy='b'")
     if adjoint_mode != "pure_ad":
         inputs, report, *_ = _inspect_topology_hybrid_support(
             sim,
             design_region,
             init_density=init_density,
-            n_steps=n_steps,
+            n_steps=resolved_n_steps,
         )
         if report.supported:
-            hybrid_context = sim.build_hybrid_phase1_context_from_inputs(inputs)
-        elif adjoint_mode == "hybrid":
+            if strategy_key == "b":
+                strategy_b_report = sim.inspect_hybrid_strategy_b_phase6_from_inputs(
+                    inputs,
+                    report=report,
+                    checkpoint_every=checkpoint_every,
+                )
+                if strategy_b_report.supported:
+                    def hybrid_forward(eps_override):
+                        return sim.forward_hybrid_phase1_from_inputs(
+                            inputs,
+                            eps_override=eps_override,
+                            strategy="b",
+                            checkpoint_every=checkpoint_every,
+                        )
+                else:
+                    raise ValueError(strategy_b_report.reason_text)
+            else:
+                hybrid_context = sim.build_hybrid_phase1_context_from_inputs(inputs)
+
+                def hybrid_forward(eps_override):
+                    return sim.forward_hybrid_phase1_from_context(
+                        hybrid_context,
+                        eps_override=eps_override,
+                    )
+        elif adjoint_mode == "hybrid" or strategy_key == "b":
             raise ValueError(report.reason_text)
 
     def forward(logit_param, beta):
@@ -700,8 +749,8 @@ def topology_optimize(
         ei, ej, ek = hi_idx
         eps_r = base_eps_r.at[si:ei+1, sj:ej+1, sk:ek+1].set(fields.eps)
 
-        if hybrid_context is not None:
-            result = sim.forward_hybrid_phase1_from_context(hybrid_context, eps_override=eps_r)
+        if hybrid_forward is not None:
+            result = hybrid_forward(eps_r)
         else:
             materials, pec_occupancy = _build_topology_material_state(
                 base_eps_r,
@@ -716,7 +765,7 @@ def topology_optimize(
                 materials,
                 debye_spec,
                 lorentz_spec,
-                n_steps=n_steps,
+                n_steps=resolved_n_steps,
                 checkpoint=True,
                 pec_mask=base_pec_mask,
                 pec_occupancy=pec_occupancy,
