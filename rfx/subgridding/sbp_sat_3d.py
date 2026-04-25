@@ -25,10 +25,8 @@ from rfx.subgridding.face_ops import (
     build_zface_ops,
     prolong_edge,
     prolong_face,
-    prolong_zface,
     restrict_edge,
     restrict_face,
-    restrict_zface,
 )
 
 C0 = 1.0 / np.sqrt(EPS_0 * MU_0)
@@ -165,11 +163,12 @@ def _face_coarse_shape(config: SubgridConfig3D, face: str) -> tuple[int, int]:
 def _get_face_ops(config: SubgridConfig3D, face: str) -> ZFaceOps:
     coarse_shape = _face_coarse_shape(config, face)
     if coarse_shape[0] <= 0 or coarse_shape[1] <= 0:
-        raise ValueError(
-            f"Invalid face shape for {face}: coarse_shape={coarse_shape}"
-        )
+        raise ValueError(f"Invalid face shape for {face}: coarse_shape={coarse_shape}")
     if face.startswith("z") and config.face_ops is not None:
-        if config.face_ops.coarse_shape == coarse_shape and config.face_ops.ratio == config.ratio:
+        if (
+            config.face_ops.coarse_shape == coarse_shape
+            and config.face_ops.ratio == config.ratio
+        ):
             return config.face_ops
     return build_face_ops(coarse_shape, config.ratio, config.dx_c)
 
@@ -250,7 +249,9 @@ def phase1_3d_dt(dx_f: float) -> float:
     return PHASE1_3D_CFL * dx_f / (C0 * np.sqrt(3.0))
 
 
-def _default_fine_region(shape_c: tuple[int, int, int]) -> tuple[int, int, int, int, int, int]:
+def _default_fine_region(
+    shape_c: tuple[int, int, int],
+) -> tuple[int, int, int, int, int, int]:
     nx_c, ny_c, nz_c = shape_c
     fk_lo = max(1, nz_c // 3)
     fk_hi = min(nz_c - 1, max(fk_lo + 1, 2 * nz_c // 3))
@@ -331,7 +332,9 @@ def init_subgrid_3d(
     )
     validate_subgrid_config_3d(config)
 
-    z = lambda s: jnp.zeros(s, dtype=jnp.float32)
+    def z(s):
+        return jnp.zeros(s, dtype=jnp.float32)
+
     state = SubgridState3D(
         ex_c=z(shape_c),
         ey_c=z(shape_c),
@@ -361,7 +364,14 @@ def _make_mats(shape):
 
 
 def _update_h_only(
-    ex, ey, ez, hx, hy, hz, dt, dx,
+    ex,
+    ey,
+    ez,
+    hx,
+    hy,
+    hz,
+    dt,
+    dx,
     mats=None,
     periodic: tuple[bool, bool, bool] = (False, False, False),
     pmc_faces: frozenset[str] | None = None,
@@ -434,9 +444,14 @@ def sat_penalty_coefficients(ratio: int, tau: float) -> tuple[float, float]:
     alpha_c = tau * 1.0 / (ratio + 1.0)
     return float(alpha_c), float(alpha_f)
 
+
 _COMPONENT_INDEX = {
-    "ex": 0, "ey": 1, "ez": 2,
-    "hx": 0, "hy": 1, "hz": 2,
+    "ex": 0,
+    "ey": 1,
+    "ez": 2,
+    "hx": 0,
+    "hy": 1,
+    "hz": 2,
 }
 
 
@@ -461,7 +476,9 @@ def _active_faces(config: SubgridConfig3D) -> tuple[str, ...]:
 
 
 def _touching_outer_faces(config: SubgridConfig3D) -> frozenset[str]:
-    return frozenset(face for face in FACE_ORIENTATIONS if not _face_is_internal(config, face))
+    return frozenset(
+        face for face in FACE_ORIENTATIONS if not _face_is_internal(config, face)
+    )
 
 
 def _fixed_face_index(config: SubgridConfig3D, face: str, *, grid: str) -> int:
@@ -509,7 +526,9 @@ def _face_slice(config: SubgridConfig3D, face: str, *, grid: str) -> tuple:
     return tuple(parts)
 
 
-def _get_component(fields: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray], name: str) -> jnp.ndarray:
+def _get_component(
+    fields: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray], name: str
+) -> jnp.ndarray:
     return fields[_COMPONENT_INDEX[name]]
 
 
@@ -589,7 +608,9 @@ def scatter_tangential_h_face(
     return out
 
 
-def _face_interior_masks(coarse_shape: tuple[int, int], ratio: int) -> tuple[jnp.ndarray, jnp.ndarray]:
+def _face_interior_masks(
+    coarse_shape: tuple[int, int], ratio: int
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     coarse_mask = np.zeros(coarse_shape, dtype=np.float32)
     if coarse_shape[0] > 2 and coarse_shape[1] > 2:
         coarse_mask[1:-1, 1:-1] = 1.0
@@ -626,7 +647,11 @@ def _edge_slice(config: SubgridConfig3D, edge: str, *, grid: str) -> tuple:
         if ax == axis:
             parts[ax] = _full_axis_slice(config, ax, grid=grid)
         else:
-            face = meta.fixed_faces[0] if FACE_ORIENTATIONS[meta.fixed_faces[0]].normal_axis == ax else meta.fixed_faces[1]
+            face = (
+                meta.fixed_faces[0]
+                if FACE_ORIENTATIONS[meta.fixed_faces[0]].normal_axis == ax
+                else meta.fixed_faces[1]
+            )
             parts[ax] = _fixed_face_index(config, face, grid=grid)
     return tuple(parts)
 
@@ -656,10 +681,14 @@ def _scatter_edge_component(
     meta = EDGE_ORIENTATIONS[edge]
     comp = meta.e_component if field_type == "e" else meta.h_component
     arr = _get_component(fields, comp)
-    return _set_component(fields, comp, arr.at[_edge_slice(config, edge, grid=grid)].set(values))
+    return _set_component(
+        fields, comp, arr.at[_edge_slice(config, edge, grid=grid)].set(values)
+    )
 
 
-def _edge_interior_masks(coarse_size: int, ratio: int) -> tuple[jnp.ndarray, jnp.ndarray]:
+def _edge_interior_masks(
+    coarse_size: int, ratio: int
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     coarse_mask = np.zeros((coarse_size,), dtype=np.float32)
     if coarse_size > 2:
         coarse_mask[1:-1] = 1.0
@@ -686,9 +715,13 @@ def _apply_sat_pair_edge(
     )
 
 
-def _corner_index(config: SubgridConfig3D, corner: str, *, grid: str) -> tuple[int, int, int]:
+def _corner_index(
+    config: SubgridConfig3D, corner: str, *, grid: str
+) -> tuple[int, int, int]:
     meta = CORNER_ORIENTATIONS[corner]
-    return tuple(_fixed_face_index(config, face, grid=grid) for face in meta.fixed_faces)
+    return tuple(
+        _fixed_face_index(config, face, grid=grid) for face in meta.fixed_faces
+    )
 
 
 def _apply_sat_pair_scalar(
@@ -723,7 +756,8 @@ def _zero_coarse_overlap_interior(
 def _active_edges(config: SubgridConfig3D) -> tuple[str, ...]:
     faces = set(_active_faces(config))
     return tuple(
-        edge for edge, meta in EDGE_ORIENTATIONS.items()
+        edge
+        for edge, meta in EDGE_ORIENTATIONS.items()
         if meta.fixed_faces[0] in faces and meta.fixed_faces[1] in faces
     )
 
@@ -731,7 +765,8 @@ def _active_edges(config: SubgridConfig3D) -> tuple[str, ...]:
 def _active_corners(config: SubgridConfig3D) -> tuple[str, ...]:
     faces = set(_active_faces(config))
     return tuple(
-        corner for corner, meta in CORNER_ORIENTATIONS.items()
+        corner
+        for corner, meta in CORNER_ORIENTATIONS.items()
         if all(face in faces for face in meta.fixed_faces)
     )
 
@@ -740,7 +775,10 @@ def apply_sat_h_interfaces(
     coarse_fields: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
     fine_fields: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
     config: SubgridConfig3D,
-) -> tuple[tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]]:
+) -> tuple[
+    tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+    tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+]:
     """Apply SAT coupling to tangential H traces on active faces/edges/corners."""
 
     alpha_c, alpha_f = sat_penalty_coefficients(config.ratio, config.tau)
@@ -749,25 +787,41 @@ def apply_sat_h_interfaces(
     for face in _active_faces(config):
         ops = _get_face_ops(config, face)
         coarse_mask, fine_mask = _face_interior_masks(ops.coarse_shape, config.ratio)
-        hx_c_face, hy_c_face = extract_tangential_h_face(coarse, config, face, grid="coarse")
-        hx_f_face, hy_f_face = extract_tangential_h_face(fine, config, face, grid="fine")
+        hx_c_face, hy_c_face = extract_tangential_h_face(
+            coarse, config, face, grid="coarse"
+        )
+        hx_f_face, hy_f_face = extract_tangential_h_face(
+            fine, config, face, grid="fine"
+        )
         hx_c_face, hx_f_face = _apply_sat_pair_face(
             hx_c_face, hx_f_face, ops, alpha_c, alpha_f, coarse_mask, fine_mask
         )
         hy_c_face, hy_f_face = _apply_sat_pair_face(
             hy_c_face, hy_f_face, ops, alpha_c, alpha_f, coarse_mask, fine_mask
         )
-        coarse = scatter_tangential_h_face(coarse, (hx_c_face, hy_c_face), config, face, grid="coarse")
-        fine = scatter_tangential_h_face(fine, (hx_f_face, hy_f_face), config, face, grid="fine")
+        coarse = scatter_tangential_h_face(
+            coarse, (hx_c_face, hy_c_face), config, face, grid="coarse"
+        )
+        fine = scatter_tangential_h_face(
+            fine, (hx_f_face, hy_f_face), config, face, grid="fine"
+        )
 
     for edge in _active_edges(config):
         ops = _get_edge_ops(config, edge)
         coarse_mask, fine_mask = _edge_interior_masks(ops.coarse_size, config.ratio)
-        hc = _extract_edge_component(coarse, config, edge, grid="coarse", field_type="h")
+        hc = _extract_edge_component(
+            coarse, config, edge, grid="coarse", field_type="h"
+        )
         hf = _extract_edge_component(fine, config, edge, grid="fine", field_type="h")
-        hc, hf = _apply_sat_pair_edge(hc, hf, ops, alpha_c, alpha_f, coarse_mask, fine_mask)
-        coarse = _scatter_edge_component(coarse, hc, config, edge, grid="coarse", field_type="h")
-        fine = _scatter_edge_component(fine, hf, config, edge, grid="fine", field_type="h")
+        hc, hf = _apply_sat_pair_edge(
+            hc, hf, ops, alpha_c, alpha_f, coarse_mask, fine_mask
+        )
+        coarse = _scatter_edge_component(
+            coarse, hc, config, edge, grid="coarse", field_type="h"
+        )
+        fine = _scatter_edge_component(
+            fine, hf, config, edge, grid="fine", field_type="h"
+        )
 
     for corner in _active_corners(config):
         c_idx = _corner_index(config, corner, grid="coarse")
@@ -775,7 +829,9 @@ def apply_sat_h_interfaces(
         for comp in ("hx", "hy", "hz"):
             c_arr = _get_component(coarse, comp)
             f_arr = _get_component(fine, comp)
-            c_val, f_val = _apply_sat_pair_scalar(c_arr[c_idx], f_arr[f_idx], alpha_c, alpha_f)
+            c_val, f_val = _apply_sat_pair_scalar(
+                c_arr[c_idx], f_arr[f_idx], alpha_c, alpha_f
+            )
             coarse = _set_component(coarse, comp, c_arr.at[c_idx].set(c_val))
             fine = _set_component(fine, comp, f_arr.at[f_idx].set(f_val))
     return coarse, fine
@@ -785,7 +841,10 @@ def apply_sat_e_interfaces(
     coarse_fields: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
     fine_fields: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
     config: SubgridConfig3D,
-) -> tuple[tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]]:
+) -> tuple[
+    tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+    tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+]:
     """Apply SAT coupling to tangential E traces on active faces/edges/corners."""
 
     alpha_c, alpha_f = sat_penalty_coefficients(config.ratio, config.tau)
@@ -794,25 +853,41 @@ def apply_sat_e_interfaces(
     for face in _active_faces(config):
         ops = _get_face_ops(config, face)
         coarse_mask, fine_mask = _face_interior_masks(ops.coarse_shape, config.ratio)
-        ex_c_face, ey_c_face = extract_tangential_e_face(coarse, config, face, grid="coarse")
-        ex_f_face, ey_f_face = extract_tangential_e_face(fine, config, face, grid="fine")
+        ex_c_face, ey_c_face = extract_tangential_e_face(
+            coarse, config, face, grid="coarse"
+        )
+        ex_f_face, ey_f_face = extract_tangential_e_face(
+            fine, config, face, grid="fine"
+        )
         ex_c_face, ex_f_face = _apply_sat_pair_face(
             ex_c_face, ex_f_face, ops, alpha_c, alpha_f, coarse_mask, fine_mask
         )
         ey_c_face, ey_f_face = _apply_sat_pair_face(
             ey_c_face, ey_f_face, ops, alpha_c, alpha_f, coarse_mask, fine_mask
         )
-        coarse = scatter_tangential_e_face(coarse, (ex_c_face, ey_c_face), config, face, grid="coarse")
-        fine = scatter_tangential_e_face(fine, (ex_f_face, ey_f_face), config, face, grid="fine")
+        coarse = scatter_tangential_e_face(
+            coarse, (ex_c_face, ey_c_face), config, face, grid="coarse"
+        )
+        fine = scatter_tangential_e_face(
+            fine, (ex_f_face, ey_f_face), config, face, grid="fine"
+        )
 
     for edge in _active_edges(config):
         ops = _get_edge_ops(config, edge)
         coarse_mask, fine_mask = _edge_interior_masks(ops.coarse_size, config.ratio)
-        ec = _extract_edge_component(coarse, config, edge, grid="coarse", field_type="e")
+        ec = _extract_edge_component(
+            coarse, config, edge, grid="coarse", field_type="e"
+        )
         ef = _extract_edge_component(fine, config, edge, grid="fine", field_type="e")
-        ec, ef = _apply_sat_pair_edge(ec, ef, ops, alpha_c, alpha_f, coarse_mask, fine_mask)
-        coarse = _scatter_edge_component(coarse, ec, config, edge, grid="coarse", field_type="e")
-        fine = _scatter_edge_component(fine, ef, config, edge, grid="fine", field_type="e")
+        ec, ef = _apply_sat_pair_edge(
+            ec, ef, ops, alpha_c, alpha_f, coarse_mask, fine_mask
+        )
+        coarse = _scatter_edge_component(
+            coarse, ec, config, edge, grid="coarse", field_type="e"
+        )
+        fine = _scatter_edge_component(
+            fine, ef, config, edge, grid="fine", field_type="e"
+        )
 
     for corner in _active_corners(config):
         c_idx = _corner_index(config, corner, grid="coarse")
@@ -820,7 +895,9 @@ def apply_sat_e_interfaces(
         for comp in ("ex", "ey", "ez"):
             c_arr = _get_component(coarse, comp)
             f_arr = _get_component(fine, comp)
-            c_val, f_val = _apply_sat_pair_scalar(c_arr[c_idx], f_arr[f_idx], alpha_c, alpha_f)
+            c_val, f_val = _apply_sat_pair_scalar(
+                c_arr[c_idx], f_arr[f_idx], alpha_c, alpha_f
+            )
             coarse = _set_component(coarse, comp, c_arr.at[c_idx].set(c_val))
             fine = _set_component(fine, comp, f_arr.at[f_idx].set(f_val))
     return coarse, fine
@@ -860,6 +937,8 @@ def step_subgrid_3d_with_cpml(
     outer_pmc_faces: frozenset[str] = frozenset(),
     periodic: tuple[bool, bool, bool] = (False, False, False),
     fine_periodic: tuple[bool, bool, bool] = (False, False, False),
+    private_post_h_hook=None,
+    private_post_e_hook=None,
 ):
     """Advance one subgrid step with CPML on the coarse outer boundary.
 
@@ -919,8 +998,29 @@ def step_subgrid_3d_with_cpml(
         config.dx_f,
         mats=mats_f,
         periodic=fine_periodic,
-        pmc_faces=frozenset(face for face in _touching_outer_faces(config) if face in outer_pmc_faces),
+        pmc_faces=frozenset(
+            face for face in _touching_outer_faces(config) if face in outer_pmc_faces
+        ),
     )
+    if private_post_h_hook is not None:
+        hook_state = private_post_h_hook(
+            SubgridState3D(
+                ex_c=state.ex_c,
+                ey_c=state.ey_c,
+                ez_c=state.ez_c,
+                hx_c=hx_c,
+                hy_c=hy_c,
+                hz_c=hz_c,
+                ex_f=state.ex_f,
+                ey_f=state.ey_f,
+                ez_f=state.ez_f,
+                hx_f=hx_f,
+                hy_f=hy_f,
+                hz_f=hz_f,
+                step=state.step,
+            )
+        )
+        hx_f, hy_f, hz_f = hook_state.hx_f, hook_state.hy_f, hook_state.hz_f
     (hx_c, hy_c, hz_c), (hx_f, hy_f, hz_f) = apply_sat_h_interfaces(
         (hx_c, hy_c, hz_c),
         (hx_f, hy_f, hz_f),
@@ -959,9 +1059,30 @@ def step_subgrid_3d_with_cpml(
         mats=mats_f,
         pec_mask=pec_mask_f,
         boundary_axes=None,
-        boundary_faces=frozenset(face for face in _touching_outer_faces(config) if face in outer_pec_faces),
+        boundary_faces=frozenset(
+            face for face in _touching_outer_faces(config) if face in outer_pec_faces
+        ),
         periodic=fine_periodic,
     )
+    if private_post_e_hook is not None:
+        hook_state = private_post_e_hook(
+            SubgridState3D(
+                ex_c=ex_c,
+                ey_c=ey_c,
+                ez_c=ez_c,
+                hx_c=hx_c,
+                hy_c=hy_c,
+                hz_c=hz_c,
+                ex_f=ex_f,
+                ey_f=ey_f,
+                ez_f=ez_f,
+                hx_f=hx_f,
+                hy_f=hy_f,
+                hz_f=hz_f,
+                step=state.step,
+            )
+        )
+        ex_f, ey_f, ez_f = hook_state.ex_f, hook_state.ey_f, hook_state.ez_f
     (ex_c, ey_c, ez_c), (ex_f, ey_f, ez_f) = apply_sat_e_interfaces(
         (ex_c, ey_c, ez_c),
         (ex_f, ey_f, ez_f),
@@ -997,10 +1118,14 @@ def step_subgrid_3d(
     mats_f=None,
     pec_mask_c=None,
     pec_mask_f=None,
-    outer_pec_faces: frozenset[str] = frozenset({"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"}),
+    outer_pec_faces: frozenset[str] = frozenset(
+        {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"}
+    ),
     outer_pmc_faces: frozenset[str] = frozenset(),
     periodic: tuple[bool, bool, bool] = (False, False, False),
     fine_periodic: tuple[bool, bool, bool] = (False, False, False),
+    private_post_h_hook=None,
+    private_post_e_hook=None,
 ) -> SubgridState3D:
     """Advance the current all-PEC subgrid lane by one timestep."""
 
@@ -1028,8 +1153,29 @@ def step_subgrid_3d(
         config.dx_f,
         mats=mats_f,
         periodic=fine_periodic,
-        pmc_faces=frozenset(face for face in _touching_outer_faces(config) if face in outer_pmc_faces),
+        pmc_faces=frozenset(
+            face for face in _touching_outer_faces(config) if face in outer_pmc_faces
+        ),
     )
+    if private_post_h_hook is not None:
+        hook_state = private_post_h_hook(
+            SubgridState3D(
+                ex_c=state.ex_c,
+                ey_c=state.ey_c,
+                ez_c=state.ez_c,
+                hx_c=hx_c,
+                hy_c=hy_c,
+                hz_c=hz_c,
+                ex_f=state.ex_f,
+                ey_f=state.ey_f,
+                ez_f=state.ez_f,
+                hx_f=hx_f,
+                hy_f=hy_f,
+                hz_f=hz_f,
+                step=state.step,
+            )
+        )
+        hx_f, hy_f, hz_f = hook_state.hx_f, hook_state.hy_f, hook_state.hz_f
     (hx_c, hy_c, hz_c), (hx_f, hy_f, hz_f) = apply_sat_h_interfaces(
         (hx_c, hy_c, hz_c),
         (hx_f, hy_f, hz_f),
@@ -1064,9 +1210,30 @@ def step_subgrid_3d(
         mats=mats_f,
         pec_mask=pec_mask_f,
         boundary_axes=None,
-        boundary_faces=frozenset(face for face in _touching_outer_faces(config) if face in outer_pec_faces),
+        boundary_faces=frozenset(
+            face for face in _touching_outer_faces(config) if face in outer_pec_faces
+        ),
         periodic=fine_periodic,
     )
+    if private_post_e_hook is not None:
+        hook_state = private_post_e_hook(
+            SubgridState3D(
+                ex_c=ex_c,
+                ey_c=ey_c,
+                ez_c=ez_c,
+                hx_c=hx_c,
+                hy_c=hy_c,
+                hz_c=hz_c,
+                ex_f=ex_f,
+                ey_f=ey_f,
+                ez_f=ez_f,
+                hx_f=hx_f,
+                hy_f=hy_f,
+                hz_f=hz_f,
+                step=state.step,
+            )
+        )
+        ex_f, ey_f, ez_f = hook_state.ex_f, hook_state.ey_f, hook_state.ez_f
     (ex_c, ey_c, ez_c), (ex_f, ey_f, ez_f) = apply_sat_e_interfaces(
         (ex_c, ey_c, ez_c),
         (ex_f, ey_f, ez_f),
@@ -1094,8 +1261,8 @@ def step_subgrid_3d(
 def compute_energy_3d(state: SubgridState3D, config: SubgridConfig3D) -> float:
     """Total energy with coarse/fine overlap counted once."""
 
-    dv_c = config.dx_c ** 3
-    dv_f = config.dx_f ** 3
+    dv_c = config.dx_c**3
+    dv_f = config.dx_f**3
     fi, fj, fk = config.fi_lo, config.fj_lo, config.fk_lo
     ni, nj, nk = _region_shape(config)
 
@@ -1103,10 +1270,14 @@ def compute_energy_3d(state: SubgridState3D, config: SubgridConfig3D) -> float:
     mask = mask.at[fi : fi + ni, fj : fj + nj, fk : fk + nk].set(False)
 
     e_c = (
-        float(jnp.sum(jnp.where(mask, state.ex_c**2 + state.ey_c**2 + state.ez_c**2, 0.0)))
+        float(
+            jnp.sum(jnp.where(mask, state.ex_c**2 + state.ey_c**2 + state.ez_c**2, 0.0))
+        )
         * EPS_0
         * dv_c
-        + float(jnp.sum(jnp.where(mask, state.hx_c**2 + state.hy_c**2 + state.hz_c**2, 0.0)))
+        + float(
+            jnp.sum(jnp.where(mask, state.hx_c**2 + state.hy_c**2 + state.hz_c**2, 0.0))
+        )
         * MU_0
         * dv_c
     )

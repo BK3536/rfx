@@ -89,6 +89,28 @@ class _PrivateAnalyticSheetSourceSpec(NamedTuple):
     hi2: int
 
 
+class _PrivateTFSFIncidentSpec(NamedTuple):
+    """Private benchmark-only z-normal TFSF-style incident field.
+
+    This is not public TFSF.  It is consumed only by private SBP-SAT benchmark
+    helpers and exists to exercise paired post-H/post-E source timing without
+    widening ``Simulation.add_tfsf_source``.
+    """
+
+    name: str
+    axis: int
+    index: int
+    electric_component: str
+    magnetic_component: str
+    propagation_sign: int
+    electric_values: jnp.ndarray
+    magnetic_values: jnp.ndarray
+    lo1: int
+    hi1: int
+    lo2: int
+    hi2: int
+
+
 class SubgridResult(NamedTuple):
     """Result from the canonical JIT subgridded runner."""
 
@@ -106,9 +128,8 @@ def _benchmark_flux_spectrum(
     """Compute signed private benchmark flux from raw DFT accumulators."""
 
     d_a = plane.dx * plane.dx
-    integrand = (
-        plane.e1_dft * jnp.conj(plane.h2_dft)
-        - plane.e2_dft * jnp.conj(plane.h1_dft)
+    integrand = plane.e1_dft * jnp.conj(plane.h2_dft) - plane.e2_dft * jnp.conj(
+        plane.h1_dft
     )
     return jnp.real(jnp.sum(integrand, axis=(-2, -1))) * d_a
 
@@ -160,34 +181,28 @@ def _benchmark_flux_samples(
         e1 = e1_field[index, lo1:hi1, lo2:hi2]
         e2 = e2_field[index, lo1:hi1, lo2:hi2]
         h1 = (
-            h1_field[idx_m1, lo1:hi1, lo2:hi2]
-            + h1_field[index, lo1:hi1, lo2:hi2]
+            h1_field[idx_m1, lo1:hi1, lo2:hi2] + h1_field[index, lo1:hi1, lo2:hi2]
         ) * 0.5
         h2 = (
-            h2_field[idx_m1, lo1:hi1, lo2:hi2]
-            + h2_field[index, lo1:hi1, lo2:hi2]
+            h2_field[idx_m1, lo1:hi1, lo2:hi2] + h2_field[index, lo1:hi1, lo2:hi2]
         ) * 0.5
     elif axis == 1:
         e1 = e1_field[lo1:hi1, index, lo2:hi2]
         e2 = e2_field[lo1:hi1, index, lo2:hi2]
         h1 = (
-            h1_field[lo1:hi1, idx_m1, lo2:hi2]
-            + h1_field[lo1:hi1, index, lo2:hi2]
+            h1_field[lo1:hi1, idx_m1, lo2:hi2] + h1_field[lo1:hi1, index, lo2:hi2]
         ) * 0.5
         h2 = (
-            h2_field[lo1:hi1, idx_m1, lo2:hi2]
-            + h2_field[lo1:hi1, index, lo2:hi2]
+            h2_field[lo1:hi1, idx_m1, lo2:hi2] + h2_field[lo1:hi1, index, lo2:hi2]
         ) * 0.5
     else:
         e1 = e1_field[lo1:hi1, lo2:hi2, index]
         e2 = e2_field[lo1:hi1, lo2:hi2, index]
         h1 = (
-            h1_field[lo1:hi1, lo2:hi2, idx_m1]
-            + h1_field[lo1:hi1, lo2:hi2, index]
+            h1_field[lo1:hi1, lo2:hi2, idx_m1] + h1_field[lo1:hi1, lo2:hi2, index]
         ) * 0.5
         h2 = (
-            h2_field[lo1:hi1, lo2:hi2, idx_m1]
-            + h2_field[lo1:hi1, lo2:hi2, index]
+            h2_field[lo1:hi1, lo2:hi2, idx_m1] + h2_field[lo1:hi1, lo2:hi2, index]
         ) * 0.5
     return e1, e2, h1, h2
 
@@ -222,9 +237,7 @@ def _accumulate_benchmark_flux_plane(
         plane.window_alpha,
     ).astype(jnp.float64)
     phase_e = jnp.exp(-1j * 2.0 * jnp.pi * freqs64 * t_f64)
-    phase_h = jnp.exp(
-        -1j * 2.0 * jnp.pi * freqs64 * (t_f64 - jnp.float64(dt * 0.5))
-    )
+    phase_h = jnp.exp(-1j * 2.0 * jnp.pi * freqs64 * (t_f64 - jnp.float64(dt * 0.5)))
     kernel_e = (phase_e[:, None, None] * dt * weight).astype(jnp.complex128)
     kernel_h = (phase_h[:, None, None] * dt * weight).astype(jnp.complex128)
     return (
@@ -246,17 +259,57 @@ def _inject_private_analytic_sheet_source(
         raise ValueError("private analytic sheet source currently supports z axis only")
     if sheet.component == "ex":
         source_value = jnp.asarray(source_value, dtype=state.ex_f.dtype)
-        ex_f = state.ex_f.at[sheet.lo1:sheet.hi1, sheet.lo2:sheet.hi2, sheet.index].add(
-            source_value
-        )
+        ex_f = state.ex_f.at[
+            sheet.lo1 : sheet.hi1, sheet.lo2 : sheet.hi2, sheet.index
+        ].add(source_value)
         return state._replace(ex_f=ex_f)
     if sheet.component == "ey":
         source_value = jnp.asarray(source_value, dtype=state.ey_f.dtype)
-        ey_f = state.ey_f.at[sheet.lo1:sheet.hi1, sheet.lo2:sheet.hi2, sheet.index].add(
-            source_value
-        )
+        ey_f = state.ey_f.at[
+            sheet.lo1 : sheet.hi1, sheet.lo2 : sheet.hi2, sheet.index
+        ].add(source_value)
         return state._replace(ey_f=ey_f)
     raise ValueError("private analytic sheet source component must be ex or ey")
+
+
+def _apply_private_tfsf_incident_h(
+    state: SubgridState3D,
+    incident: _PrivateTFSFIncidentSpec,
+    magnetic_value,
+) -> SubgridState3D:
+    """Apply the private incident H correction in the post-H hook slot."""
+
+    if incident.axis != 2:
+        raise ValueError("private TFSF-style incident currently supports z axis only")
+    if incident.magnetic_component != "hy":
+        raise ValueError("private TFSF-style incident magnetic component must be hy")
+    magnetic_value = jnp.asarray(magnetic_value, dtype=state.hy_f.dtype)
+    hy_f = state.hy_f.at[
+        incident.lo1 : incident.hi1,
+        incident.lo2 : incident.hi2,
+        incident.index - 1,
+    ].add(magnetic_value)
+    return state._replace(hy_f=hy_f)
+
+
+def _apply_private_tfsf_incident_e(
+    state: SubgridState3D,
+    incident: _PrivateTFSFIncidentSpec,
+    electric_value,
+) -> SubgridState3D:
+    """Apply the private incident E correction in the post-E hook slot."""
+
+    if incident.axis != 2:
+        raise ValueError("private TFSF-style incident currently supports z axis only")
+    if incident.electric_component != "ex":
+        raise ValueError("private TFSF-style incident electric component must be ex")
+    electric_value = jnp.asarray(electric_value, dtype=state.ex_f.dtype)
+    ex_f = state.ex_f.at[
+        incident.lo1 : incident.hi1,
+        incident.lo2 : incident.hi2,
+        incident.index,
+    ].add(electric_value)
+    return state._replace(ex_f=ex_f)
 
 
 def run_subgridded_jit(
@@ -278,6 +331,7 @@ def run_subgridded_jit(
     absorber_boundary: str = "pec",
     _benchmark_flux_planes: tuple[_BenchmarkFluxPlaneSpec, ...] | None = None,
     _private_sheet_sources: tuple[_PrivateAnalyticSheetSourceSpec, ...] | None = None,
+    _private_tfsf_incidents: tuple[_PrivateTFSFIncidentSpec, ...] | None = None,
 ) -> SubgridResult:
     """Run the canonical Phase-1 subgridding lane via ``jax.lax.scan``."""
 
@@ -310,6 +364,7 @@ def run_subgridded_jit(
     probe_components = probe_components or []
     benchmark_flux_planes = tuple(_benchmark_flux_planes or ())
     private_sheet_sources = tuple(_private_sheet_sources or ())
+    private_tfsf_incidents = tuple(_private_tfsf_incidents or ())
     use_benchmark_flux = bool(benchmark_flux_planes)
 
     shape_c = (config.nx_c, config.ny_c, config.nz_c)
@@ -347,11 +402,15 @@ def run_subgridded_jit(
         cpml_params, cpml_state_init = init_cpml(cpml_grid_c)
 
     if sources_f:
-        src_waveforms = jnp.stack([jnp.asarray(s[4], dtype=jnp.float32) for s in sources_f], axis=-1)
+        src_waveforms = jnp.stack(
+            [jnp.asarray(s[4], dtype=jnp.float32) for s in sources_f], axis=-1
+        )
     else:
         src_waveforms = jnp.zeros((n_steps, 0), dtype=jnp.float32)
     src_meta = [(s[0], s[1], s[2], s[3]) for s in sources_f]
-    prb_meta = [(p[0], p[1], p[2], c) for p, c in zip(probe_indices_f, probe_components)]
+    prb_meta = [
+        (p[0], p[1], p[2], c) for p, c in zip(probe_indices_f, probe_components)
+    ]
     flux_acc_init = tuple(
         _empty_benchmark_flux_accumulator(plane, shape_f)
         for plane in benchmark_flux_planes
@@ -380,6 +439,30 @@ def run_subgridded_jit(
             )
         return state
 
+    def _apply_private_tfsf_incident_h_all(
+        state: SubgridState3D,
+        step_idx: jnp.ndarray,
+    ) -> SubgridState3D:
+        for incident in private_tfsf_incidents:
+            state = _apply_private_tfsf_incident_h(
+                state,
+                incident,
+                incident.magnetic_values[step_idx],
+            )
+        return state
+
+    def _apply_private_tfsf_incident_e_all(
+        state: SubgridState3D,
+        step_idx: jnp.ndarray,
+    ) -> SubgridState3D:
+        for incident in private_tfsf_incidents:
+            state = _apply_private_tfsf_incident_e(
+                state,
+                incident,
+                incident.electric_values[step_idx],
+            )
+        return state
+
     def _sample_probes(state: SubgridState3D) -> jnp.ndarray:
         if not prb_meta:
             return jnp.zeros(0, dtype=jnp.float32)
@@ -400,7 +483,17 @@ def run_subgridded_jit(
                 samples.append(state.hz_f[pi, pj, pk])
         return jnp.stack(samples)
 
-    def _advance(state: SubgridState3D, cpml_state):
+    def _advance(state: SubgridState3D, cpml_state, step_idx: jnp.ndarray):
+        private_post_h_hook = None
+        private_post_e_hook = None
+        if private_tfsf_incidents:
+
+            def private_post_h_hook(hook_state):
+                return _apply_private_tfsf_incident_h_all(hook_state, step_idx)
+
+            def private_post_e_hook(hook_state):
+                return _apply_private_tfsf_incident_e_all(hook_state, step_idx)
+
         if use_cpml:
             return step_subgrid_3d_with_cpml(
                 state,
@@ -417,6 +510,8 @@ def run_subgridded_jit(
                 outer_pmc_faces=outer_pmc_faces,
                 periodic=periodic,
                 fine_periodic=fine_periodic,
+                private_post_h_hook=private_post_h_hook,
+                private_post_e_hook=private_post_e_hook,
             )
         return (
             step_subgrid_3d(
@@ -430,6 +525,8 @@ def run_subgridded_jit(
                 outer_pmc_faces=outer_pmc_faces,
                 periodic=periodic,
                 fine_periodic=fine_periodic,
+                private_post_h_hook=private_post_h_hook,
+                private_post_e_hook=private_post_e_hook,
             ),
             cpml_state,
         )
@@ -437,7 +534,7 @@ def run_subgridded_jit(
     def step_fn(carry, xs):
         step_idx, src_vals = xs
         state, cpml_state = carry[0], carry[1]
-        state, cpml_state = _advance(state, cpml_state)
+        state, cpml_state = _advance(state, cpml_state, step_idx)
         state = _inject_sources(state, src_vals)
         state = _inject_private_sheet_sources(state, step_idx)
         next_carry = (state, cpml_state)
@@ -453,9 +550,7 @@ def run_subgridded_jit(
     initial_carry = (state_init, cpml_state_init)
     if use_benchmark_flux:
         initial_carry = (state_init, cpml_state_init, flux_acc_init)
-    final_carry, time_series = jax.lax.scan(
-        step_fn, initial_carry, xs
-    )
+    final_carry, time_series = jax.lax.scan(step_fn, initial_carry, xs)
     final_state = final_carry[0]
 
     final_c = FDTDState(

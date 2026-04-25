@@ -22,6 +22,10 @@ _PRIVATE_SHEET_MESSAGE = (
     "private SBP-SAT benchmark analytic sheet sources must be fine-owned "
     "strict-interior placements"
 )
+_PRIVATE_TFSF_MESSAGE = (
+    "private SBP-SAT benchmark TFSF-style incident fields must be fine-owned "
+    "strict-interior placements"
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,32 @@ class _PrivateAnalyticSheetSourceRequest:
     axis: str
     coordinate: float
     component: str
+    propagation_sign: int
+    amplitude: float
+    f0_hz: float
+    bandwidth: float
+    phase_rad: float
+    x_span: tuple[float, float]
+    y_span: tuple[float, float]
+    window: str = "rect"
+    window_alpha: float = 0.25
+
+
+@dataclass(frozen=True)
+class _PrivateTFSFIncidentRequest:
+    """Private benchmark-only TFSF-style incident field for SBP-SAT evidence.
+
+    This request is deliberately narrower than public TFSF.  It is accepted
+    only by ``run_subgridded_benchmark_flux`` and exists to test whether a
+    paired incident E/H correction can recover private fixture quality without
+    widening ``Simulation.add_tfsf_source`` or public ``Result`` surfaces.
+    """
+
+    name: str
+    axis: str
+    coordinate: float
+    electric_component: str
+    magnetic_component: str
     propagation_sign: int
     amplitude: float
     f0_hz: float
@@ -144,11 +174,7 @@ def _local_strict_span_bounds(
     if span is None or len(span) != 2:
         raise ValueError(f"{message}; finite {label} span is required")
     lo_coord, hi_coord = float(span[0]), float(span[1])
-    if not (
-        np.isfinite(lo_coord)
-        and np.isfinite(hi_coord)
-        and hi_coord > lo_coord
-    ):
+    if not (np.isfinite(lo_coord) and np.isfinite(hi_coord) and hi_coord > lo_coord):
         raise ValueError(f"{message}; finite increasing {label} span is required")
 
     lo = int(round((lo_coord - offset) / dx))
@@ -174,7 +200,9 @@ def _sheet_temporal_window(
     if window == "tukey":
         alpha = float(alpha)
         if not (0.0 <= alpha <= 1.0):
-            raise ValueError("private analytic sheet source tukey alpha must be in [0, 1]")
+            raise ValueError(
+                "private analytic sheet source tukey alpha must be in [0, 1]"
+            )
         if alpha <= 0.0:
             return np.ones(n_steps, dtype=np.float64)
         if alpha >= 1.0:
@@ -210,10 +238,120 @@ def _analytic_sheet_waveform(
     times = np.arange(n_steps, dtype=np.float64) * float(dt)
     tau = 1.0 / (np.pi * f0 * bandwidth)
     t0 = 5.0 * tau
-    envelope = np.exp(-((times - t0) / tau) ** 2)
+    envelope = np.exp(-(((times - t0) / tau) ** 2))
     carrier = np.sin(2.0 * np.pi * f0 * times + float(request.phase_rad))
     taper = _sheet_temporal_window(n_steps, request.window, request.window_alpha)
     return jnp.asarray(amplitude * carrier * envelope * taper, dtype=jnp.float32)
+
+
+def _private_tfsf_electric_waveform(
+    request: _PrivateTFSFIncidentRequest,
+    *,
+    dt: float,
+    n_steps: int,
+) -> np.ndarray:
+    f0 = float(request.f0_hz)
+    bandwidth = float(request.bandwidth)
+    amplitude = float(request.amplitude)
+    if not (np.isfinite(f0) and f0 > 0.0):
+        raise ValueError(f"{_PRIVATE_TFSF_MESSAGE}; f0_hz must be positive")
+    if not (np.isfinite(bandwidth) and bandwidth > 0.0):
+        raise ValueError(f"{_PRIVATE_TFSF_MESSAGE}; bandwidth must be positive")
+    if not np.isfinite(amplitude):
+        raise ValueError(f"{_PRIVATE_TFSF_MESSAGE}; amplitude must be finite")
+
+    times = np.arange(n_steps, dtype=np.float64) * float(dt)
+    tau = 1.0 / (np.pi * f0 * bandwidth)
+    t0 = 5.0 * tau
+    envelope = np.exp(-(((times - t0) / tau) ** 2))
+    carrier = np.sin(2.0 * np.pi * f0 * times + float(request.phase_rad))
+    taper = _sheet_temporal_window(n_steps, request.window, request.window_alpha)
+    return amplitude * carrier * envelope * taper
+
+
+def _build_private_tfsf_incident_specs(
+    requests: (
+        tuple[_PrivateTFSFIncidentRequest, ...] | list[_PrivateTFSFIncidentRequest]
+    ),
+    *,
+    shape_f: tuple[int, int, int],
+    offsets: tuple[float, float, float],
+    dx_f: float,
+    dt: float,
+    n_steps: int,
+):
+    """Validate and lower private benchmark TFSF-style incident fields."""
+
+    from rfx.core.yee import EPS_0, MU_0
+    from rfx.subgridding.jit_runner import _PrivateTFSFIncidentSpec
+
+    specs = []
+    eta0 = float(np.sqrt(MU_0 / EPS_0))
+    for request in requests:
+        axis_i = _axis_index(request.axis)
+        if axis_i != 2:
+            raise ValueError(
+                f"{_PRIVATE_TFSF_MESSAGE}; only z-axis incidence is supported"
+            )
+        if int(request.propagation_sign) != 1:
+            raise ValueError(
+                f"{_PRIVATE_TFSF_MESSAGE}; only +z propagation is supported"
+            )
+        if request.electric_component != "ex" or request.magnetic_component != "hy":
+            raise ValueError(
+                f"{_PRIVATE_TFSF_MESSAGE}; only ex/hy polarization is supported"
+            )
+
+        try:
+            index = _local_strict_normal_index(
+                coordinate=request.coordinate,
+                offset=offsets[axis_i],
+                dx=dx_f,
+                n_cells=shape_f[axis_i],
+            )
+        except ValueError as exc:
+            raise ValueError(
+                str(exc).replace(_STRICT_INTERIOR_MESSAGE, _PRIVATE_TFSF_MESSAGE)
+            ) from exc
+        lo1, hi1 = _local_strict_span_bounds(
+            span=request.x_span,
+            offset=offsets[0],
+            dx=dx_f,
+            n_cells=shape_f[0],
+            label="x",
+            message=_PRIVATE_TFSF_MESSAGE,
+        )
+        lo2, hi2 = _local_strict_span_bounds(
+            span=request.y_span,
+            offset=offsets[1],
+            dx=dx_f,
+            n_cells=shape_f[1],
+            label="y",
+            message=_PRIVATE_TFSF_MESSAGE,
+        )
+        electric_values = _private_tfsf_electric_waveform(
+            request,
+            dt=float(dt),
+            n_steps=int(n_steps),
+        )
+        magnetic_values = electric_values / eta0
+        specs.append(
+            _PrivateTFSFIncidentSpec(
+                name=str(request.name),
+                axis=axis_i,
+                index=int(index),
+                electric_component=str(request.electric_component),
+                magnetic_component=str(request.magnetic_component),
+                propagation_sign=int(request.propagation_sign),
+                electric_values=jnp.asarray(electric_values, dtype=jnp.float32),
+                magnetic_values=jnp.asarray(magnetic_values, dtype=jnp.float32),
+                lo1=int(lo1),
+                hi1=int(hi1),
+                lo2=int(lo2),
+                hi2=int(hi2),
+            )
+        )
+    return tuple(specs)
 
 
 def _build_benchmark_flux_plane_specs(
@@ -311,7 +449,9 @@ def _build_private_analytic_sheet_source_specs(
     for request in requests:
         axis_i = _axis_index(request.axis)
         if axis_i != 2:
-            raise ValueError(f"{_PRIVATE_SHEET_MESSAGE}; only z-axis sheets are supported")
+            raise ValueError(
+                f"{_PRIVATE_SHEET_MESSAGE}; only z-axis sheets are supported"
+            )
         if request.component not in ("ex", "ey"):
             raise ValueError(
                 f"{_PRIVATE_SHEET_MESSAGE}; sheet component must be ex or ey"
@@ -416,7 +556,9 @@ def _run_subgridded_path_impl(
     n_steps,
     *,
     _benchmark_flux_planes: tuple[_BenchmarkFluxPlaneRequest, ...] | None = None,
-    _private_sheet_sources: tuple[_PrivateAnalyticSheetSourceRequest, ...] | None = None,
+    _private_sheet_sources: tuple[_PrivateAnalyticSheetSourceRequest, ...]
+    | None = None,
+    _private_tfsf_incidents: tuple[_PrivateTFSFIncidentRequest, ...] | None = None,
 ) -> _BenchmarkFluxRun:
     """Internal implementation shared by public and benchmark-only paths."""
 
@@ -469,16 +611,25 @@ def _run_subgridded_path_impl(
         return lo_i, hi_i
 
     fi_lo, fi_hi = _range_to_indices(
-        ref.get("x_range"), grid_coarse.nx,
-        grid_coarse.pad_x_lo, grid_coarse.pad_x_hi, "x_range"
+        ref.get("x_range"),
+        grid_coarse.nx,
+        grid_coarse.pad_x_lo,
+        grid_coarse.pad_x_hi,
+        "x_range",
     )
     fj_lo, fj_hi = _range_to_indices(
-        ref.get("y_range"), grid_coarse.ny,
-        grid_coarse.pad_y_lo, grid_coarse.pad_y_hi, "y_range"
+        ref.get("y_range"),
+        grid_coarse.ny,
+        grid_coarse.pad_y_lo,
+        grid_coarse.pad_y_hi,
+        "y_range",
     )
     fk_lo, fk_hi = _range_to_indices(
-        ref["z_range"], grid_coarse.nz,
-        grid_coarse.pad_z_lo, grid_coarse.pad_z_hi, "z_range"
+        ref["z_range"],
+        grid_coarse.nz,
+        grid_coarse.pad_z_lo,
+        grid_coarse.pad_z_hi,
+        "z_range",
     )
 
     nx_f = (fi_hi - fi_lo) * ratio
@@ -488,13 +639,23 @@ def _run_subgridded_path_impl(
     dt = phase1_3d_dt(dx_f)
 
     config = SubgridConfig3D(
-        nx_c=grid_coarse.nx, ny_c=grid_coarse.ny, nz_c=grid_coarse.nz,
+        nx_c=grid_coarse.nx,
+        ny_c=grid_coarse.ny,
+        nz_c=grid_coarse.nz,
         dx_c=dx_c,
-        fi_lo=fi_lo, fi_hi=fi_hi,
-        fj_lo=fj_lo, fj_hi=fj_hi,
-        fk_lo=fk_lo, fk_hi=fk_hi,
-        nx_f=nx_f, ny_f=ny_f, nz_f=nz_f,
-        dx_f=dx_f, dt=float(dt), ratio=ratio, tau=tau,
+        fi_lo=fi_lo,
+        fi_hi=fi_hi,
+        fj_lo=fj_lo,
+        fj_hi=fj_hi,
+        fk_lo=fk_lo,
+        fk_hi=fk_hi,
+        nx_f=nx_f,
+        ny_f=ny_f,
+        nz_f=nz_f,
+        dx_f=dx_f,
+        dt=float(dt),
+        ratio=ratio,
+        tau=tau,
         face_ops=build_zface_ops((fi_hi - fi_lo, fj_hi - fj_lo), ratio, dx_c),
     )
 
@@ -592,6 +753,16 @@ def _run_subgridded_path_impl(
             dt=float(dt),
             n_steps=n_steps,
         )
+    private_tfsf_specs = ()
+    if _private_tfsf_incidents:
+        private_tfsf_specs = _build_private_tfsf_incident_specs(
+            tuple(_private_tfsf_incidents),
+            shape_f=shape_f,
+            offsets=(x_off, y_off, z_off),
+            dx_f=dx_f,
+            dt=float(dt),
+            n_steps=n_steps,
+        )
 
     result = _run_sg(
         grid_coarse,
@@ -612,15 +783,34 @@ def _run_subgridded_path_impl(
             for axis, (lo, hi, n, pad_lo, pad_hi) in zip(
                 "xyz",
                 (
-                    (fi_lo, fi_hi, grid_coarse.nx, grid_coarse.pad_x_lo, grid_coarse.pad_x_hi),
-                    (fj_lo, fj_hi, grid_coarse.ny, grid_coarse.pad_y_lo, grid_coarse.pad_y_hi),
-                    (fk_lo, fk_hi, grid_coarse.nz, grid_coarse.pad_z_lo, grid_coarse.pad_z_hi),
+                    (
+                        fi_lo,
+                        fi_hi,
+                        grid_coarse.nx,
+                        grid_coarse.pad_x_lo,
+                        grid_coarse.pad_x_hi,
+                    ),
+                    (
+                        fj_lo,
+                        fj_hi,
+                        grid_coarse.ny,
+                        grid_coarse.pad_y_lo,
+                        grid_coarse.pad_y_hi,
+                    ),
+                    (
+                        fk_lo,
+                        fk_hi,
+                        grid_coarse.nz,
+                        grid_coarse.pad_z_lo,
+                        grid_coarse.pad_z_hi,
+                    ),
                 ),
             )
         ),
         absorber_boundary=sim._boundary,
         _benchmark_flux_planes=benchmark_flux_specs,
         _private_sheet_sources=private_sheet_specs,
+        _private_tfsf_incidents=private_tfsf_specs,
     )
 
     public_result = Result(
@@ -648,14 +838,20 @@ def run_subgridded_benchmark_flux(
         | list[_PrivateAnalyticSheetSourceRequest]
         | None
     ) = None,
+    private_tfsf_incidents: (
+        tuple[_PrivateTFSFIncidentRequest, ...]
+        | list[_PrivateTFSFIncidentRequest]
+        | None
+    ) = None,
 ) -> _BenchmarkFluxRun:
     """Run the private SBP-SAT benchmark-only flux accumulator path.
 
     Public DFT/flux requests still fail in the regular API validator.  This
     helper accepts only private fine-owned plane requests plus optional
-    private analytic sheet sources, and returns private raw accumulators
-    alongside the ordinary public ``Result`` to prove the benchmark does not
-    leak into ``Result.dft_planes`` or ``Result.flux_monitors``.
+    private analytic sheet sources or private TFSF-style incident fields, and
+    returns private raw accumulators alongside the ordinary public ``Result``
+    to prove the benchmark does not leak into ``Result.dft_planes`` or
+    ``Result.flux_monitors``.
     """
 
     if sim._dx is None and sim._geometry:
@@ -675,4 +871,5 @@ def run_subgridded_benchmark_flux(
         int(n_steps),
         _benchmark_flux_planes=tuple(planes),
         _private_sheet_sources=tuple(sheet_sources or ()),
+        _private_tfsf_incidents=tuple(private_tfsf_incidents or ()),
     )

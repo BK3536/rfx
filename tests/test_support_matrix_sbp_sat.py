@@ -102,38 +102,31 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
     )
     assert benchmark_gate["public_claim_allowed"] is False
     assert benchmark_gate["fixture"] == (
-        "boundary_expanded_private_analytic_sheet_flux_plane_vacuum_slab"
+        "boundary_expanded_private_tfsf_style_incident_flux_plane_vacuum"
     )
     assert benchmark_gate["fixture_name"] == "boundary_expanded"
-    assert benchmark_gate["source_contract"] == "private_analytic_sheet_source"
+    assert benchmark_gate["source_contract"] == "private_tfsf_style_incident"
     assert benchmark_gate["normalization"] == (
-        "vacuum_device_two_run_incident_normalized"
+        "incident_quality_only_same_contract_reference_required"
     )
+    assert benchmark_gate["reference_missing"] is True
+    assert benchmark_gate["reference_contract"] == (
+        "missing_same_contract_private_reference"
+    )
+    assert benchmark_gate["slab_rt_scored"] is False
+    assert benchmark_gate["fixture_quality_ready"] is False
+    assert benchmark_gate["fixture_quality_gates"]["same_contract_reference"] is False
     assert benchmark_gate["usable_passband_threshold"]["min_bins"] == 2
     assert benchmark_gate["transverse_uniformity_threshold"] == {
         "magnitude_cv_max": 0.01,
         "phase_spread_deg_max": 1.0,
     }
-    assert benchmark_gate["vacuum_stability_threshold"] == {
-        "relative_magnitude_error_max": 0.02,
-        "phase_error_deg_max": 2.0,
-    }
     assert benchmark_gate["no_go_reason"].startswith(
-        "private analytic-sheet bounded-CPML fixture"
+        "private TFSF-style incident fixture lacks a same-contract reference"
     )
-    sweep = benchmark_gate["boundary_expansion_sweep"]
-    assert sweep["status"] == "inconclusive"
-    assert sweep["candidate_count"] == 2
-    assert sweep["selected_fixture"] == "boundary_expanded"
-    assert sweep["selected_usable_bins"] == 3
-    assert sweep["materially_improved_vs_baseline"] is True
-    assert "non-public" in benchmark_gate["blocking_diagnostic"]
-    assert "private TFSF-style" in benchmark_gate["next_prerequisite"]
-    assert "normalization-repair" in benchmark_gate["next_prerequisite"]
-    assert "analytic-sheet injection" in benchmark_gate["diagnostic_basis"]
-    assert (
-        "boundary-expanded fixture-quality sweep" in benchmark_gate["diagnostic_basis"]
-    )
+    assert "post-H/post-E" in benchmark_gate["blocking_diagnostic"]
+    assert "same-contract private reference" in benchmark_gate["next_prerequisite"]
+    assert "not public TFSF" in benchmark_gate["diagnostic_basis"]
     assert _sbp_lane()["supported_subset"]["observables"] == ["point_probe"]
     assert TRUE_RT_SPEC.exists()
 
@@ -144,7 +137,8 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
     assert "bounded-CPML feasibility result" in spec_text
     assert "inconclusive" in spec_text
     assert "private analytic sheet/source" in spec_text
-    assert "boundary-expanded analytic-sheet sweep" in spec_text
+    assert "private TFSF-style incident field" in spec_text
+    assert "same-contract private reference" in spec_text
     assert "support matrix continues to mark true R/T as deferred" in spec_text
     assert "## Deferred issue record" in spec_text
 

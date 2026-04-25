@@ -46,12 +46,12 @@ Current policy:
 - public support promotion is blocked until true R/T evidence exists
 - a bounded-CPML point-probe feasibility probe now exists, but it is
   inconclusive and remains internal evidence only
-- a private analytic-sheet + fine-owned flux/DFT benchmark gate now exists
-  for internal true R/T diagnostics; it uses all-CPML bounded-domain
-  vacuum/device incident normalization plus a bounded boundary-expanded
-  fixture-quality sweep, remains inconclusive/non-public until every
-  fixture-quality gate passes, and does not enable public DFT planes, flux
-  monitors, TFSF, S-parameters, or true R/T claims
+- a private fine-owned flux/DFT benchmark gate now exists for internal true
+  R/T diagnostics; the current recorded fixture uses private TFSF-style
+  incident-field hooks at the low-level post-H/post-E timing slots, remains
+  inconclusive because no same-contract private reference/normalization repair
+  exists, intentionally skips slab R/T scoring, and does not enable public DFT
+  planes, flux monitors, TFSF, S-parameters, or true R/T claims
 
 ### Benchmark evidence
 
@@ -63,7 +63,7 @@ Current policy:
 | boundary proxy crossval | implemented | `tests/test_sbp_sat_boundary_crossval.py` | internal PMC reflector plus periodic full-axis/interior proxy fixtures; mixed PMC+periodic remains blocked; **not** public R/T |
 | absorbing proxy crossval | implemented | `tests/test_sbp_sat_absorbing_crossval.py` | internal CPML interior-box decay and late-tail proxy fixtures; **not** public R/T or S-parameters |
 | bounded-CPML point-probe R/T feasibility | inconclusive | `tests/test_sbp_sat_true_rt_feasibility.py` | internal measurement-contract probe only; **not** public R/T, S-parameters, flux, or port evidence |
-| private analytic-sheet flux/DFT R/T benchmark gate | inconclusive | `tests/test_sbp_sat_true_rt_flux_dft_benchmark.py` | internal benchmark-only sheet/source plus accumulator evidence; no public source, DFT plane, flux monitor, TFSF, S-parameter, or true R/T promotion |
+| private analytic-sheet flux/DFT R/T benchmark gate | inconclusive | `tests/test_sbp_sat_true_rt_flux_dft_benchmark.py` | internal benchmark-only analytic-sheet history plus current private TFSF-style incident hook/accumulator evidence; no public source, DFT plane, flux monitor, TFSF, S-parameter, or true R/T promotion |
 | true reflection/transmission | deferred | `docs/guides/sbp_sat_zslab_true_rt_benchmark_spec.md` | no public R/T, S-parameter, or calibrated open-boundary claim yet |
 
 Proxy tolerance is intentionally narrow and local: relative amplitude error
@@ -73,19 +73,16 @@ the reference run; it does not validate incident/reflected/transmitted field
 separation, energy balance, or calibrated S-parameters.
 
 The private flux/DFT gate strengthens the internal accumulator regression by
-checking multi-step, all-axis, windowed DFT semantics and a benchmark-only
-analytic sheet/source.  The bounded-CPML runtime fixture now scores only
-non-floor passband bins from a vacuum/device two-run normalization, and it runs
-a two-candidate boundary-expansion sweep before any full R/T rescore.  That
-sweep selected the boundary-expanded fixture and improved the quality score
-(`3464.05 -> 1890.63`) with three usable bins, but transverse uniformity and
-vacuum stability still fail; full incident-normalized R/T scoring is therefore
-skipped and the gate remains inconclusive.  Public promotion remains blocked
-unless transverse uniformity, plane-location robustness, vacuum stability, and
-R/T gates all pass.  Periodic+CPML and public TFSF remain rejected for this
-lane; the next prerequisite is a separate private TFSF-style incident-field
-fixture plan or private normalization-repair plan, not a reinterpretation of
-the thresholds.
+checking multi-step, all-axis, windowed DFT semantics, retaining the prior
+private analytic sheet/source history, and now adding a private TFSF-style
+incident field injected through low-level post-H/post-E hooks.  The current
+recorded status is still **inconclusive**: slab R/T scoring is intentionally
+skipped because there is no same-contract private reference or normalization
+repair for the private TFSF-style incident fixture.  Public promotion remains
+blocked until a same-contract reference exists and fixture-quality plus R/T
+gates pass.  Periodic+CPML and public TFSF remain rejected for this lane; the
+next prerequisite is a same-contract private reference/normalization repair,
+not a reinterpretation of thresholds or a public TFSF promotion.
 
 ### Explicit unsupported combinations in the SBP-SAT lane
 

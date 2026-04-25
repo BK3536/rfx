@@ -30,8 +30,10 @@ from rfx.probes.probes import flux_spectrum
 from rfx.runners.subgridded import (
     _BenchmarkFluxPlaneRequest,
     _PrivateAnalyticSheetSourceRequest,
+    _PrivateTFSFIncidentRequest,
     _build_benchmark_flux_plane_specs,
     _build_private_analytic_sheet_source_specs,
+    _build_private_tfsf_incident_specs,
     run_subgridded_benchmark_flux,
 )
 from rfx.sources.sources import CustomWaveform
@@ -39,7 +41,10 @@ from rfx.subgridding.jit_runner import (
     _BenchmarkFluxPlaneResult,
     _BenchmarkFluxPlaneSpec,
     _PrivateAnalyticSheetSourceSpec,
+    _PrivateTFSFIncidentSpec,
     _accumulate_benchmark_flux_plane,
+    _apply_private_tfsf_incident_e,
+    _apply_private_tfsf_incident_h,
     _benchmark_flux_spectrum,
     _inject_private_analytic_sheet_source,
 )
@@ -56,6 +61,15 @@ _NEXT_PREREQUISITE = (
     "open a separate private TFSF-style incident-field fixture plan or private "
     "normalization-repair plan before reconsidering public true R/T, DFT, "
     "flux, port, or S-parameter promotion"
+)
+_TFSF_NEXT_PREREQUISITE = (
+    "build a same-contract private reference/normalization repair before "
+    "reopening slab R/T scoring or any public true R/T, DFT, flux, TFSF, port, "
+    "or S-parameter promotion"
+)
+_TFSF_NO_GO_REASON = (
+    "private TFSF-style incident fixture lacks a same-contract reference; "
+    "slab R/T scoring is intentionally skipped"
 )
 _NORMALIZATION_FLOOR = 1e-30
 _NONFLOOR_FACTOR = 1e12
@@ -318,6 +332,23 @@ def _private_guard_sheet() -> _PrivateAnalyticSheetSourceRequest:
     )
 
 
+def _private_guard_tfsf_incident() -> _PrivateTFSFIncidentRequest:
+    return _PrivateTFSFIncidentRequest(
+        name="private_guard_tfsf_incident",
+        axis="z",
+        coordinate=0.020,
+        electric_component="ex",
+        magnetic_component="hy",
+        propagation_sign=1,
+        amplitude=1.0,
+        f0_hz=2.0e9,
+        bandwidth=0.8,
+        phase_rad=0.0,
+        x_span=(0.017, 0.023),
+        y_span=(0.017, 0.023),
+    )
+
+
 def test_public_dft_plane_probe_still_hard_fails_with_subgrid():
     sim = _guard_sim()
     sim.add_dft_plane_probe(
@@ -351,6 +382,20 @@ def test_private_benchmark_run_does_not_populate_public_dft_or_flux_results():
         n_steps=4,
         planes=(_private_guard_plane(),),
         sheet_sources=(_private_guard_sheet(),),
+    )
+
+    assert run.result.dft_planes is None
+    assert run.result.flux_monitors is None
+    assert len(run.benchmark_flux_planes) == 1
+    assert run.benchmark_flux_planes[0].name == "private_guard"
+
+
+def test_private_tfsf_benchmark_run_does_not_populate_public_dft_or_flux_results():
+    run = run_subgridded_benchmark_flux(
+        _guard_sim(),
+        n_steps=4,
+        planes=(_private_guard_plane(),),
+        private_tfsf_incidents=(_private_guard_tfsf_incident(),),
     )
 
     assert run.result.dft_planes is None
@@ -403,6 +448,47 @@ def _sheet_specs(
 ) -> tuple[_PrivateAnalyticSheetSourceSpec, ...]:
     return _build_private_analytic_sheet_source_specs(
         sources,
+        shape_f=fixture.shape_f,
+        offsets=fixture.offsets,
+        dx_f=fixture.dx_f,
+        dt=1.0e-12,
+        n_steps=fixture.n_steps,
+    )
+
+
+def _benchmark_tfsf_incident(
+    *,
+    fixture: _FluxFixtureConfig = _FluxFixture,
+    coordinate: float | None = None,
+    axis: str = "z",
+    electric_component: str = "ex",
+    magnetic_component: str = "hy",
+    propagation_sign: int = 1,
+    x_span: tuple[float, float] | None = None,
+    y_span: tuple[float, float] | None = None,
+) -> _PrivateTFSFIncidentRequest:
+    return _PrivateTFSFIncidentRequest(
+        name="private_tfsf_incident",
+        axis=axis,
+        coordinate=fixture.sheet_coordinate if coordinate is None else coordinate,
+        electric_component=electric_component,
+        magnetic_component=magnetic_component,
+        propagation_sign=propagation_sign,
+        amplitude=fixture.sheet_amplitude,
+        f0_hz=fixture.source_freq,
+        bandwidth=fixture.source_bandwidth,
+        phase_rad=fixture.sheet_phase_rad,
+        x_span=fixture.sheet_x_span if x_span is None else x_span,
+        y_span=fixture.sheet_y_span if y_span is None else y_span,
+    )
+
+
+def _tfsf_specs(
+    *incidents: _PrivateTFSFIncidentRequest,
+    fixture: _FluxFixtureConfig = _FluxFixture,
+) -> tuple[_PrivateTFSFIncidentSpec, ...]:
+    return _build_private_tfsf_incident_specs(
+        incidents,
         shape_f=fixture.shape_f,
         offsets=fixture.offsets,
         dx_f=fixture.dx_f,
@@ -477,6 +563,27 @@ def test_boundary_expanded_fixture_derives_strict_fine_grid_metadata():
     assert sheet.source_values.shape == (fixture.n_steps,)
 
 
+def test_private_tfsf_incident_accepts_strict_interior_ex_hy_pair():
+    (incident,) = _tfsf_specs(_benchmark_tfsf_incident())
+
+    assert incident.axis == 2
+    assert incident.index == 8
+    assert incident.electric_component == "ex"
+    assert incident.magnetic_component == "hy"
+    assert incident.propagation_sign == 1
+    assert incident.lo1 == incident.lo2 == 1
+    assert incident.hi1 == incident.hi2 == 15
+    assert incident.electric_values.shape == (_FluxFixture.n_steps,)
+    assert incident.magnetic_values.shape == (_FluxFixture.n_steps,)
+
+    electric = np.asarray(incident.electric_values)
+    magnetic = np.asarray(incident.magnetic_values)
+    nonzero = np.abs(electric) > 1.0e-12 * np.max(np.abs(electric))
+    eta = electric[nonzero] / magnetic[nonzero]
+    assert np.all(np.isfinite(eta))
+    assert 300.0 < float(np.mean(eta)) < 500.0
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -491,6 +598,23 @@ def test_private_sheet_source_rejects_public_or_edge_touching_shapes(
 ):
     with pytest.raises(ValueError, match=_STRICT_PLACEMENT):
         _sheet_specs(source)
+
+
+@pytest.mark.parametrize(
+    "incident",
+    [
+        _benchmark_tfsf_incident(axis="x"),
+        _benchmark_tfsf_incident(electric_component="ey"),
+        _benchmark_tfsf_incident(magnetic_component="hx"),
+        _benchmark_tfsf_incident(propagation_sign=-1),
+        _benchmark_tfsf_incident(x_span=(0.011, 0.027)),
+    ],
+)
+def test_private_tfsf_incident_rejects_public_or_edge_touching_shapes(
+    incident: _PrivateTFSFIncidentRequest,
+):
+    with pytest.raises(ValueError, match="TFSF-style incident fields"):
+        _tfsf_specs(incident)
 
 
 def test_private_sheet_source_injection_adds_selected_tangential_field_only():
@@ -534,6 +658,51 @@ def test_private_sheet_source_injection_adds_selected_tangential_field_only():
     assert np.allclose(ey[1:4, 2:5, 3], 2.5)
     assert np.count_nonzero(ey) == 9
     assert np.allclose(np.asarray(out.ex_f), 0.0)
+
+
+def test_private_tfsf_incident_ex_hy_signs_produce_positive_z_poynting():
+    shape = (6, 6, 6)
+    zeros = jnp.zeros(shape, dtype=jnp.float64)
+    state = SubgridState3D(
+        ex_c=zeros,
+        ey_c=zeros,
+        ez_c=zeros,
+        hx_c=zeros,
+        hy_c=zeros,
+        hz_c=zeros,
+        ex_f=zeros,
+        ey_f=zeros,
+        ez_f=zeros,
+        hx_f=zeros,
+        hy_f=zeros,
+        hz_f=zeros,
+        step=jnp.array(0, dtype=jnp.int32),
+    )
+    incident = _PrivateTFSFIncidentSpec(
+        name="synthetic_tfsf",
+        axis=2,
+        index=3,
+        electric_component="ex",
+        magnetic_component="hy",
+        propagation_sign=1,
+        electric_values=jnp.asarray([2.0], dtype=jnp.float64),
+        magnetic_values=jnp.asarray([0.5], dtype=jnp.float64),
+        lo1=1,
+        hi1=5,
+        lo2=1,
+        hi2=5,
+    )
+
+    with_h = _apply_private_tfsf_incident_h(state, incident, jnp.array(0.5))
+    out = _apply_private_tfsf_incident_e(with_h, incident, jnp.array(2.0))
+
+    ex = np.asarray(out.ex_f)
+    hy = np.asarray(out.hy_f)
+    assert np.allclose(ex[1:5, 1:5, 3], 2.0)
+    assert np.allclose(hy[1:5, 1:5, 2], 0.5)
+    assert np.count_nonzero(ex) == 16
+    assert np.count_nonzero(hy) == 16
+    assert float(np.mean(ex[1:5, 1:5, 3] * hy[1:5, 1:5, 2])) > 0.0
 
 
 def test_private_plane_rejects_local_normal_index_zero():
@@ -907,7 +1076,15 @@ def _run_flux_fixture(
     fixture: _FluxFixtureConfig = _FluxFixture,
     plane_shift_cells: int = 0,
     aperture_size: float | None = None,
+    source_kind: str = "analytic_sheet",
 ) -> _FixtureRun:
+    if source_kind not in {"analytic_sheet", "private_tfsf"}:
+        raise ValueError(f"unknown private benchmark source kind {source_kind!r}")
+    if not subgrid and source_kind != "analytic_sheet":
+        raise ValueError(
+            "private TFSF-style fixtures require the subgrid benchmark path"
+        )
+
     dx = fixture.coarse_dx if subgrid else fixture.uniform_dx
     size = fixture.aperture_size[0] if aperture_size is None else aperture_size
     aperture = (size, size)
@@ -938,7 +1115,16 @@ def _run_flux_fixture(
                 sim,
                 n_steps=fixture.n_steps,
                 planes=_plane_requests(plane_shift_cells, aperture_size, fixture),
-                sheet_sources=(_benchmark_sheet_source(fixture=fixture),),
+                sheet_sources=(
+                    (_benchmark_sheet_source(fixture=fixture),)
+                    if source_kind == "analytic_sheet"
+                    else ()
+                ),
+                private_tfsf_incidents=(
+                    (_benchmark_tfsf_incident(fixture=fixture),)
+                    if source_kind == "private_tfsf"
+                    else ()
+                ),
             )
         planes = run.benchmark_flux_planes
         signed_flux = tuple(np.asarray(_benchmark_flux_spectrum(p)) for p in planes)
@@ -997,16 +1183,21 @@ def _claims_bearing_passband(
 def _sheet_component_dft(
     plane,
     fixture: _FluxFixtureConfig = _FluxFixture,
+    component: str | None = None,
 ) -> np.ndarray:
-    if fixture.sheet_component == "ex":
+    component = fixture.sheet_component if component is None else component
+    if component == "ex":
         return np.asarray(plane.e1_dft)
-    return np.asarray(plane.e2_dft)
+    if component == "ey":
+        return np.asarray(plane.e2_dft)
+    raise ValueError(f"unsupported private benchmark field component {component!r}")
 
 
 def _transverse_uniformity_metadata(
     planes: tuple[object, object],
     mask: np.ndarray,
     fixture: _FluxFixtureConfig = _FluxFixture,
+    component: str | None = None,
 ) -> dict[str, object]:
     per_plane = []
     max_cv = 0.0
@@ -1020,7 +1211,7 @@ def _transverse_uniformity_metadata(
         }
 
     for plane_name, plane in zip(("front", "back"), planes, strict=True):
-        field = _sheet_component_dft(plane, fixture)[mask]
+        field = _sheet_component_dft(plane, fixture, component)[mask]
         for freq_hz, values in zip(
             fixture.scored_freqs[mask],
             field,
@@ -1435,7 +1626,111 @@ def _empty_rt_gates() -> dict[str, bool]:
 
 
 @lru_cache(maxsize=None)
+def _private_tfsf_incident_metadata() -> dict[str, object]:
+    fixture = _BoundaryExpandedFluxFixture
+    run = _run_flux_fixture(
+        subgrid=True,
+        slab=False,
+        fixture=fixture,
+        source_kind="private_tfsf",
+    )
+    for label, array in {
+        "front_complex": run.complex_flux[0],
+        "back_complex": run.complex_flux[1],
+        "front_signed": run.signed_flux[0],
+        "back_signed": run.signed_flux[1],
+    }.items():
+        fail = _finite_or_fail(label, array)
+        if fail is not None:
+            return fail | {
+                "source_contract": "private_tfsf_style_incident",
+                "reference_missing": True,
+                "slab_rt_scored": False,
+                "public_claim_allowed": False,
+            }
+
+    freq_mask = _claims_bearing_passband(run.complex_flux, run.signed_flux)
+    uniformity = _transverse_uniformity_metadata(
+        run.planes,
+        freq_mask,
+        fixture,
+        component="ex",
+    )
+    front_signed = np.asarray(run.signed_flux[0])
+    back_signed = np.asarray(run.signed_flux[1])
+    scored_front = front_signed[freq_mask]
+    scored_back = back_signed[freq_mask]
+    usable_passband = int(np.sum(freq_mask)) >= _MIN_CLAIMS_BEARING_BINS
+    positive_z_flux = bool(
+        usable_passband and np.all(scored_front > 0.0) and np.all(scored_back > 0.0)
+    )
+    nonfloor_flux = bool(
+        usable_passband
+        and np.all(np.abs(scored_front) >= _NORMALIZATION_FLOOR)
+        and np.all(np.abs(scored_back) >= _NORMALIZATION_FLOOR)
+    )
+    incident_quality_gates = {
+        "usable_passband": bool(usable_passband),
+        "transverse_uniformity": bool(uniformity["passed"]),
+        "analytic_incident_consistency": bool(nonfloor_flux),
+        "same_contract_reference": False,
+    }
+    return {
+        "classification": "inconclusive",
+        "reason": (
+            "same-contract private TFSF-style reference is not implemented; "
+            "slab R/T scoring is intentionally skipped"
+        ),
+        "fixture": ("boundary_expanded_private_tfsf_style_incident_flux_plane_vacuum"),
+        "fixture_name": fixture.name,
+        "fixture_parameters": fixture.to_metadata(),
+        "source_contract": "private_tfsf_style_incident",
+        "normalization": "incident_quality_only_same_contract_reference_required",
+        "reference_missing": True,
+        "reference_contract": "missing_same_contract_private_reference",
+        "slab_rt_scored": False,
+        "public_claim_allowed": False,
+        "usable_bins": int(np.sum(freq_mask)),
+        "scored_freqs_hz": fixture.scored_freqs[freq_mask].tolist(),
+        "fixture_quality_ready": False,
+        "incident_fixture_quality_ready": bool(
+            incident_quality_gates["usable_passband"]
+            and incident_quality_gates["transverse_uniformity"]
+            and incident_quality_gates["analytic_incident_consistency"]
+        ),
+        "fixture_quality_gates": incident_quality_gates,
+        "gates": _empty_rt_gates(),
+        "positive_z_flux": positive_z_flux,
+        "transverse_uniformity": uniformity,
+        "subgrid_vacuum_flux_diagnostics": _flux_diagnostics(
+            run.complex_flux,
+            run.signed_flux,
+            fixture,
+        ),
+        "no_go_reason": _TFSF_NO_GO_REASON,
+        "blocking_diagnostic": (
+            "private post-H/post-E TFSF-style incident hooks are available, "
+            "but there is no same-contract private reference or normalization "
+            "repair; slab R/T scoring and public promotion stay closed"
+        ),
+        "next_prerequisite": _TFSF_NEXT_PREREQUISITE,
+        "diagnostic_basis": (
+            "This private fixture injects +z ex/hy incident fields through "
+            "low-level post-H and post-E SBP-SAT hooks and accumulates only "
+            "private fine-owned flux/DFT planes.  It is not public TFSF and "
+            "does not expose public flux, DFT, S-parameter, port, or true R/T "
+            "observables."
+        ),
+    }
+
+
+@lru_cache(maxsize=None)
 def _plane_rt_metadata() -> dict[str, object]:
+    return _private_tfsf_incident_metadata()
+
+
+@lru_cache(maxsize=None)
+def _analytic_sheet_plane_rt_metadata() -> dict[str, object]:
     sweep = _boundary_expansion_sweep_metadata()
     selected = next(
         fixture
@@ -1786,11 +2081,12 @@ def test_private_plane_flux_matches_uniform_reference_in_homogeneous_cpml_fixtur
 @pytest.mark.slow
 def test_private_plane_true_rt_benchmark_vs_uniform_fine():
     metadata = _plane_rt_metadata()
-    _print_metadata("SBP-SAT private flux true-R/T metadata", metadata)
+    _print_metadata("SBP-SAT private TFSF-style fixture metadata", metadata)
     _fail_or_xfail_inconclusive(
         metadata,
-        "Private analytic-sheet true R/T gate is inconclusive for public "
-        "promotion; support matrix remains deferred.",
+        "Private TFSF-style incident fixture is missing a same-contract "
+        "reference, so slab true R/T scoring and public promotion remain "
+        "deferred.",
     )
 
 
@@ -1798,10 +2094,11 @@ def test_private_plane_true_rt_benchmark_vs_uniform_fine():
 @pytest.mark.slow
 def test_private_plane_true_rt_plane_shift_stability():
     metadata = _plane_rt_metadata()
-    _print_metadata("SBP-SAT private flux true-R/T shift metadata", metadata)
+    _print_metadata("SBP-SAT private TFSF-style no-shift metadata", metadata)
     _fail_or_xfail_inconclusive(
         metadata,
-        "Private plane-shift stability gate is inconclusive; do not promote true R/T.",
+        "Private TFSF-style incident fixture has no same-contract reference; "
+        "do not run plane-shift slab R/T scoring or promote true R/T.",
     )
 
 
@@ -1810,27 +2107,24 @@ def test_private_plane_true_rt_plane_shift_stability():
 def test_private_plane_true_rt_no_go_metadata_is_explicit():
     metadata = _plane_rt_metadata()
 
-    assert metadata["classification"] in {"pass", "inconclusive"}
+    assert metadata["classification"] == "inconclusive"
     assert metadata["public_claim_allowed"] is False
-    assert metadata["source_contract"] == "private_analytic_sheet_source"
-    assert metadata["normalization"] == "vacuum_device_two_run_incident_normalized"
-    assert metadata["fixture"] in {
-        fixture.fixture_key for fixture in _RECOVERY_SWEEP_FIXTURES
-    }
-    assert metadata["fixture_name"] in {
-        fixture.name for fixture in _RECOVERY_SWEEP_FIXTURES
-    }
-    assert metadata["boundary_expansion_sweep"]["candidate_count"] == len(
-        _RECOVERY_SWEEP_FIXTURES
+    assert metadata["source_contract"] == "private_tfsf_style_incident"
+    assert metadata["normalization"] == (
+        "incident_quality_only_same_contract_reference_required"
     )
-    if metadata["classification"] == "pass":
-        assert all(metadata["fixture_quality_gates"].values())
-        assert all(metadata["gates"].values())
-    else:
-        assert metadata["no_go_reason"] == _NO_GO_REASON
-        assert metadata["next_prerequisite"] == _NEXT_PREREQUISITE
-        assert metadata["blocking_diagnostic"]
-        assert not (
-            all(metadata["fixture_quality_gates"].values())
-            and all(metadata["gates"].values())
-        )
+    assert metadata["reference_missing"] is True
+    assert metadata["reference_contract"] == "missing_same_contract_private_reference"
+    assert metadata["slab_rt_scored"] is False
+    assert metadata["fixture_quality_ready"] is False
+    assert metadata["fixture_name"] == _BoundaryExpandedFluxFixture.name
+    assert metadata["fixture"] == (
+        "boundary_expanded_private_tfsf_style_incident_flux_plane_vacuum"
+    )
+    assert metadata["fixture_quality_gates"]["same_contract_reference"] is False
+    assert not all(metadata["fixture_quality_gates"].values())
+    assert not any(metadata["gates"].values())
+    assert metadata["no_go_reason"] == _TFSF_NO_GO_REASON
+    assert metadata["next_prerequisite"] == _TFSF_NEXT_PREREQUISITE
+    assert "post-H/post-E" in metadata["blocking_diagnostic"]
+    assert "not public TFSF" in metadata["diagnostic_basis"]

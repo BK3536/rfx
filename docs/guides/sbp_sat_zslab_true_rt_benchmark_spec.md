@@ -64,17 +64,20 @@ point-probe evidence as calibrated true R/T.
 ## Private flux/DFT benchmark gate
 
 A private fine-owned flux/DFT accumulator and private analytic sheet/source now
-exist for internal SBP-SAT benchmarking:
+exist for internal SBP-SAT benchmarking.  The current recovery attempt also
+adds a private TFSF-style incident field, but only as benchmark-internal
+fixture-quality evidence:
 
 - file: `tests/test_sbp_sat_true_rt_flux_dft_benchmark.py`
-- fixture: translational x/y, guarded all-CPML
-  vacuum/dielectric-slab/vacuum setup using z-normal flux planes fully inside
-  the fine grid; the recorded private candidate is currently the
-  boundary-expanded fixture selected by a bounded two-candidate recovery sweep
-- source contract: private analytic sheet/source accepted only by
-  `run_subgridded_benchmark_flux(...)`; it is not public `Simulation.add_source`,
-  not public TFSF, and not exposed through `Simulation.run()` or `Result`
-- normalization: vacuum/device two-run incident-normalized comparison
+- fixture: translational x/y, guarded all-CPML vacuum setup using z-normal
+  flux planes fully inside the fine grid; the recorded private candidate is
+  currently the boundary-expanded private TFSF-style incident fixture
+- source contract: private TFSF-style incident field accepted only by
+  `run_subgridded_benchmark_flux(...)`; it uses low-level post-H/post-E hooks,
+  is not public `Simulation.add_tfsf_source`, is not public TFSF, and is not
+  exposed through `Simulation.run()` or `Result`
+- normalization: incident-quality-only until a same-contract private reference
+  or normalization repair exists
 - observable contract: private raw DFT accumulators only; not public
   `add_dft_plane_probe`, not public `add_flux_monitor`, and not
   `Result.dft_planes` / `Result.flux_monitors`
@@ -98,23 +101,21 @@ keeps the public claim blocked:
   including multi-step, all-axis, windowed DFT accumulation;
 - private sheet/source lowering and injection are tested as benchmark-only
   implementation details;
-- runtime scoring now requires at least two non-floor passband bins, transverse
-  magnitude/phase uniformity, plane-location robustness, vacuum stability
-  against a uniform-fine reference, and incident-normalized R/T gates;
-- before full incident-normalized R/T scoring, a coarse fixture-quality sweep
-  compares the previous bounded fixture against a boundary-expanded analytic
-  sheet fixture; the expanded fixture is selected (`3464.05 -> 1890.63`
-  quality score, three usable bins), but transverse-uniformity and
-  vacuum-stability gates still fail, so the full R/T rescore is intentionally
-  skipped;
+- runtime scoring now records at least two non-floor passband bins, transverse
+  magnitude/phase uniformity, and analytic incident consistency as diagnostic
+  fixture-quality gates only;
+- slab R/T scoring is intentionally skipped because no same-contract private
+  reference exists for the private TFSF-style incident field; the prior
+  boundary-expanded analytic-sheet sweep is retained as history, not as current
+  slab R/T evidence;
 - the current recorded status is therefore **inconclusive**, not a public
   support promotion and not a reason to reinterpret thresholds.
 
-Because the boundary-expanded analytic-sheet sweep remains below threshold,
-the next prerequisite is a separate private TFSF-style incident-field fixture
-plan or private normalization-repair plan.  Until that exists and passes, the
-private flux/DFT gate remains internal diagnostic evidence only, and the
-support matrix continues to mark true R/T as deferred.
+Because the private TFSF-style incident fixture has no same-contract private
+reference, the next prerequisite is a same-contract private
+reference/normalization repair before reopening slab R/T scoring.  Until that
+exists and passes, the private flux/DFT gate remains internal diagnostic
+evidence only, and the support matrix continues to mark true R/T as deferred.
 
 ## Why true R/T is deferred
 
