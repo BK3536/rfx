@@ -25,6 +25,30 @@ def _fake_fail_closed(tmp_path: Path, *, state: str = "pass") -> dict:
     return {"path": path, "payload": payload}
 
 
+def _fake_split_source_ref(
+    tmp_path: Path, *, family: str = "source_probe", state: str = "pass"
+) -> dict:
+    payload = {
+        "schema_version": 1,
+        "benchmark_contract": "phase_vii_strategy_b_production_readiness",
+        "generated_at": "2026-04-26T00:00:00Z",
+        "rows": [
+            {
+                "family": family,
+                "row_state": "pass",
+                "required_gradient_evidence": {"required": True, "state": state},
+            }
+        ],
+    }
+    path = tmp_path / f"{family}_split_source.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return {
+        "path": path,
+        "ref": {"readiness_quick_artifact": phase9.source_artifact_reference(path)},
+        "payload": payload,
+    }
+
+
 def test_family_run_writes_schema_distinct_artifact_topology(tmp_path):
     fail = _fake_fail_closed(tmp_path)
     result = phase9.build_family_artifacts(
@@ -115,12 +139,14 @@ def test_execute_workload_path_is_reachable_when_guard_allows(monkeypatch, tmp_p
 def test_non_pec_split_source_promotion_requires_executed_full_floor(tmp_path):
     fail = _fake_fail_closed(tmp_path)
     fail_closed = phase9.import_fail_closed_evidence(fail["path"])
+    source_ref = _fake_split_source_ref(tmp_path, family="source_probe")
     provenance = phase9.build_provenance(
         family="source_probe",
         mode="full",
         command=["test"],
         fail_closed=fail_closed,
         thresholds={"max_cell_steps": 1, "execute_workload": True},
+        split_source_refs=source_ref["ref"],
     )
     readiness = phase9.build_readiness_artifact(
         family="source_probe",
@@ -128,6 +154,7 @@ def test_non_pec_split_source_promotion_requires_executed_full_floor(tmp_path):
         fail_closed=fail_closed,
         provenance=provenance,
         split_source_gradient_state="pass",
+        split_source_refs=source_ref["ref"],
     )
 
     gradient = readiness["rows"][0]["required_gradient_evidence"]
@@ -387,6 +414,196 @@ def test_port_proxy_physical_promotion_allows_passive_no_gain_metric(tmp_path):
 
     assert physical["summary"]["family_status"] == "physics_validated_limited"
     assert physical["rows"][0]["row_state"] == "pass"
+
+
+def test_phase9_validate_provenance_detects_split_source_ref_mismatch(tmp_path):
+    fail = _fake_fail_closed(tmp_path)
+    source_ref = _fake_split_source_ref(tmp_path, family="source_probe")
+    result = phase9.build_family_artifacts(
+        family="source_probe",
+        artifact_dir=tmp_path,
+        fail_closed_artifact=fail["path"],
+        split_source_refs=source_ref["ref"],
+    )
+    artifact = json.loads(Path(result["paths"]["readiness"]).read_text())
+    source_ref["path"].write_text(
+        json.dumps({**source_ref["payload"], "generated_at": "2026-04-26T00:01:00Z"}),
+        encoding="utf-8",
+    )
+    expected = phase9.build_provenance(
+        family="source_probe",
+        mode=artifact["provenance"]["mode"],
+        command=artifact["provenance"]["command"],
+        fail_closed=artifact["fail_closed_evidence"],
+        thresholds=artifact["provenance"]["thresholds"],
+        split_source_refs=phase9.refresh_split_source_references(
+            artifact["provenance"]["split_source_artifacts"]
+        ),
+    )
+
+    mismatches = phase9.validate_provenance(artifact, expected)
+    assert "split_source_artifacts" in mismatches
+    assert "split_source_gradient_evidence" in mismatches
+
+
+def test_phase9_summarize_or_quarantine_detects_mutated_split_source_artifact(tmp_path):
+    fail = _fake_fail_closed(tmp_path)
+    source_ref = _fake_split_source_ref(tmp_path, family="source_probe")
+    phase9.build_family_artifacts(
+        family="source_probe",
+        artifact_dir=tmp_path,
+        fail_closed_artifact=fail["path"],
+        split_source_refs=source_ref["ref"],
+    )
+    payload = source_ref["payload"]
+    payload["rows"][0]["required_gradient_evidence"]["state"] = "fail"
+    source_ref["path"].write_text(json.dumps(payload), encoding="utf-8")
+
+    summary = phase9.summarize_artifacts(artifact_dir=tmp_path)
+
+    assert "source_probe:readiness" in summary["stale_context"]
+    assert "source_probe:physical" in summary["stale_context"]
+    assert (
+        "split_source_artifacts" in summary["stale_context"]["source_probe:readiness"]
+    )
+    assert "split_source_artifacts" in summary["stale_context"]["source_probe:physical"]
+
+
+def test_phase9_source_probe_physical_requires_causal_full_floor_oracle(tmp_path):
+    fail_closed = phase9.import_fail_closed_evidence(
+        _fake_fail_closed(tmp_path)["path"]
+    )
+    provenance = phase9.build_provenance(
+        family="source_probe",
+        mode="full",
+        command=["test"],
+        fail_closed=fail_closed,
+        thresholds={"max_cell_steps": 1, "execute_workload": True},
+        split_source_refs=_fake_split_source_ref(tmp_path, family="source_probe")[
+            "ref"
+        ],
+    )
+    finite_only = phase9.build_physical_artifact(
+        family="source_probe",
+        execution=phase9.simulated_pass_result("source_probe"),
+        fail_closed=fail_closed,
+        provenance=provenance,
+    )
+    assert finite_only["summary"]["family_status"] == "physics_experimental"
+    assert finite_only["rows"][0]["required_physical_oracle"]["present"] is False
+
+    execution = phase9.simulated_pass_result("source_probe")
+    execution.metrics.update(
+        {
+            "source_probe_causal_full_floor_pass": True,
+            "causal_margin_steps": 3.0,
+            "source_probe_distance_m": 0.01,
+            "dt_s": 1e-12,
+        }
+    )
+    physical = phase9.build_physical_artifact(
+        family="source_probe",
+        execution=execution,
+        fail_closed=fail_closed,
+        provenance=provenance,
+    )
+    assert physical["summary"]["family_status"] == "physics_validated_limited"
+    assert physical["rows"][0]["metric_name"] == "causal_margin_steps"
+
+
+def test_phase9_cpml_topology_physical_requires_tail_or_post_source_oracle(tmp_path):
+    fail_closed = phase9.import_fail_closed_evidence(
+        _fake_fail_closed(tmp_path)["path"]
+    )
+    provenance = phase9.build_provenance(
+        family="cpml_topology",
+        mode="full",
+        command=["test"],
+        fail_closed=fail_closed,
+        thresholds={"max_cell_steps": 1, "execute_workload": True},
+        split_source_refs=_fake_split_source_ref(tmp_path, family="cpml_topology")[
+            "ref"
+        ],
+    )
+    finite_only = phase9.build_physical_artifact(
+        family="cpml_topology",
+        execution=phase9.simulated_pass_result("cpml_topology"),
+        fail_closed=fail_closed,
+        provenance=provenance,
+    )
+    assert finite_only["summary"]["family_status"] == "physics_experimental"
+    assert finite_only["rows"][0]["required_physical_oracle"]["present"] is False
+
+    execution = phase9.simulated_pass_result("cpml_topology")
+    execution.metrics.update(
+        {
+            "cpml_topology_tail_full_floor_pass": True,
+            "tail_to_previous_quarter_ratio": 0.7,
+            "cpml_tail_growth_limit": 1.1,
+            "post_source_window": {"source_off_window_verified": True},
+        }
+    )
+    physical = phase9.build_physical_artifact(
+        family="cpml_topology",
+        execution=execution,
+        fail_closed=fail_closed,
+        provenance=provenance,
+    )
+    assert physical["summary"]["family_status"] == "physics_validated_limited"
+    assert physical["rows"][0]["metric_name"] == "tail_to_previous_quarter_ratio"
+
+
+def test_phase9_source_topology_finite_only_execution_does_not_physics_promote(
+    tmp_path,
+):
+    fail_closed = phase9.import_fail_closed_evidence(
+        _fake_fail_closed(tmp_path)["path"]
+    )
+    for family in ("source_probe", "cpml_topology"):
+        provenance = phase9.build_provenance(
+            family=family,
+            mode="full",
+            command=["test"],
+            fail_closed=fail_closed,
+            thresholds={"max_cell_steps": 1, "execute_workload": True},
+            split_source_refs=_fake_split_source_ref(tmp_path, family=family)["ref"],
+        )
+        physical = phase9.build_physical_artifact(
+            family=family,
+            execution=phase9.simulated_pass_result(family),
+            fail_closed=fail_closed,
+            provenance=provenance,
+        )
+        assert physical["summary"]["family_status"] == "physics_experimental"
+        assert physical["summary"]["family_status"] != "physics_validated_limited"
+
+
+def test_phase9_artifact_emits_debug_only_dirty_worktree_status_when_dirty(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        phase9,
+        "worktree_signature",
+        lambda: {"head": "test", "dirty": True, "status_sha256": "dirty"},
+    )
+    fail = _fake_fail_closed(tmp_path)
+    result = phase9.build_family_artifacts(
+        family="source_probe",
+        artifact_dir=tmp_path,
+        fail_closed_artifact=fail["path"],
+        split_source_refs=_fake_split_source_ref(tmp_path, family="source_probe")[
+            "ref"
+        ],
+    )
+
+    assert (
+        result["readiness"]["promotion_worktree_status"]
+        == phase9.PROMOTION_WORKTREE_DIRTY
+    )
+    assert (
+        result["physical"]["promotion_worktree_status"]
+        == phase9.PROMOTION_WORKTREE_DIRTY
+    )
 
 
 def test_cli_family_and_summary_commands(tmp_path):

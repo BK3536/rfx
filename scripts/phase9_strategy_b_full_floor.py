@@ -54,6 +54,9 @@ IMMUTABLE_SOURCE_REF_FIELDS = (
     "source_schema_version",
     "source_generated_at",
 )
+PROMOTION_WORKTREE_CLEAN = "clean_promotable_candidate"
+PROMOTION_WORKTREE_DIRTY = "debug_only_dirty_worktree"
+
 
 READINESS_ARTIFACT_TEMPLATE = "phase9_{family}_readiness_full.json"
 PHYSICAL_ARTIFACT_TEMPLATE = "phase9_{family}_physical_full.json"
@@ -228,6 +231,17 @@ def default_split_source_references(
     return {"readiness_quick_artifact": source_artifact_reference(path)}
 
 
+def refresh_split_source_references(refs: dict[str, Any]) -> dict[str, Any]:
+    refreshed: dict[str, Any] = {}
+    for name, ref in _iter_source_refs(refs):
+        path = Path(str(ref.get("path", "")))
+        if ref.get("missing") is True or not path.exists():
+            refreshed[name] = {**ref, "missing": True}
+            continue
+        refreshed[name] = source_artifact_reference(path)
+    return refreshed
+
+
 def _iter_source_refs(refs: dict[str, Any]) -> Iterable[tuple[str, dict[str, Any]]]:
     for name, ref in refs.items():
         if isinstance(ref, dict):
@@ -287,6 +301,22 @@ def derive_split_source_gradient_state(
     return "not_evaluated", errors
 
 
+def split_source_gradient_evidence(family: str, refs: dict[str, Any]) -> dict[str, Any]:
+    state, errors = derive_split_source_gradient_state(family, refs)
+    return {
+        "family": family,
+        "state": state,
+        "errors": errors,
+        "source_artifacts": refs,
+    }
+
+
+def promotion_worktree_status(provenance: dict[str, Any]) -> str:
+    if provenance.get("worktree_signature", {}).get("dirty") is False:
+        return PROMOTION_WORKTREE_CLEAN
+    return PROMOTION_WORKTREE_DIRTY
+
+
 def build_provenance(
     *,
     family: str,
@@ -294,8 +324,10 @@ def build_provenance(
     command: list[str] | None,
     fail_closed: dict[str, Any],
     thresholds: dict[str, Any] | None = None,
+    split_source_refs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     floor = _floor_for_family(family)
+    refs = split_source_refs or default_split_source_references()
     return {
         "phase_ix_schema_version": SCHEMA_VERSION,
         "worktree_signature": worktree_signature(),
@@ -316,7 +348,8 @@ def build_provenance(
         "environment": environment_summary(),
         "fail_closed_source_id": fail_closed.get("id"),
         "fail_closed_source_mode": fail_closed.get("mode"),
-        "split_source_artifacts": default_split_source_references(),
+        "split_source_artifacts": refs,
+        "split_source_gradient_evidence": split_source_gradient_evidence(family, refs),
     }
 
 
@@ -336,6 +369,8 @@ def validate_provenance(
         "domain_m",
         "dx_m",
         "fail_closed_source_id",
+        "split_source_artifacts",
+        "split_source_gradient_evidence",
     ):
         if provenance.get(key) != expected.get(key):
             mismatches.append(key)
@@ -455,8 +490,169 @@ def _series_metrics(series: Any) -> dict[str, Any]:
     return {
         "time_series_shape": list(np.asarray(series).shape),
         "finite": bool(np.all(np.isfinite(arr))),
+        "sample_count": int(arr.size),
         "peak_abs": float(np.max(np.abs(arr))) if arr.size else 0.0,
         "observable_energy_proxy": float(np.sum(np.abs(arr.astype(np.float64)) ** 2)),
+    }
+
+
+def _source_probe_full_floor_oracle(
+    series: Any, *, sim: Any, inputs: Any
+) -> dict[str, Any]:
+    arr = np.asarray(series).reshape(-1)
+    finite_metrics = _series_metrics(arr)
+    dt = float(inputs.grid.dt)
+    distance_m = phase8._source_probe_distance_m(sim)
+    travel_time_s = float(distance_m / phase8.C0)
+    threshold_abs = max(
+        finite_metrics["peak_abs"] * phase8.DEFAULT_CAUSAL_THRESHOLD_RATIO,
+        1e-15,
+    )
+    significant = np.flatnonzero(np.abs(arr) >= threshold_abs)
+    first_index = int(significant[0]) if significant.size else None
+    peak_index = int(np.argmax(np.abs(arr))) if arr.size else None
+    first_time_s = None if first_index is None else float(first_index * dt)
+    peak_time_s = None if peak_index is None else float(peak_index * dt)
+    earliest_allowed_s = travel_time_s - 2.0 * dt
+    causal_margin_steps = (
+        None
+        if first_time_s is None
+        else float((first_time_s - earliest_allowed_s) / dt)
+    )
+    causal_pass = (
+        bool(finite_metrics["finite"])
+        and first_time_s is not None
+        and first_time_s >= earliest_allowed_s
+    )
+    return {
+        "physical_oracle_type": "causal_propagation_and_bounded_observable_full_floor",
+        "source_probe_causal_full_floor_pass": bool(causal_pass),
+        "causal_threshold_ratio": phase8.DEFAULT_CAUSAL_THRESHOLD_RATIO,
+        "early_arrival_slack_steps": 2.0,
+        "dt_s": dt,
+        "source_probe_distance_m": distance_m,
+        "c0_travel_time_s": travel_time_s,
+        "earliest_allowed_response_s": earliest_allowed_s,
+        "first_significant_response_index": first_index,
+        "first_significant_response_s": first_time_s,
+        "peak_response_index": peak_index,
+        "peak_response_s": peak_time_s,
+        "significance_threshold_abs": threshold_abs,
+        "causal_margin_steps": causal_margin_steps,
+    }
+
+
+def _cpml_topology_full_floor_oracle(series: Any, *, inputs: Any) -> dict[str, Any]:
+    arr = np.asarray(series).reshape(-1)
+    finite_metrics = _series_metrics(arr)
+    graded, window_metrics = phase8._post_source_window(arr, inputs)
+    ratio_metrics = phase8._quarter_energy_ratios(graded)
+    tail_ratio = float(ratio_metrics["tail_to_previous_quarter_ratio"])
+    tail_pass = (
+        bool(finite_metrics["finite"])
+        and bool(window_metrics["source_off_window_verified"])
+        and tail_ratio <= phase8.DEFAULT_CPML_TAIL_GROWTH_LIMIT
+    )
+    return {
+        "physical_oracle_type": "cpml_tail_energy_absorption_full_floor",
+        "cpml_topology_tail_full_floor_pass": bool(tail_pass),
+        "cpml_tail_growth_limit": phase8.DEFAULT_CPML_TAIL_GROWTH_LIMIT,
+        "tail_to_previous_quarter_ratio": tail_ratio,
+        "tail_to_total_energy_ratio": float(
+            ratio_metrics["tail_to_total_energy_ratio"]
+        ),
+        "quarter_energy": ratio_metrics["quarter_energy"],
+        "post_source_window": window_metrics,
+    }
+
+
+def _physical_oracle_evaluation(
+    family: str, metrics: dict[str, Any], floor: dict[str, Any]
+) -> dict[str, Any]:
+    if family == "source_probe":
+        required = (
+            "source_probe_causal_full_floor_pass",
+            "causal_margin_steps",
+            "source_probe_distance_m",
+            "dt_s",
+        )
+        missing = [key for key in required if key not in metrics]
+        return {
+            "present": not missing,
+            "passed": metrics.get("source_probe_causal_full_floor_pass") is True,
+            "missing": missing,
+            "oracle_type": "causal_propagation_and_bounded_observable_full_floor",
+            "metric_name": "causal_margin_steps",
+            "comparator": ">= 0 after distance/C0 - 2*dt lower bound",
+            "tolerance": {
+                "causal_threshold_ratio": metrics.get(
+                    "causal_threshold_ratio", phase8.DEFAULT_CAUSAL_THRESHOLD_RATIO
+                ),
+                "early_arrival_slack_steps": metrics.get(
+                    "early_arrival_slack_steps", 2.0
+                ),
+            },
+            "measured_value": metrics.get("causal_margin_steps"),
+        }
+    if family == "cpml_topology":
+        required = (
+            "cpml_topology_tail_full_floor_pass",
+            "tail_to_previous_quarter_ratio",
+            "cpml_tail_growth_limit",
+            "post_source_window",
+        )
+        missing = [key for key in required if key not in metrics]
+        return {
+            "present": not missing,
+            "passed": metrics.get("cpml_topology_tail_full_floor_pass") is True,
+            "missing": missing,
+            "oracle_type": "cpml_tail_energy_absorption_full_floor",
+            "metric_name": "tail_to_previous_quarter_ratio",
+            "comparator": "<= cpml_tail_growth_limit",
+            "tolerance": {
+                "cpml_tail_growth_limit": metrics.get(
+                    "cpml_tail_growth_limit", phase8.DEFAULT_CPML_TAIL_GROWTH_LIMIT
+                )
+            },
+            "measured_value": metrics.get("tail_to_previous_quarter_ratio"),
+        }
+    if family == "port_proxy":
+        required = ("passive_no_gain_pass", "passive_to_excited_power_ratio")
+        missing = [key for key in required if key not in metrics]
+        return {
+            "present": not missing,
+            "passed": metrics.get("passive_no_gain_pass") is True,
+            "missing": missing,
+            "oracle_type": "passive_load_no_gain_full_floor",
+            "metric_name": "passive_to_excited_power_ratio",
+            "comparator": "<= passive_gain_limit",
+            "tolerance": {
+                "passive_gain_limit": metrics.get(
+                    "passive_gain_limit", phase8.DEFAULT_PASSIVE_GAIN_LIMIT
+                )
+            },
+            "measured_value": metrics.get("passive_to_excited_power_ratio"),
+        }
+    if family == "pec_topology" and not floor.get("representative", True):
+        return {
+            "present": False,
+            "passed": False,
+            "missing": ["representative_pec_topology_floor"],
+            "oracle_type": "pec_topology_no_representative_floor",
+            "metric_name": "representative_pec_topology_physical_oracle",
+            "comparator": "requires approved representative PEC topology floor",
+            "tolerance": None,
+            "measured_value": None,
+        }
+    return {
+        "present": False,
+        "passed": False,
+        "missing": ["family_specific_physical_oracle"],
+        "oracle_type": "missing_family_specific_full_floor_oracle",
+        "metric_name": "family_specific_full_floor_oracle",
+        "comparator": "required oracle must pass",
+        "tolerance": None,
+        "measured_value": None,
     }
 
 
@@ -472,6 +668,9 @@ def _execute_source_probe_floor() -> FloorExecutionResult:
     )
     runtime_s = time.perf_counter() - started
     metrics = _series_metrics(result.time_series)
+    metrics.update(
+        _source_probe_full_floor_oracle(result.time_series, sim=sim, inputs=inputs)
+    )
     cell_count = _floor_cell_count("source_probe")
     strategy_a_gb, strategy_b_gb = phase7._estimate_memory(
         sim,
@@ -545,6 +744,19 @@ def _execute_topology_floor(family: str) -> FloorExecutionResult:
         "history_last": float(history[-1]) if history.size else None,
         "density_shape": list(np.asarray(result.density).shape),
     }
+    if family == "cpml_topology":
+        oracle_inputs = sim.build_hybrid_phase1_inputs(n_steps=floor.n_steps)
+        oracle_result = sim.forward_hybrid_phase1_from_inputs(
+            oracle_inputs,
+            strategy="b",
+            checkpoint_every=floor.checkpoint_every,
+        )
+        metrics.update(
+            _cpml_topology_full_floor_oracle(
+                oracle_result.time_series,
+                inputs=oracle_inputs,
+            )
+        )
     cell_count = _floor_cell_count(family)
     strategy_a_gb, strategy_b_gb = phase7._estimate_memory(
         sim,
@@ -708,7 +920,11 @@ def build_readiness_artifact(
     split_source_refs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     case = _case_for_family(family)
-    split_source_refs = split_source_refs or default_split_source_references()
+    split_source_refs = (
+        split_source_refs
+        or provenance.get("split_source_artifacts")
+        or default_split_source_references()
+    )
     derived_gradient_state, split_source_errors = derive_split_source_gradient_state(
         family, split_source_refs
     )
@@ -797,6 +1013,7 @@ def build_readiness_artifact(
         "preserves_phase_vii_metadata_full_mode": True,
         "generated_at": provenance["generated_at"],
         "family": family,
+        "promotion_worktree_status": promotion_worktree_status(provenance),
         "provenance": provenance,
         "fail_closed_evidence": fail_closed,
         "rows": [row],
@@ -819,11 +1036,13 @@ def build_physical_artifact(
 ) -> dict[str, Any]:
     case = _case_for_family(family)
     floor = case.floor.as_dict()
-    port_proxy_physics_pass = family != "port_proxy" or (
-        execution.metrics.get("passive_no_gain_pass") is True
-        and execution.metrics.get("passive_to_excited_power_ratio") is not None
-    )
-    if execution.executed and execution.row_state == "pass" and port_proxy_physics_pass:
+    oracle = _physical_oracle_evaluation(family, execution.metrics, floor)
+    if (
+        execution.executed
+        and execution.row_state == "pass"
+        and oracle["present"]
+        and oracle["passed"]
+    ):
         row_state = "pass"
         physical_status = (
             "physics_validated_limited"
@@ -831,6 +1050,10 @@ def build_physical_artifact(
             else "physics_blocked"
         )
         evidence_strength = "representative_full"
+    elif execution.executed and execution.row_state == "pass" and oracle["present"]:
+        row_state = "fail"
+        physical_status = "physics_blocked"
+        evidence_strength = "representative_full_failed_physical_oracle"
     elif execution.executed and execution.row_state == "pass":
         row_state = "not_evaluated"
         physical_status = "physics_experimental"
@@ -849,17 +1072,24 @@ def build_physical_artifact(
         "mode": "full",
         "boundary": floor["boundary"],
         "objective_family": case.objective_family,
-        "oracle_type": "phase_ix_representative_physical_floor",
-        "metric_name": "representative_full_floor_execution",
-        "comparator": "executed representative physical oracle must pass",
-        "tolerance": None,
-        "measured_value": None,
+        "oracle_type": oracle["oracle_type"],
+        "metric_name": oracle["metric_name"],
+        "comparator": oracle["comparator"],
+        "tolerance": oracle["tolerance"],
+        "measured_value": oracle["measured_value"],
         "physical_metrics": execution.metrics,
+        "required_physical_oracle": {
+            "present": oracle["present"],
+            "passed": oracle["passed"],
+            "missing": oracle["missing"],
+        },
         "row_state": row_state,
         "reason": (
             execution.reason
-            if port_proxy_physics_pass or family != "port_proxy"
-            else "port-proxy full-floor execution did not include required passive-load no-gain evidence"
+            if row_state == "pass"
+            else f"{family} full-floor physical oracle missing or failed: {oracle['missing']}"
+            if execution.executed and execution.row_state == "pass"
+            else execution.reason
         ),
         "evidence_strength": evidence_strength,
         "raw_parity_supplemental": None,
@@ -878,6 +1108,7 @@ def build_physical_artifact(
         "preserves_phase_viii_metadata_full_mode": True,
         "generated_at": provenance["generated_at"],
         "family": family,
+        "promotion_worktree_status": promotion_worktree_status(provenance),
         "provenance": provenance,
         "fail_closed_evidence": fail_closed,
         "rows": [row],
@@ -914,6 +1145,7 @@ def build_family_artifacts(
     execution: FloorExecutionResult | None = None,
     command: list[str] | None = None,
     stale_policy: Literal["reject", "quarantine", "overwrite"] = "quarantine",
+    split_source_refs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if family not in FAMILIES:
         raise ValueError(f"unknown family {family!r}")
@@ -931,6 +1163,7 @@ def build_family_artifacts(
         command=command,
         fail_closed=fail_closed,
         thresholds=thresholds,
+        split_source_refs=split_source_refs,
     )
     paths = artifact_paths(artifact_dir, family)
     stale_context = fence_existing_artifacts(
@@ -984,6 +1217,9 @@ def summarize_artifacts(
                 command=payload.get("provenance", {}).get("command"),
                 fail_closed=payload.get("fail_closed_evidence", {}),
                 thresholds=payload.get("provenance", {}).get("thresholds", {}),
+                split_source_refs=refresh_split_source_references(
+                    payload.get("provenance", {}).get("split_source_artifacts", {})
+                ),
             )
             mismatches = validate_provenance(payload, expected)
             if mismatches and not allow_stale:
@@ -993,6 +1229,7 @@ def summarize_artifacts(
                 "sha256": file_sha256(paths["readiness"]),
                 "status": payload.get("summary", {}).get("family_status"),
                 "execution_status": payload.get("summary", {}).get("execution_status"),
+                "promotion_worktree_status": payload.get("promotion_worktree_status"),
             }
             source = payload.get("fail_closed_evidence", {})
             if source.get("id"):
@@ -1007,6 +1244,9 @@ def summarize_artifacts(
                 command=payload.get("provenance", {}).get("command"),
                 fail_closed=payload.get("fail_closed_evidence", {}),
                 thresholds=payload.get("provenance", {}).get("thresholds", {}),
+                split_source_refs=refresh_split_source_references(
+                    payload.get("provenance", {}).get("split_source_artifacts", {})
+                ),
             )
             mismatches = validate_provenance(payload, expected)
             if mismatches and not allow_stale:
@@ -1016,6 +1256,7 @@ def summarize_artifacts(
                 "sha256": file_sha256(paths["physical"]),
                 "status": payload.get("summary", {}).get("family_status"),
                 "execution_status": payload.get("summary", {}).get("execution_status"),
+                "promotion_worktree_status": payload.get("promotion_worktree_status"),
             }
             source = payload.get("fail_closed_evidence", {})
             if source.get("id"):
