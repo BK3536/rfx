@@ -566,6 +566,38 @@ def _cpml_topology_full_floor_oracle(series: Any, *, inputs: Any) -> dict[str, A
     }
 
 
+def _pec_topology_full_floor_oracle(series: Any, *, inputs: Any) -> dict[str, Any]:
+    arr = np.asarray(series).reshape(-1)
+    finite_metrics = _series_metrics(arr)
+    graded, window_metrics = phase8._post_source_window(arr, inputs)
+    ratio_metrics = phase8._quarter_energy_ratios(graded)
+    tail_ratio = float(ratio_metrics["tail_to_previous_quarter_ratio"])
+    tail_to_total = float(ratio_metrics["tail_to_total_energy_ratio"])
+    ratio_metrics_finite = bool(
+        math.isfinite(tail_ratio)
+        and math.isfinite(tail_to_total)
+        and all(
+            math.isfinite(float(value)) for value in ratio_metrics["quarter_energy"]
+        )
+    )
+    bounded_pass = (
+        bool(finite_metrics["finite"])
+        and bool(window_metrics["source_off_window_verified"])
+        and ratio_metrics_finite
+        and tail_ratio <= phase8.DEFAULT_PEC_ENERGY_GROWTH_LIMIT
+    )
+    return {
+        "physical_oracle_type": "pec_lossless_bounded_observable_full_floor",
+        "pec_topology_bounded_full_floor_pass": bool(bounded_pass),
+        "pec_energy_growth_limit": phase8.DEFAULT_PEC_ENERGY_GROWTH_LIMIT,
+        "tail_to_previous_quarter_ratio": tail_ratio,
+        "tail_to_total_energy_ratio": tail_to_total,
+        "quarter_energy": ratio_metrics["quarter_energy"],
+        "ratio_metrics_finite": ratio_metrics_finite,
+        "post_source_window": window_metrics,
+    }
+
+
 def _physical_oracle_evaluation(
     family: str, metrics: dict[str, Any], floor: dict[str, Any]
 ) -> dict[str, Any]:
@@ -633,16 +665,39 @@ def _physical_oracle_evaluation(
             },
             "measured_value": metrics.get("passive_to_excited_power_ratio"),
         }
-    if family == "pec_topology" and not floor.get("representative", True):
+    if family == "pec_topology":
+        if not floor.get("representative", True):
+            return {
+                "present": False,
+                "passed": False,
+                "missing": ["representative_pec_topology_floor"],
+                "oracle_type": "pec_topology_no_representative_floor",
+                "metric_name": "representative_pec_topology_physical_oracle",
+                "comparator": "requires approved representative PEC topology floor",
+                "tolerance": None,
+                "measured_value": None,
+            }
+        required = (
+            "pec_topology_bounded_full_floor_pass",
+            "tail_to_previous_quarter_ratio",
+            "pec_energy_growth_limit",
+            "post_source_window",
+            "ratio_metrics_finite",
+        )
+        missing = [key for key in required if key not in metrics]
         return {
-            "present": False,
-            "passed": False,
-            "missing": ["representative_pec_topology_floor"],
-            "oracle_type": "pec_topology_no_representative_floor",
-            "metric_name": "representative_pec_topology_physical_oracle",
-            "comparator": "requires approved representative PEC topology floor",
-            "tolerance": None,
-            "measured_value": None,
+            "present": not missing,
+            "passed": metrics.get("pec_topology_bounded_full_floor_pass") is True,
+            "missing": missing,
+            "oracle_type": "pec_lossless_bounded_observable_full_floor",
+            "metric_name": "tail_to_previous_quarter_ratio",
+            "comparator": "<= pec_energy_growth_limit with verified post-source window",
+            "tolerance": {
+                "pec_energy_growth_limit": metrics.get(
+                    "pec_energy_growth_limit", phase8.DEFAULT_PEC_ENERGY_GROWTH_LIMIT
+                )
+            },
+            "measured_value": metrics.get("tail_to_previous_quarter_ratio"),
         }
     return {
         "present": False,
@@ -744,19 +799,27 @@ def _execute_topology_floor(family: str) -> FloorExecutionResult:
         "history_last": float(history[-1]) if history.size else None,
         "density_shape": list(np.asarray(result.density).shape),
     }
-    if family == "cpml_topology":
+    if family in {"cpml_topology", "pec_topology"}:
         oracle_inputs = sim.build_hybrid_phase1_inputs(n_steps=floor.n_steps)
         oracle_result = sim.forward_hybrid_phase1_from_inputs(
             oracle_inputs,
             strategy="b",
             checkpoint_every=floor.checkpoint_every,
         )
-        metrics.update(
-            _cpml_topology_full_floor_oracle(
-                oracle_result.time_series,
-                inputs=oracle_inputs,
+        if family == "cpml_topology":
+            metrics.update(
+                _cpml_topology_full_floor_oracle(
+                    oracle_result.time_series,
+                    inputs=oracle_inputs,
+                )
             )
-        )
+        else:
+            metrics.update(
+                _pec_topology_full_floor_oracle(
+                    oracle_result.time_series,
+                    inputs=oracle_inputs,
+                )
+            )
     cell_count = _floor_cell_count(family)
     strategy_a_gb, strategy_b_gb = phase7._estimate_memory(
         sim,

@@ -260,18 +260,34 @@ def test_fail_closed_rerun_failure_precedence_over_imported_pass(tmp_path):
     assert phase9.fail_closed_pass(chosen) is False
 
 
-def test_pec_remains_limited_without_representative_floor(tmp_path):
+def test_pec_representative_floor_defers_without_explicit_execution(tmp_path):
     fail = _fake_fail_closed(tmp_path)
     result = phase9.build_family_artifacts(
         family="pec_topology",
         artifact_dir=tmp_path,
         fail_closed_artifact=fail["path"],
+        split_source_refs=_fake_split_source_ref(tmp_path, family="pec_topology")[
+            "ref"
+        ],
     )
     readiness = result["readiness"]
 
-    assert readiness["rows"][0]["full_floor_execution"]["status"] == "defer_limited"
+    assert (
+        readiness["rows"][0]["full_floor_execution"]["status"]
+        == "deferred_requires_explicit_execution"
+    )
     assert readiness["summary"]["family_status"] == "experimental_limited"
     assert readiness["summary"]["family_status"] != "production_ready_limited"
+
+
+def test_pec_nonrepresentative_floor_remains_safety_fallback():
+    oracle = phase9._physical_oracle_evaluation(
+        "pec_topology", {}, {"representative": False}
+    )
+
+    assert oracle["present"] is False
+    assert oracle["passed"] is False
+    assert oracle["missing"] == ["representative_pec_topology_floor"]
 
 
 def test_stale_provenance_is_reported_in_summary(tmp_path):
@@ -553,13 +569,115 @@ def test_phase9_cpml_topology_physical_requires_tail_or_post_source_oracle(tmp_p
     assert physical["rows"][0]["metric_name"] == "tail_to_previous_quarter_ratio"
 
 
+def test_phase9_pec_topology_physical_requires_bounded_post_source_oracle(tmp_path):
+    fail_closed = phase9.import_fail_closed_evidence(
+        _fake_fail_closed(tmp_path)["path"]
+    )
+    provenance = phase9.build_provenance(
+        family="pec_topology",
+        mode="full",
+        command=["test"],
+        fail_closed=fail_closed,
+        thresholds={"max_cell_steps": 1, "execute_workload": True},
+        split_source_refs=_fake_split_source_ref(tmp_path, family="pec_topology")[
+            "ref"
+        ],
+    )
+    finite_only = phase9.build_physical_artifact(
+        family="pec_topology",
+        execution=phase9.simulated_pass_result("pec_topology"),
+        fail_closed=fail_closed,
+        provenance=provenance,
+    )
+    assert finite_only["summary"]["family_status"] == "physics_experimental"
+    assert finite_only["rows"][0]["required_physical_oracle"]["present"] is False
+
+    execution = phase9.simulated_pass_result("pec_topology")
+    execution.metrics.update(
+        {
+            "pec_topology_bounded_full_floor_pass": True,
+            "tail_to_previous_quarter_ratio": 0.95,
+            "tail_to_total_energy_ratio": 0.25,
+            "pec_energy_growth_limit": 1.1,
+            "quarter_energy": [1.0, 1.0, 1.0, 0.95],
+            "ratio_metrics_finite": True,
+            "post_source_window": {"source_off_window_verified": True},
+        }
+    )
+    physical = phase9.build_physical_artifact(
+        family="pec_topology",
+        execution=execution,
+        fail_closed=fail_closed,
+        provenance=provenance,
+    )
+    assert physical["summary"]["family_status"] == "physics_validated_limited"
+    assert physical["rows"][0]["metric_name"] == "tail_to_previous_quarter_ratio"
+
+
+def test_phase9_pec_topology_physical_blocks_failed_or_incomplete_oracle(tmp_path):
+    fail_closed = phase9.import_fail_closed_evidence(
+        _fake_fail_closed(tmp_path)["path"]
+    )
+    provenance = phase9.build_provenance(
+        family="pec_topology",
+        mode="full",
+        command=["test"],
+        fail_closed=fail_closed,
+        thresholds={"max_cell_steps": 1, "execute_workload": True},
+        split_source_refs=_fake_split_source_ref(tmp_path, family="pec_topology")[
+            "ref"
+        ],
+    )
+    bad_cases = [
+        {
+            "pec_topology_bounded_full_floor_pass": False,
+            "tail_to_previous_quarter_ratio": 1.2,
+            "tail_to_total_energy_ratio": 0.3,
+            "pec_energy_growth_limit": 1.1,
+            "quarter_energy": [1.0, 1.0, 1.0, 1.2],
+            "ratio_metrics_finite": True,
+            "post_source_window": {"source_off_window_verified": True},
+        },
+        {
+            "pec_topology_bounded_full_floor_pass": False,
+            "tail_to_previous_quarter_ratio": 0.9,
+            "tail_to_total_energy_ratio": 0.2,
+            "pec_energy_growth_limit": 1.1,
+            "quarter_energy": [1.0, 1.0, 1.0, 0.9],
+            "ratio_metrics_finite": True,
+            "post_source_window": {"source_off_window_verified": False},
+        },
+        {
+            "pec_topology_bounded_full_floor_pass": False,
+            "tail_to_previous_quarter_ratio": float("nan"),
+            "tail_to_total_energy_ratio": float("nan"),
+            "pec_energy_growth_limit": 1.1,
+            "quarter_energy": [],
+            "ratio_metrics_finite": False,
+            "post_source_window": {"source_off_window_verified": True},
+        },
+    ]
+    for metrics in bad_cases:
+        execution = phase9.simulated_pass_result("pec_topology")
+        execution.metrics.update(metrics)
+        physical = phase9.build_physical_artifact(
+            family="pec_topology",
+            execution=execution,
+            fail_closed=fail_closed,
+            provenance=provenance,
+        )
+        assert physical["summary"]["family_status"] == "physics_blocked"
+        assert physical["rows"][0]["required_physical_oracle"]["present"] is True
+        assert physical["rows"][0]["required_physical_oracle"]["passed"] is False
+
+
 def test_phase9_source_topology_finite_only_execution_does_not_physics_promote(
     tmp_path,
 ):
     fail_closed = phase9.import_fail_closed_evidence(
         _fake_fail_closed(tmp_path)["path"]
     )
-    for family in ("source_probe", "cpml_topology"):
+    for family in ("source_probe", "cpml_topology", "pec_topology"):
         provenance = phase9.build_provenance(
             family=family,
             mode="full",

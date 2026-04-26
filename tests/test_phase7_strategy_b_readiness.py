@@ -8,7 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "phase7_strategy_b_readiness.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[1] / "scripts" / "phase7_strategy_b_readiness.py"
+)
 
 
 def _load_module():
@@ -33,7 +35,9 @@ def _row(*, state="pass", mode="quick", gradient_state="pass", meets_floor=False
 def test_phase7_classifier_keeps_quick_only_evidence_experimental():
     module = _load_module()
 
-    status = module.classify_family([_row(state="pass", mode="quick", gradient_state="pass")])
+    status = module.classify_family(
+        [_row(state="pass", mode="quick", gradient_state="pass")]
+    )
 
     assert status["status"] == "experimental_limited"
     assert "missing full-mode workload-floor evidence" in status["reasons"]
@@ -43,12 +47,21 @@ def test_phase7_classifier_requires_gradient_for_limited_production_status():
     module = _load_module()
 
     missing_gradient = module.classify_family(
-        [_row(state="pass", mode="full", gradient_state="not_evaluated", meets_floor=True)]
+        [
+            _row(
+                state="pass",
+                mode="full",
+                gradient_state="not_evaluated",
+                meets_floor=True,
+            )
+        ]
     )
     gradient_passed = module.classify_family(
         [_row(state="pass", mode="full", gradient_state="pass", meets_floor=True)]
     )
-    failed = module.classify_family([_row(state="fail", mode="full", gradient_state="pass", meets_floor=True)])
+    failed = module.classify_family(
+        [_row(state="fail", mode="full", gradient_state="pass", meets_floor=True)]
+    )
 
     assert missing_gradient["status"] == "experimental_limited"
     assert "missing required gradient evidence" in missing_gradient["reasons"]
@@ -63,7 +76,14 @@ def test_phase7_classifier_warn_and_not_evaluated_contracts_do_not_promote():
         [_row(state="warn", mode="full", gradient_state="pass", meets_floor=False)]
     )
     not_evaluated_status = module.classify_family(
-        [_row(state="not_evaluated", mode="full", gradient_state="not_evaluated", meets_floor=True)]
+        [
+            _row(
+                state="not_evaluated",
+                mode="full",
+                gradient_state="not_evaluated",
+                meets_floor=True,
+            )
+        ]
     )
 
     assert warn_status["status"] == "experimental_limited"
@@ -99,7 +119,10 @@ def test_phase7_quick_report_schema_runtime_rows_and_fail_closed_audit():
         assert row["checkpoint_every"] == 3
         assert row["correctness_metric"] <= report["thresholds"]["parity"]
         assert row["required_gradient_evidence"]["state"] == "pass"
-        assert row["strategy_b_estimated_memory_gb"] < row["strategy_a_estimated_memory_gb"]
+        assert (
+            row["strategy_b_estimated_memory_gb"]
+            < row["strategy_a_estimated_memory_gb"]
+        )
         assert row["workload_floor"]["meets_full_floor"] is False
 
     assert report["fail_closed_audit"]["row_state"] == "pass"
@@ -145,9 +168,56 @@ def test_phase7_full_mode_records_locked_floor_without_promoting():
     assert report["summary"]["overall_status"] == "not_evaluated"
     assert "command_to_evaluate" not in row
     assert "--execute-full" not in json.dumps(row)
-    assert row["full_evidence_requirement"]["status"] == "requires_split_run_floor_execution"
-    assert row["full_evidence_requirement"]["minimum_floor"]["case_id"] == "source_probe_optimize_patch"
-    assert "no full workload-floor execution is claimed" in row["evidence"]["full_mode_note"]
+    assert (
+        row["full_evidence_requirement"]["status"]
+        == "requires_split_run_floor_execution"
+    )
+    assert (
+        row["full_evidence_requirement"]["minimum_floor"]["case_id"]
+        == "source_probe_optimize_patch"
+    )
+    assert (
+        "no full workload-floor execution is claimed"
+        in row["evidence"]["full_mode_note"]
+    )
+
+
+def test_phase7_pec_topology_uses_phase_xii_representative_floor():
+    module = _load_module()
+
+    case = next(case for case in module.CASES if case.family == "pec_topology")
+    floor = case.floor
+    sim = module._sim_for_floor(case)
+    cell_count = module._grid_shape(sim)
+    cell_steps = module.math.prod(cell_count) * floor.n_steps
+
+    assert case.full_mode_supported is True
+    assert floor.case_id == "pec_topology_probe_energy_representative"
+    assert floor.boundary == "pec"
+    assert floor.domain_m == (0.018, 0.018, 0.018)
+    assert floor.dx_m == 0.35e-3
+    assert floor.freq_max_hz == 8e9
+    assert floor.n_steps == 8_000
+    assert floor.checkpoint_every == 1_000
+    assert floor.cpml_layers == 0
+    assert floor.representative is True
+    assert cell_steps > 50_000_000
+
+
+def test_phase7_pec_quick_mode_stays_separate_from_phase_ix_promotion():
+    module = _load_module()
+
+    report = module.build_phase7_report(mode="quick", family="pec_topology")
+    row = report["rows"][0]
+
+    assert row["mode"] == "quick"
+    assert row["n_steps"] == module.QUICK_N_STEPS
+    assert (
+        row["workload_floor"]["case_id"] == "pec_topology_probe_energy_representative"
+    )
+    assert row["workload_floor"]["meets_full_floor"] is False
+    assert row["workload_floor"]["floor_status"] == "quick_evidence_only"
+    assert report["summary"]["overall_status"] == "experimental_limited"
 
 
 def test_phase7_cli_quick_emits_machine_readable_json():

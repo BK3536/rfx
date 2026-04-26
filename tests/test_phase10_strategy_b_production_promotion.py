@@ -83,6 +83,18 @@ def _execution(
                 "post_source_window": {"source_off_window_verified": True},
             }
         )
+    elif family == "pec_topology":
+        execution.metrics.update(
+            {
+                "pec_topology_bounded_full_floor_pass": True,
+                "tail_to_previous_quarter_ratio": 0.9,
+                "tail_to_total_energy_ratio": 0.25,
+                "pec_energy_growth_limit": 1.1,
+                "quarter_energy": [1.0, 1.0, 1.0, 0.9],
+                "ratio_metrics_finite": True,
+                "post_source_window": {"source_off_window_verified": True},
+            }
+        )
     elif family == "port_proxy":
         execution.metrics.update(
             {
@@ -262,9 +274,7 @@ def test_port_proxy_requires_passive_no_gain_full_floor_oracle(monkeypatch, tmp_
     assert "family_specific_physical_oracle_not_valid" in decision["failed_gates"]
 
 
-def test_pec_topology_remains_limited_without_representative_floor(
-    monkeypatch, tmp_path
-):
+def test_pec_topology_deferred_floor_does_not_promote(monkeypatch, tmp_path):
     _clean_worktree(monkeypatch)
     fail = _fake_fail_closed(tmp_path)
     phase9.build_family_artifacts(
@@ -282,12 +292,10 @@ def test_pec_topology_remains_limited_without_representative_floor(
     decision = _decision(tmp_path, "pec_topology")
 
     assert decision["decision"] == "experimental_limited"
-    assert "representative_pec_topology_floor_missing" in decision["failed_gates"]
+    assert "readiness_full_floor_not_executed" in decision["failed_gates"]
 
 
-def test_non_eligible_family_subset_does_not_report_all_eligible_promoted(
-    monkeypatch, tmp_path
-):
+def test_pec_family_subset_is_selected_eligible_after_phase_xii(monkeypatch, tmp_path):
     _clean_worktree(monkeypatch)
     fail = _fake_fail_closed(tmp_path)
     phase9.build_family_artifacts(
@@ -303,14 +311,33 @@ def test_non_eligible_family_subset_does_not_report_all_eligible_promoted(
         artifact_dir=tmp_path, families=("pec_topology",)
     )
 
-    assert decision["summary"]["selected_eligible_families"] == []
+    assert decision["summary"]["selected_eligible_families"] == ["pec_topology"]
     assert decision["summary"]["all_eligible_promoted"] is False
 
 
-def test_simulated_executed_pass_promotes_only_eligible_family(monkeypatch, tmp_path):
+def test_pec_topology_requires_full_floor_physical_oracle(monkeypatch, tmp_path):
     _clean_worktree(monkeypatch)
-    for family in phase10.PROMOTION_ELIGIBLE_FAMILIES:
-        _build_family(tmp_path, family)
+    _build_family(tmp_path, "pec_topology", physical_oracle=False)
+
+    decision = _decision(tmp_path, "pec_topology")
+
+    assert decision["decision"] == "blocked"
+    assert "family_specific_physical_oracle_not_valid" in decision["failed_gates"]
+
+
+def test_pec_topology_nonrepresentative_guard_remains_experimental_fallback(
+    monkeypatch, tmp_path
+):
+    _clean_worktree(monkeypatch)
+    original_floor_for_family = phase9._floor_for_family
+
+    def nonrepresentative_floor(family: str):
+        floor = original_floor_for_family(family)
+        if family == "pec_topology":
+            return {**floor, "representative": False}
+        return floor
+
+    monkeypatch.setattr(phase9, "_floor_for_family", nonrepresentative_floor)
     fail = _fake_fail_closed(tmp_path)
     phase9.build_family_artifacts(
         family="pec_topology",
@@ -320,16 +347,25 @@ def test_simulated_executed_pass_promotes_only_eligible_family(monkeypatch, tmp_
             "ref"
         ],
     )
-    phase9.summarize_artifacts(
-        artifact_dir=tmp_path, output=tmp_path / phase9.SUMMARY_FILENAME
-    )
+
+    decision = _decision(tmp_path, "pec_topology")
+
+    assert decision["decision"] == "experimental_limited"
+    assert "representative_pec_topology_floor_missing" in decision["failed_gates"]
+
+
+def test_simulated_executed_pass_promotes_all_eligible_families(monkeypatch, tmp_path):
+    _clean_worktree(monkeypatch)
+    for family in phase10.PROMOTION_ELIGIBLE_FAMILIES:
+        _build_family(tmp_path, family)
 
     decision = phase10.build_promotion_decision(artifact_dir=tmp_path)
 
     assert set(decision["summary"]["promoted_families"]) == set(
         phase10.PROMOTION_ELIGIBLE_FAMILIES
     )
-    assert decision["decisions"]["pec_topology"]["decision"] == "experimental_limited"
+    assert decision["summary"]["all_eligible_promoted"] is True
+    assert decision["decisions"]["pec_topology"]["decision"] == "promoted_limited"
 
 
 def test_cli_writes_promotion_decision_artifact_without_promoting_dirty_candidate(

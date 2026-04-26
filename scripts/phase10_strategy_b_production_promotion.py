@@ -23,7 +23,12 @@ from scripts import phase9_strategy_b_full_floor as phase9  # noqa: E402
 SCHEMA_VERSION = 1
 PROMOTION_CONTRACT = "phase_x_strategy_b_production_promotion"
 SUMMARY_FILENAME = "phase10_strategy_b_production_promotion.json"
-PROMOTION_ELIGIBLE_FAMILIES = ("source_probe", "cpml_topology", "port_proxy")
+PROMOTION_ELIGIBLE_FAMILIES = (
+    "source_probe",
+    "cpml_topology",
+    "pec_topology",
+    "port_proxy",
+)
 
 
 def read_json(path: Path) -> dict[str, Any]:

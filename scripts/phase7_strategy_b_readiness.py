@@ -169,16 +169,15 @@ FLOORS: dict[str, WorkloadFloor] = {
         cpml_layers=8,
     ),
     "pec_topology": WorkloadFloor(
-        case_id="phase_vi_pec_topology_parity_fixture",
-        source="Phase VI PEC topology parity fixture; no Phase III representative PEC topology floor",
+        case_id="pec_topology_probe_energy_representative",
+        source="Phase XII port-proxy-scale PEC topology representative floor",
         boundary="pec",
-        domain_m=(0.015, 0.015, 0.015),
-        dx_m=0.75e-3,
-        freq_max_hz=5e9,
-        n_steps=8,
-        checkpoint_every=3,
+        domain_m=(0.018, 0.018, 0.018),
+        dx_m=0.35e-3,
+        freq_max_hz=8e9,
+        n_steps=8_000,
+        checkpoint_every=1_000,
         cpml_layers=0,
-        representative=False,
     ),
     "port_proxy": WorkloadFloor(
         case_id="one_passive_port_proxy",
@@ -231,8 +230,7 @@ CASES: tuple[ReadinessCase, ...] = (
         quick_dx_m=None,
         quick_cpml_layers=0,
         floor=FLOORS["pec_topology"],
-        required_gradient_source="Phase VI PEC topology Strategy B parity evidence; representative gradient floor deferred",
-        full_mode_supported=False,
+        required_gradient_source="Phase VI PEC topology Strategy B parity evidence plus Phase XII representative floor execution",
     ),
     ReadinessCase(
         family="port_proxy",
@@ -309,12 +307,16 @@ def _make_source_probe_sim(
         "ez",
         waveform=GaussianPulse(f0=freq_max * 0.6, bandwidth=0.5),
     )
-    sim.add_probe((min(domain[0] * 0.67, domain[0] - 2 * (dx or 0.001)), y_mid, z_mid), "ez")
+    sim.add_probe(
+        (min(domain[0] * 0.67, domain[0] - 2 * (dx or 0.001)), y_mid, z_mid), "ez"
+    )
     return sim
 
 
 def _make_topology_case(boundary: str) -> tuple[Simulation, TopologyDesignRegion]:
-    sim = _make_source_probe_sim(boundary=boundary, cpml_layers=8 if boundary == "cpml" else 0)
+    sim = _make_source_probe_sim(
+        boundary=boundary, cpml_layers=8 if boundary == "cpml" else 0
+    )
     sim.add_material("phase7_diel", eps_r=4.0, sigma=0.0)
     region = TopologyDesignRegion(
         corner_lo=(0.009, 0.003, 0.003),
@@ -345,11 +347,11 @@ def _make_port_proxy_case() -> tuple[Simulation, DesignRegion]:
 
 
 def _topology_objective(result):
-    return -jnp.sum(result.time_series ** 2)
+    return -jnp.sum(result.time_series**2)
 
 
 def _probe_objective(result):
-    return -jnp.sum(result.time_series ** 2)
+    return -jnp.sum(result.time_series**2)
 
 
 def _single_cell_eps(grid, base_eps: jnp.ndarray, alpha: jnp.ndarray) -> jnp.ndarray:
@@ -357,7 +359,9 @@ def _single_cell_eps(grid, base_eps: jnp.ndarray, alpha: jnp.ndarray) -> jnp.nda
     return base_eps.at[i, j, k].add(alpha)
 
 
-def _estimate_memory(sim: Simulation, *, n_steps: int, checkpoint_every: int, budget_gb: float) -> tuple[float, float]:
+def _estimate_memory(
+    sim: Simulation, *, n_steps: int, checkpoint_every: int, budget_gb: float
+) -> tuple[float, float]:
     est = sim.estimate_ad_memory(
         n_steps=n_steps,
         available_memory_gb=budget_gb,
@@ -400,7 +404,7 @@ def _source_probe_gradient_metric(sim: Simulation, inputs) -> float:
     def pure_loss(alpha):
         eps = _single_cell_eps(grid, materials.eps_r, alpha)
         result = sim.forward(eps_override=eps, n_steps=QUICK_N_STEPS, checkpoint=True)
-        return jnp.sum(result.time_series ** 2)
+        return jnp.sum(result.time_series**2)
 
     def strategy_b_loss(alpha):
         eps = _single_cell_eps(grid, materials.eps_r, alpha)
@@ -410,7 +414,7 @@ def _source_probe_gradient_metric(sim: Simulation, inputs) -> float:
             strategy="b",
             checkpoint_every=QUICK_CHECKPOINT_EVERY,
         )
-        return jnp.sum(result.time_series ** 2)
+        return jnp.sum(result.time_series**2)
 
     alpha0 = jnp.float32(0.1)
     grad_pure = jax.grad(pure_loss)(alpha0)
@@ -449,8 +453,12 @@ def _run_topology_quick(boundary: str, thresholds: Thresholds) -> dict[str, Any]
     )
     runtime_s = time.perf_counter() - started
     after = _rss_mb()
-    history_diff = float(np.max(np.abs(np.asarray(strategy_b.history) - np.asarray(pure.history))))
-    density_diff = float(np.max(np.abs(np.asarray(strategy_b.density) - np.asarray(pure.density))))
+    history_diff = float(
+        np.max(np.abs(np.asarray(strategy_b.history) - np.asarray(pure.history)))
+    )
+    density_diff = float(
+        np.max(np.abs(np.asarray(strategy_b.density) - np.asarray(pure.density)))
+    )
     metric = max(history_diff, density_diff)
     grad_metric = _topology_gradient_metric(sim, region)
     return {
@@ -481,7 +489,7 @@ def _topology_gradient_metric(sim: Simulation, region: TopologyDesignRegion) -> 
     def pure_loss(alpha):
         eps = _single_cell_eps(grid, inputs.materials.eps_r, alpha)
         result = sim.forward(eps_override=eps, n_steps=QUICK_N_STEPS, checkpoint=True)
-        return jnp.sum(result.time_series ** 2)
+        return jnp.sum(result.time_series**2)
 
     def strategy_b_loss(alpha):
         eps = _single_cell_eps(grid, inputs.materials.eps_r, alpha)
@@ -491,7 +499,7 @@ def _topology_gradient_metric(sim: Simulation, region: TopologyDesignRegion) -> 
             strategy="b",
             checkpoint_every=QUICK_CHECKPOINT_EVERY,
         )
-        return jnp.sum(result.time_series ** 2)
+        return jnp.sum(result.time_series**2)
 
     alpha0 = jnp.float32(0.1)
     grad_pure = jax.grad(pure_loss)(alpha0)
@@ -529,9 +537,13 @@ def _run_port_proxy_quick(thresholds: Thresholds) -> dict[str, Any]:
     runtime_s = time.perf_counter() - started
     after = _rss_mb()
     loss_diff = float(
-        np.max(np.abs(np.asarray(strategy_b.loss_history) - np.asarray(pure.loss_history)))
+        np.max(
+            np.abs(np.asarray(strategy_b.loss_history) - np.asarray(pure.loss_history))
+        )
     )
-    latent_diff = float(np.max(np.abs(np.asarray(strategy_b.latent) - np.asarray(pure.latent))))
+    latent_diff = float(
+        np.max(np.abs(np.asarray(strategy_b.latent) - np.asarray(pure.latent)))
+    )
     metric = max(loss_diff, latent_diff)
     grad_metric = _port_proxy_gradient_metric(sim)
     return {
@@ -554,7 +566,7 @@ def _port_proxy_gradient_metric(sim: Simulation) -> float:
     def pure_loss(alpha):
         eps = _single_cell_eps(grid, materials.eps_r, alpha)
         result = sim.forward(eps_override=eps, n_steps=QUICK_N_STEPS, checkpoint=True)
-        return jnp.sum(result.time_series ** 2)
+        return jnp.sum(result.time_series**2)
 
     def strategy_b_loss(alpha):
         eps = _single_cell_eps(grid, materials.eps_r, alpha)
@@ -564,7 +576,7 @@ def _port_proxy_gradient_metric(sim: Simulation) -> float:
             strategy="b",
             checkpoint_every=QUICK_CHECKPOINT_EVERY,
         )
-        return jnp.sum(result.time_series ** 2)
+        return jnp.sum(result.time_series**2)
 
     alpha0 = jnp.float32(0.1)
     grad_pure = jax.grad(pure_loss)(alpha0)
@@ -593,7 +605,9 @@ def _build_quick_row(case: ReadinessCase, thresholds: Thresholds) -> dict[str, A
         checkpoint_every=QUICK_CHECKPOINT_EVERY,
         budget_gb=thresholds.budget_gb,
     )
-    memory_pass = strategy_b_gb < strategy_a_gb and strategy_b_gb <= thresholds.budget_gb
+    memory_pass = (
+        strategy_b_gb < strategy_a_gb and strategy_b_gb <= thresholds.budget_gb
+    )
     correctness_pass = bool(evidence["correctness_pass"])
     gradient_pass = bool(evidence["gradient_pass"])
     row_state = "pass" if correctness_pass and gradient_pass and memory_pass else "fail"
@@ -739,23 +753,35 @@ def _sim_for_floor(case: ReadinessCase) -> Simulation:
         impedance=50.0,
         waveform=GaussianPulse(f0=floor.freq_max_hz / 2.0, bandwidth=0.5),
     )
-    sim.add_port((floor.domain_m[0] * 0.67, y_mid, z_mid), "ez", impedance=50.0, excite=False)
+    sim.add_port(
+        (floor.domain_m[0] * 0.67, y_mid, z_mid), "ez", impedance=50.0, excite=False
+    )
     sim.add_probe((x_mid, y_mid, z_mid), "ez")
     return sim
 
 
-def classify_family(rows: Iterable[dict[str, Any]], *, fail_closed_pass: bool = True) -> dict[str, Any]:
+def classify_family(
+    rows: Iterable[dict[str, Any]], *, fail_closed_pass: bool = True
+) -> dict[str, Any]:
     family_rows = list(rows)
     if not family_rows:
         return {"status": "not_evaluated", "reasons": ["no evidence rows for family"]}
     if any(row.get("row_state") == "fail" for row in family_rows):
-        return {"status": "blocked", "reasons": ["one or more required evidence items failed"]}
+        return {
+            "status": "blocked",
+            "reasons": ["one or more required evidence items failed"],
+        }
     if not fail_closed_pass:
         return {"status": "blocked", "reasons": ["global fail-closed audit failed"]}
 
-    meaningful_rows = [row for row in family_rows if row.get("row_state") in {"pass", "warn"}]
+    meaningful_rows = [
+        row for row in family_rows if row.get("row_state") in {"pass", "warn"}
+    ]
     if not meaningful_rows:
-        return {"status": "not_evaluated", "reasons": ["no meaningful execution evidence"]}
+        return {
+            "status": "not_evaluated",
+            "reasons": ["no meaningful execution evidence"],
+        }
 
     full_floor_pass = any(
         row.get("mode") == "full"
@@ -769,7 +795,10 @@ def classify_family(rows: Iterable[dict[str, Any]], *, fail_closed_pass: bool = 
         for row in family_rows
     )
     if full_floor_pass and required_gradient_pass:
-        return {"status": "production_ready_limited", "reasons": ["full floor and required gradient evidence passed"]}
+        return {
+            "status": "production_ready_limited",
+            "reasons": ["full floor and required gradient evidence passed"],
+        }
 
     reasons: list[str] = []
     if not full_floor_pass:
@@ -779,20 +808,36 @@ def classify_family(rows: Iterable[dict[str, Any]], *, fail_closed_pass: bool = 
     return {"status": "experimental_limited", "reasons": reasons}
 
 
-def classify_overall(family_statuses: dict[str, dict[str, Any]], *, fail_closed_pass: bool) -> dict[str, Any]:
+def classify_overall(
+    family_statuses: dict[str, dict[str, Any]], *, fail_closed_pass: bool
+) -> dict[str, Any]:
     if not family_statuses:
         return {"status": "not_evaluated", "reasons": ["no landed family evidence"]}
     statuses = {name: payload["status"] for name, payload in family_statuses.items()}
     if all(status == "not_evaluated" for status in statuses.values()):
-        return {"status": "not_evaluated", "reasons": ["no meaningful readiness execution evidence"]}
+        return {
+            "status": "not_evaluated",
+            "reasons": ["no meaningful readiness execution evidence"],
+        }
     if not fail_closed_pass or any(status == "blocked" for status in statuses.values()):
-        return {"status": "blocked", "reasons": ["family or global fail-closed audit blocked readiness"]}
-    if any(status in {"experimental_limited", "not_evaluated"} for status in statuses.values()):
+        return {
+            "status": "blocked",
+            "reasons": ["family or global fail-closed audit blocked readiness"],
+        }
+    if any(
+        status in {"experimental_limited", "not_evaluated"}
+        for status in statuses.values()
+    ):
         return {
             "status": "experimental_limited",
-            "reasons": ["at least one family lacks full workload-floor or required gradient evidence"],
+            "reasons": [
+                "at least one family lacks full workload-floor or required gradient evidence"
+            ],
         }
-    return {"status": "production_ready_limited", "reasons": ["all landed families cleared readiness gates"]}
+    return {
+        "status": "production_ready_limited",
+        "reasons": ["all landed families cleared readiness gates"],
+    }
 
 
 def _expect_explicit_strategy_b_raise(
@@ -841,7 +886,9 @@ def _audit_nonuniform_strategy_b() -> Any:
         dx=0.0025,
         dz_profile=np.array([0.0020, 0.0016, 0.0013, 0.0016, 0.0020], dtype=float),
     )
-    sim.add_source((0.005, 0.0075, 0.0075), "ez", waveform=GaussianPulse(f0=3e9, bandwidth=0.5))
+    sim.add_source(
+        (0.005, 0.0075, 0.0075), "ez", waveform=GaussianPulse(f0=3e9, bandwidth=0.5)
+    )
     sim.add_probe((0.01, 0.0075, 0.0075), "ez")
     _run_explicit_strategy_b_from_inputs(sim)
 
@@ -928,7 +975,10 @@ def _audit_lossy_topology_auto_strategy_b() -> None:
 def _audit_lossy_source_probe_strategy_b() -> None:
     sim = _make_source_probe_sim(boundary="cpml")
     sim.add_material("phase7_lossy_blocked", eps_r=2.0, sigma=0.01)
-    sim.add(Box((0.006, 0.006, 0.006), (0.009, 0.009, 0.009)), material="phase7_lossy_blocked")
+    sim.add(
+        Box((0.006, 0.006, 0.006), (0.009, 0.009, 0.009)),
+        material="phase7_lossy_blocked",
+    )
     _run_explicit_strategy_b_from_inputs(sim)
 
 
@@ -939,7 +989,10 @@ def _audit_debye_strategy_b() -> None:
         eps_r=2.0,
         debye_poles=[DebyePole(delta_eps=1.0, tau=8e-12)],
     )
-    sim.add(Box((0.006, 0.006, 0.006), (0.009, 0.009, 0.009)), material="phase7_debye_blocked")
+    sim.add(
+        Box((0.006, 0.006, 0.006), (0.009, 0.009, 0.009)),
+        material="phase7_debye_blocked",
+    )
     _run_explicit_strategy_b_from_inputs(sim)
 
 
@@ -951,7 +1004,10 @@ def _audit_lorentz_strategy_b() -> None:
         eps_r=2.0,
         lorentz_poles=[LorentzPole(omega_0=omega_0, delta=1e8, kappa=omega_0**2)],
     )
-    sim.add(Box((0.006, 0.006, 0.006), (0.009, 0.009, 0.009)), material="phase7_lorentz_blocked")
+    sim.add(
+        Box((0.006, 0.006, 0.006), (0.009, 0.009, 0.009)),
+        material="phase7_lorentz_blocked",
+    )
     _run_explicit_strategy_b_from_inputs(sim)
 
 
@@ -1009,7 +1065,9 @@ def _audit_wire_port_strategy_b() -> None:
 
 
 def _audit_waveguide_port_strategy_b() -> None:
-    sim = Simulation(freq_max=5e9, domain=(0.015, 0.015, 0.015), boundary="cpml", cpml_layers=8)
+    sim = Simulation(
+        freq_max=5e9, domain=(0.015, 0.015, 0.015), boundary="cpml", cpml_layers=8
+    )
     sim.add_waveguide_port(
         0.003,
         y_range=(0.004, 0.011),
@@ -1023,27 +1081,85 @@ def _audit_waveguide_port_strategy_b() -> None:
 
 
 def _audit_floquet_port_strategy_b() -> None:
-    sim = Simulation(freq_max=5e9, domain=(0.015, 0.015, 0.015), boundary="cpml", cpml_layers=8)
+    sim = Simulation(
+        freq_max=5e9, domain=(0.015, 0.015, 0.015), boundary="cpml", cpml_layers=8
+    )
     sim.add_floquet_port(0.003, axis="z", n_freqs=2)
     _run_explicit_strategy_b_from_inputs(sim)
 
 
 def build_fail_closed_audit() -> dict[str, Any]:
     rows = [
-        _expect_explicit_strategy_b_raise("nonuniform_strategy_b", _audit_nonuniform_strategy_b, "supports only uniform grids"),
-        _expect_explicit_strategy_b_raise("ntff_directivity_strategy_b", _audit_ntff_strategy_b, "does not support NTFF/directivity"),
-        _expect_explicit_strategy_b_raise("generic_multi_port_strategy_b", _audit_extra_passive_port_strategy_b, "supports exactly one excited lumped port"),
-        _expect_explicit_strategy_b_raise("excited_port_design_region_overlap_auto_strategy_b", _audit_excited_port_overlap_auto_strategy_b, "design region overlaps the excited lumped-port cell"),
-        _expect_explicit_strategy_b_raise("port_design_region_overlap_auto_strategy_b", _audit_port_overlap_auto_strategy_b, "design region overlaps a passive lumped-port cell"),
-        _expect_explicit_strategy_b_raise("lossy_topology_auto_strategy_b", _audit_lossy_topology_auto_strategy_b, "zero sigma"),
-        _expect_explicit_strategy_b_raise("lossy_source_probe_strategy_b", _audit_lossy_source_probe_strategy_b, "supports conductivity only for the bounded lumped-port proxy"),
-        _expect_explicit_strategy_b_raise("debye_strategy_b", _audit_debye_strategy_b, "supports only lossless nondispersive materials"),
-        _expect_explicit_strategy_b_raise("lorentz_strategy_b", _audit_lorentz_strategy_b, "supports only lossless nondispersive materials"),
-        _expect_explicit_strategy_b_raise("mixed_dispersion_strategy_b", _audit_mixed_dispersion_strategy_b, "supports only lossless nondispersive materials"),
-        _expect_explicit_strategy_b_raise("topology_pec_occupancy_strategy_b", _audit_pec_topology_strategy_b, "pec_occupancy replay is unsupported"),
-        _expect_explicit_strategy_b_raise("wire_port_strategy_b", _audit_wire_port_strategy_b, "supports exactly one excited lumped port"),
-        _expect_explicit_strategy_b_raise("waveguide_port_strategy_b", _audit_waveguide_port_strategy_b, "waveguide/wire/floquet port accumulation is unsupported"),
-        _expect_explicit_strategy_b_raise("floquet_port_strategy_b", _audit_floquet_port_strategy_b, "supports only add_source()/probe workflows"),
+        _expect_explicit_strategy_b_raise(
+            "nonuniform_strategy_b",
+            _audit_nonuniform_strategy_b,
+            "supports only uniform grids",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "ntff_directivity_strategy_b",
+            _audit_ntff_strategy_b,
+            "does not support NTFF/directivity",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "generic_multi_port_strategy_b",
+            _audit_extra_passive_port_strategy_b,
+            "supports exactly one excited lumped port",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "excited_port_design_region_overlap_auto_strategy_b",
+            _audit_excited_port_overlap_auto_strategy_b,
+            "design region overlaps the excited lumped-port cell",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "port_design_region_overlap_auto_strategy_b",
+            _audit_port_overlap_auto_strategy_b,
+            "design region overlaps a passive lumped-port cell",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "lossy_topology_auto_strategy_b",
+            _audit_lossy_topology_auto_strategy_b,
+            "zero sigma",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "lossy_source_probe_strategy_b",
+            _audit_lossy_source_probe_strategy_b,
+            "supports conductivity only for the bounded lumped-port proxy",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "debye_strategy_b",
+            _audit_debye_strategy_b,
+            "supports only lossless nondispersive materials",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "lorentz_strategy_b",
+            _audit_lorentz_strategy_b,
+            "supports only lossless nondispersive materials",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "mixed_dispersion_strategy_b",
+            _audit_mixed_dispersion_strategy_b,
+            "supports only lossless nondispersive materials",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "topology_pec_occupancy_strategy_b",
+            _audit_pec_topology_strategy_b,
+            "pec_occupancy replay is unsupported",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "wire_port_strategy_b",
+            _audit_wire_port_strategy_b,
+            "supports exactly one excited lumped port",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "waveguide_port_strategy_b",
+            _audit_waveguide_port_strategy_b,
+            "waveguide/wire/floquet port accumulation is unsupported",
+        ),
+        _expect_explicit_strategy_b_raise(
+            "floquet_port_strategy_b",
+            _audit_floquet_port_strategy_b,
+            "supports only add_source()/probe workflows",
+        ),
     ]
     passed = all(row["row_state"] == "pass" for row in rows)
     return {
@@ -1066,15 +1182,21 @@ def build_phase7_report(
         raise ValueError(f"unknown family {family!r}; expected one of {allowed}")
 
     rows = [
-        _build_quick_row(case, thresholds) if mode == "quick" else _build_full_row(case, thresholds)
+        _build_quick_row(case, thresholds)
+        if mode == "quick"
+        else _build_full_row(case, thresholds)
         for case in selected
     ]
-    fail_closed_audit = build_fail_closed_audit() if mode == "quick" else {
-        "row_state": "not_evaluated",
-        "runtime_s": 0.0,
-        "rows": [],
-        "reason": "fail-closed audit runs in quick mode",
-    }
+    fail_closed_audit = (
+        build_fail_closed_audit()
+        if mode == "quick"
+        else {
+            "row_state": "not_evaluated",
+            "runtime_s": 0.0,
+            "rows": [],
+            "reason": "fail-closed audit runs in quick mode",
+        }
+    )
     fail_closed_pass = fail_closed_audit["row_state"] in {"pass", "not_evaluated"}
     family_statuses = {
         case.family: classify_family(
@@ -1112,7 +1234,9 @@ def build_phase7_report(
         "fail_closed_audit": fail_closed_audit,
         "summary": {
             "row_count": len(rows),
-            "rows_with_required_fields": sum(all(field in row for field in REQUIRED_ROW_FIELDS) for row in rows),
+            "rows_with_required_fields": sum(
+                all(field in row for field in REQUIRED_ROW_FIELDS) for row in rows
+            ),
             "family_statuses": family_statuses,
             "overall_status": overall["status"],
             "overall_reasons": overall["reasons"],
@@ -1132,9 +1256,17 @@ def _parse_args() -> argparse.Namespace:
         help="Limit report to one landed family in full/diagnostic runs.",
     )
     parser.add_argument("--budget-gb", type=float, default=DEFAULT_BUDGET_GB)
-    parser.add_argument("--parity-threshold", type=float, default=DEFAULT_PARITY_THRESHOLD)
-    parser.add_argument("--gradient-threshold", type=float, default=DEFAULT_GRADIENT_THRESHOLD)
-    parser.add_argument("--output", type=Path, help="Optional JSON output path. Report is always printed to stdout.")
+    parser.add_argument(
+        "--parity-threshold", type=float, default=DEFAULT_PARITY_THRESHOLD
+    )
+    parser.add_argument(
+        "--gradient-threshold", type=float, default=DEFAULT_GRADIENT_THRESHOLD
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Optional JSON output path. Report is always printed to stdout.",
+    )
     parser.add_argument("--indent", type=int, default=2)
     return parser.parse_args()
 
