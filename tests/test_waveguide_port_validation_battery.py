@@ -376,10 +376,19 @@ def test_reciprocity_asymmetric_obstacle_known_gap():
         "(c) Analytic vs discrete templates differ by 0.0004 in |S11| -- "
         "template form is not the bug. (d) PEC closed-cavity resonance "
         "test recovers TM modes within 1.5%% of analytic at Q ~ 1e7-1e9, "
-        "confirming FDTD-core PEC handling is sound. The remaining limit "
-        "is the V/I extractor algorithm at standing-wave anti-nodes, not "
-        "the FDTD core. True recovery would require port-extractor "
-        "redesign (flux-based, far-field, or full-Yee modal projection)."
+        "confirming FDTD-core PEC handling is sound. (e) 2026-04-27 late "
+        "evening — Phase 1A.0 (analytic beta/Z swap) gives only +1.6%% on "
+        "KEEP-both PEC-short. Phase 1A.1 (position-aware analytic "
+        "projection on full aperture, analytic Z) yields mean |S11|=1.000 "
+        "(Meep class!) but per-frequency oscillation is +/-7%% from Yee "
+        "numerical dispersion at the test resolution (~30 cells/lambda). "
+        "DROP-both with Yee-discrete Z is more per-freq tight (+/-0.05%%) "
+        "because the Z-vs-beta convention matches. Conclusion: rfx port "
+        "extractor is Meep-class in MEAN; per-freq +/-7%% residual is the "
+        "intrinsic Yee dispersion footprint, NOT a port-code bug. True "
+        "recovery would require finer mesh OR subpixel PEC handling in "
+        "rfx/core/yee.py (multi-month FDTD-core work). Not in scope for "
+        "port-extractor follow-ups."
     ),
 )
 def test_mesh_convergence_s21_scaled_cpml():
