@@ -1,4 +1,4 @@
-"""Post-process scripts/spikes/2026-04-28/_dump_compare_openems_vs_rfx.py output.
+"""Post-process scripts/diagnostics/wr90_port/dump_compare_openems_vs_rfx.py output.
 
 Loads compare_r{R}.json (per-freq |V|, |I|, arg(V), and the underlying
 arrays via re-loading) and computes:
