@@ -51,21 +51,26 @@ Exit code convention (per rfx crossval standard):
 Run:
   JAX_ENABLE_X64=1 python examples/crossval/11_waveguide_port_wr90.py
 
-Status (2026-04-28):
-  - Empty-guide and PEC-short magnitude gates: PASS (Meep-class).
-  - Single-slab analytic-Airy phase gate: FAIL (~143° vs 5° gate). Open
-    issue, tracked in `docs/agent-memory/rfx-known-issues.md` (port
-    extractor / dispersive-slab phase de-embedding).
-  - Per-frequency PEC-short |S11| oscillation ±6-13% (vs OpenEMS ±0.05%,
-    Meep ±1.5%) is a separate residual. Source-side and probe-side
-    spatial weighting were both refuted as causes by the 2026-04-28 codex
-    investigation (see ``docs/research_notes/2026-04-28_codex_arch_attempts.md``
-    and the archive at ``scripts/spikes/2026-04-28/refuted_codex_archive/``).
-    Remaining concrete candidate is FDTD-core axis-aligned PEC subpixel
-    handling — out of scope for this crossval, tracked under
-    memory ``project_wr90_architectural_candidates``.
-  - This script is therefore a diagnostic reporter, not a regression
-    lock. The authoritative correctness gates are in
+Status (2026-04-28, end-of-day):
+  - Empty-guide and PEC-short magnitude gates: PASS (Meep-class via
+    ``compute_waveguide_s_matrix(normalize=False)``; PEC-short
+    ``max ||S11|-1| = 0.0004`` at R=1).
+  - Single-slab analytic-Airy phase gate: FAIL (~143° vs 5° gate).
+    Sole remaining open issue on this crossval — port extractor /
+    dispersive-slab phase de-embedding. Tracked in
+    ``docs/agent-memory/rfx-known-issues.md``.
+  - The "per-frequency PEC-short |S11| oscillation ±6-13%" that prior
+    sessions chased was a diagnostic-comparator artefact: the
+    dump-derived recipe in
+    ``scripts/diagnostics/wr90_port/s11_from_dumps.py`` was missing
+    the Yee leapfrog half-step correction
+    (``exp(+jω·dt/2)`` on the H spectrum) that the production
+    extractor always applies. With that correction landed (commits
+    ``2fb9b76``, ``3e2754c``) the dump recipe drops to ~0.017 spread
+    at R=1 (Meep-class). The production extractor itself was always
+    Meep-class on this geometry.
+  - This script remains a diagnostic reporter for the slab-phase
+    investigation. The authoritative correctness gates live in
     ``tests/test_waveguide_port_validation_battery.py``.
 """
 
