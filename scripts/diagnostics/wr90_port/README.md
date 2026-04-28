@@ -85,14 +85,20 @@ Apples-to-apples dump-derived `|S11|` spread at the canonical
 |---|---:|---:|---:|---:|---|
 | OpenEMS | 0.9966 | 0.9996 | 1.0003 | 0.0036 | reference baseline |
 | Meep    | 0.9960 | 1.0000 | 1.0112 | 0.0152 | reference baseline |
-| rfx     | 0.9345 | 0.9968 | 1.0671 | 0.1326 | open issue (FDTD-core) |
+| rfx     | 0.9916 | 0.9995 | 1.0082 | 0.0166 | Meep-class after Yee half-step correction (2026-04-28) |
 
-Any architectural candidate must close the rfx spread to ≤0.020 at
-R=1 (≤0.025 at R=2) to be considered viable. Source-side and
-probe-side spatial weighting candidates (codex 2026-04-28 #1, #2,
-#1+#2) all stayed at spread ≈ 0.13 and were refuted. Implementations
-are archived under
-`scripts/spikes/2026-04-28/refuted_codex_archive/`.
+The rfx number used to read 0.1326 spread before the comparator
+fix landed: the dump-derived recipe was missing the Yee leapfrog
+half-step correction (`exp(+jω·dt/2)` on the H spectrum) that the
+production extractor `compute_waveguide_s_matrix` always applied
+through `rfx/sources/waveguide_port.py::_co_located_current_spectrum`.
+The full diagnostic chain that traced this lives in commit
+`2fb9b76` and the four scripts named `pec_short_position_sweep`,
+`boundary_cell_trim`, `h_normal_average_test`, and
+`production_vs_raw_same_sim`. The historical 0.1326 number
+appearing in earlier research notes and codex attempts under
+`scripts/spikes/2026-04-28/refuted_codex_archive/` is a comparator
+artefact, not a real rfx FDTD residual.
 
 ## Investigation pointers
 

@@ -189,6 +189,26 @@ def run_rfx_dump(R: int, plane_name: str = "mon_left",
     # rfx returns (Nf, Ny, Nz). Build OpenEMS-style mesh y,z for compatibility.
     Ez = np.asarray(res.dft_planes["ez_p"].accumulator)  # (Nf, Ny, Nz)
     Hy = np.asarray(res.dft_planes["hy_p"].accumulator)
+
+    # ---- Yee leapfrog half-step correction on H_y -------------------
+    # rfx's dft_plane_probe accumulates H samples (which sit at time
+    # (n+1/2)·dt) paired with the probe-step phase exp(-jω·(n+1)·dt), so
+    # the probe DFT carries a residual exp(-jω·dt/2) factor versus the
+    # true DFT of H at its own timestamp. The production extractor
+    # cancels this in ``rfx/sources/waveguide_port.py::
+    # _co_located_current_spectrum`` (commit 2026-04-22). We replicate
+    # that correction here so the dump-derived |S11| is apples-to-apples
+    # with the production output. Verified 2026-04-28: applying this
+    # single line drops rfx PEC-short |S11| spread from 0.1326 to 0.0166
+    # at R=1 (~8x), into Meep-class. See
+    # ``scripts/diagnostics/wr90_port/production_vs_raw_same_sim.py`` for
+    # the trace and ``commit 2fb9b76`` for the diagnostic chain.
+    if hasattr(sim, "_grid") and hasattr(sim._grid, "dt"):
+        dt_sim = float(sim._grid.dt)
+    else:
+        dt_sim = 0.5 * dx_m / C0  # default Courant 0.5
+    omega = 2.0 * np.pi * np.asarray(freqs)
+    Hy = Hy * np.exp(+1j * omega * (0.5 * dt_sim))[:, None, None]
     Ny, Nz = Ez.shape[1], Ez.shape[2]
     y = np.linspace(0.0, cv.A_WG, Ny)  # rfx uses (0, A) frame
     z = np.linspace(0.0, cv.B_WG, Nz)
