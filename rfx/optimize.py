@@ -126,6 +126,11 @@ def optimize(
         that the linear-memory scan would OOM.  ``None`` (default)
         preserves the legacy per-step ``jax.checkpoint`` behaviour.
 
+        Currently wired only on the uniform single-device forward path.
+        Non-uniform meshes and ``distributed=True`` will raise
+        ``NotImplementedError``; NU support is tracked as a follow-up
+        on issue #73.
+
     Returns
     -------
     OptimizeResult

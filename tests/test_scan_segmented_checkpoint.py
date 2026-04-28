@@ -33,7 +33,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from rfx import Simulation, Box, DesignRegion, GaussianPulse
+from rfx import Simulation, GaussianPulse
 from rfx.optimize_objectives import minimize_s11_at_freq_wave_decomp
 from rfx.simulation import _nearest_divisor, _suggest_checkpoint_segments
 
@@ -151,4 +151,33 @@ def test_segmented_rejects_non_positive():
     sim = _build_cavity()
     with pytest.raises(ValueError, match="must be ≥ 1"):
         sim.forward(n_steps=200, checkpoint_segments=0,
+                    skip_preflight=True)
+
+
+def test_segmented_rejects_nonuniform_path():
+    """Issue #73: NU forward path is not yet wired for segmented remat.
+    Reject loudly so the user does not get a silent fall-back to the
+    linear-memory scan that this kwarg was meant to fix."""
+    a, b, d = 0.05, 0.05, 0.025
+    dx = 2.5e-3
+    nx = int(round(a / dx))
+    ny = int(round(b / dx))
+    nz = int(round(d / dx))
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0, 0, 0),
+        dx=dx,
+        dx_profile=np.full(nx, dx),
+        dy_profile=np.full(ny, dx),
+        dz_profile=np.full(nz, dx),
+        boundary="pec",
+    )
+    sim.add_port(
+        position=(a / 2, b / 2, d / 2),
+        component="ez",
+        impedance=50.0,
+        waveform=GaussianPulse(f0=3e9, bandwidth=0.8, amplitude=1.0),
+    )
+    with pytest.raises(NotImplementedError, match="uniform single-device"):
+        sim.forward(n_steps=200, checkpoint_segments=10,
                     skip_preflight=True)

@@ -4993,16 +4993,26 @@ class Simulation:
         # Issue #72: forward(port_s11_freqs=...) is currently wired only on
         # the uniform single-device path. Reject loudly elsewhere so users
         # don't get a silent s_params=None.
-        if port_s11_freqs is not None and (distributed or (
-            self._dz_profile is not None
-            or self._dx_profile is not None
-            or self._dy_profile is not None
-        )):
+        if port_s11_freqs is not None and (distributed or is_nonuniform):
             raise NotImplementedError(
                 "forward(port_s11_freqs=...) is currently wired only on the "
                 "uniform single-device forward path (issue #72). Drop "
                 "port_s11_freqs or run on a uniform mesh without "
                 "distributed=True."
+            )
+
+        # Issue #73: forward(checkpoint_segments=...) is currently wired only
+        # on the uniform single-device path. Reject loudly elsewhere — both
+        # for distributed=True and for non-uniform meshes — so users don't
+        # get a silent fall-back to the linear-memory scan that this kwarg
+        # was meant to fix. NU follow-up will mirror the pattern in
+        # run_nonuniform; track on issue #73.
+        if checkpoint_segments is not None and (distributed or is_nonuniform):
+            raise NotImplementedError(
+                "forward(checkpoint_segments=...) is currently wired only "
+                "on the uniform single-device forward path (issue #73). "
+                "Drop checkpoint_segments or run on a uniform mesh without "
+                "distributed=True. NU support is tracked as a follow-up."
             )
 
         # Phase 3: distributed dispatch (V3 lines 842-847).
@@ -5096,15 +5106,6 @@ class Simulation:
                 "checkpoint_every (segmented remat) is currently only "
                 "supported on the non-uniform forward path. For the "
                 "uniform path, use checkpoint_segments instead (issue #73)."
-            )
-        # Issue #73: checkpoint_segments is currently wired only on the
-        # uniform single-device forward path. Reject loudly elsewhere so
-        # users don't get a silent fall-back to the linear-memory scan.
-        if checkpoint_segments is not None and distributed:
-            raise NotImplementedError(
-                "forward(checkpoint_segments=...) is currently wired only "
-                "on the uniform single-device forward path (issue #73). "
-                "Drop checkpoint_segments or run without distributed=True."
             )
         if design_mask is not None:
             raise NotImplementedError(
