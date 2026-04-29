@@ -150,6 +150,34 @@ class Phase1SParamRequest(NamedTuple):
     ports: tuple[Phase1SParamPortSpec, ...] = ()
 
 
+class Phase1SMatrixObjectiveTerm(NamedTuple):
+    """One scalar-loss term over a native Strategy B S-matrix element."""
+
+    row: int
+    col: int
+    target: object = 0.0 + 0.0j
+    weight: object = 1.0
+    mode: str = "mse"
+
+
+class Phase1SMatrixObjectiveRequest(NamedTuple):
+    """Explicit Strategy B native S-matrix scalar objective request."""
+
+    freqs: jnp.ndarray
+    terms: tuple[Phase1SMatrixObjectiveTerm, ...]
+    observable_source: str = "strategy_b_native_smatrix_objective"
+
+
+class _Phase17SMatrixColumnCheckpoints(NamedTuple):
+    """Segment-start checkpoints for one driven S-matrix objective column."""
+
+    states: Phase1FieldState
+    v_dft: jnp.ndarray
+    i_dft: jnp.ndarray
+    v_dft_final: jnp.ndarray
+    i_dft_final: jnp.ndarray
+
+
 def phase1_forward_result(
     grid: Grid,
     time_series: jnp.ndarray,
@@ -1078,6 +1106,149 @@ def _supports_phase15_native_sparams_subset(
     """Compatibility alias for the evolved Phase XVI native S-matrix subset."""
 
     return _supports_phase16_native_smatrix_subset(port_metadata, s_param_request)
+
+
+_PHASE17_SUPPORTED_S_MATRIX_OBJECTIVE_MODES = frozenset({"mse", "negative_power"})
+
+
+def _as_phase17_static_array(value: object) -> np.ndarray:
+    """Convert static objective metadata into a NumPy array for validation."""
+
+    try:
+        return np.asarray(value)
+    except Exception:  # pragma: no cover - defensive for exotic user objects
+        return np.asarray([np.nan], dtype=np.float32)
+
+
+def _phase17_objective_request_support_reasons(
+    objective_request: Phase1SMatrixObjectiveRequest | None,
+    *,
+    n_ports: int,
+    s_param_freqs: object | None,
+) -> tuple[str, ...]:
+    """Return fail-closed reasons for the static Phase XVII objective spec."""
+
+    if objective_request is None:
+        return ("Phase XVII native Strategy B S-matrix objective requires an explicit objective request",)
+
+    reasons: list[str] = []
+    if objective_request.observable_source != "strategy_b_native_smatrix_objective":
+        reasons.append(
+            "Phase XVII native Strategy B S-matrix objective requires "
+            "observable_source='strategy_b_native_smatrix_objective'"
+        )
+    freqs = np.asarray(objective_request.freqs)
+    if freqs.ndim != 1 or freqs.size == 0:
+        reasons.append("Phase XVII native Strategy B S-matrix objective requires non-empty 1-D freqs")
+    elif not np.isfinite(freqs).all() or np.any(freqs <= 0.0):
+        reasons.append("Phase XVII native Strategy B S-matrix objective requires finite positive freqs")
+
+    if s_param_freqs is None:
+        reasons.append("Phase XVII native Strategy B S-matrix objective requires matching s_param_request freqs")
+    else:
+        s_freqs = np.asarray(s_param_freqs)
+        if s_freqs.shape != freqs.shape or not np.allclose(s_freqs, freqs, rtol=0.0, atol=0.0):
+            reasons.append("Phase XVII native Strategy B S-matrix objective freqs must match s_param_request freqs")
+
+    terms = tuple(getattr(objective_request, "terms", ()) or ())
+    if not terms:
+        reasons.append("Phase XVII native Strategy B S-matrix objective requires at least one term")
+
+    n_freqs = int(freqs.size) if freqs.ndim == 1 else 0
+    total_weight = 0.0
+    for term_index, term in enumerate(terms):
+        mode = str(getattr(term, "mode", ""))
+        if mode not in _PHASE17_SUPPORTED_S_MATRIX_OBJECTIVE_MODES:
+            reasons.append(
+                "Phase XVII native Strategy B S-matrix objective term "
+                f"{term_index} has unsupported mode {mode!r}"
+            )
+        try:
+            row = int(term.row)
+            col = int(term.col)
+        except Exception:
+            reasons.append(
+                "Phase XVII native Strategy B S-matrix objective term "
+                f"{term_index} has non-integer S-matrix indices"
+            )
+            row = col = -1
+        if row < 0 or row >= n_ports or col < 0 or col >= n_ports:
+            reasons.append(
+                "Phase XVII native Strategy B S-matrix objective term "
+                f"{term_index} indices exceed the supported port count"
+            )
+
+        target = _as_phase17_static_array(term.target)
+        if target.ndim > 1 or (target.ndim == 1 and target.size not in {1, n_freqs}):
+            reasons.append(
+                "Phase XVII native Strategy B S-matrix objective targets must be scalar "
+                "or per-frequency vectors"
+            )
+        elif not np.isfinite(target).all():
+            reasons.append("Phase XVII native Strategy B S-matrix objective targets must be finite")
+
+        weight = _as_phase17_static_array(term.weight)
+        if weight.ndim > 1 or (weight.ndim == 1 and weight.size not in {1, n_freqs}):
+            reasons.append(
+                "Phase XVII native Strategy B S-matrix objective weights must be scalar "
+                "or per-frequency vectors"
+            )
+        elif not np.isfinite(weight).all():
+            reasons.append("Phase XVII native Strategy B S-matrix objective weights must be finite")
+        elif np.any(weight < 0.0):
+            reasons.append("Phase XVII native Strategy B S-matrix objective weights must be nonnegative")
+        else:
+            total_weight += float(np.sum(weight)) * (n_freqs if weight.ndim == 0 else 1.0)
+
+    if terms and total_weight <= 0.0:
+        reasons.append("Phase XVII native Strategy B S-matrix objective requires positive total weight")
+
+    return tuple(dict.fromkeys(reasons))
+
+
+def _phase17_native_smatrix_objective_support_reasons(
+    *,
+    boundary: str,
+    periodic: tuple[bool, bool, bool],
+    grid: Grid | NonUniformGrid | None,
+    debye_spec: tuple | None,
+    lorentz_spec: tuple | None,
+    port_metadata: object | None,
+    s_param_request: Phase1SParamRequest | None,
+    objective_request: Phase1SMatrixObjectiveRequest | None,
+    checkpoint_every: int | None,
+) -> tuple[str, ...]:
+    """Return fail-closed reasons for Phase XVII differentiable S-matrix objectives."""
+
+    reasons: list[str] = []
+    if checkpoint_every is None:
+        reasons.append("checkpoint_every is required for Phase XVII native Strategy B S-matrix objectives")
+    elif checkpoint_every <= 0:
+        reasons.append("checkpoint_every must be positive for Phase XVII native Strategy B S-matrix objectives")
+    if isinstance(grid, NonUniformGrid):
+        reasons.append("Phase XVII native Strategy B S-matrix objectives support only uniform grids")
+    if periodic != (False, False, False):
+        reasons.append("Phase XVII native Strategy B S-matrix objectives do not support periodic workflows")
+    if debye_spec is not None or lorentz_spec is not None:
+        reasons.append("Phase XVII native Strategy B S-matrix objectives support only lossless nondispersive materials")
+    if boundary == "cpml":
+        reasons.append(
+            "Phase XVII native Strategy B S-matrix objective gradients currently support PEC boundary only; "
+            "CPML remains value-only until its gradient gate passes"
+        )
+    elif boundary != "pec":
+        reasons.append("Phase XVII native Strategy B S-matrix objectives support only PEC boundary")
+
+    reasons.extend(_phase16_native_smatrix_support_reasons(port_metadata, s_param_request))
+    n_ports = int(getattr(port_metadata, "total_ports", 0)) if port_metadata is not None else 0
+    reasons.extend(
+        _phase17_objective_request_support_reasons(
+            objective_request,
+            n_ports=n_ports,
+            s_param_freqs=None if s_param_request is None else s_param_request.freqs,
+        )
+    )
+    return tuple(dict.fromkeys(reasons))
 
 
 def _supported_lumped_port_sigmas_by_cell(
@@ -2824,17 +2995,83 @@ def _phase15_assert_port_cell_supports_current_loop(
         raise ValueError("native lumped-port S-parameters port cell is outside the grid")
 
 
-def _phase16_sparam_source_values_from_eps(
+def _phase16_sparam_source_value_from_raw(
     context: Phase1HybridContext,
     eps_r: jnp.ndarray,
     port: Phase1SParamPortSpec,
+    raw_source_value: jnp.ndarray,
 ) -> jnp.ndarray:
     i, j, k = port.cell
     eps = eps_r[i, j, k] * jnp.float32(EPS_0)
     sigma = context.sigma[i, j, k]
     loss = sigma * jnp.float32(context.dt) / (jnp.float32(2.0) * eps)
     cb = (jnp.float32(context.dt) / eps) / (jnp.float32(1.0) + loss)
-    return jnp.asarray(port.source_waveform_raw, dtype=jnp.float32) * cb
+    return jnp.asarray(raw_source_value, dtype=jnp.float32) * cb
+
+
+def _phase16_sparam_source_values_from_eps(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    port: Phase1SParamPortSpec,
+) -> jnp.ndarray:
+    return _phase16_sparam_source_value_from_raw(
+        context,
+        eps_r,
+        port,
+        jnp.asarray(port.source_waveform_raw, dtype=jnp.float32),
+    )
+
+
+def _phase16_accumulate_lumped_port_vi_dft(
+    context: Phase1HybridContext,
+    ports: tuple[Phase1SParamPortSpec, ...],
+    freqs: jnp.ndarray,
+    v_dft: jnp.ndarray,
+    i_dft: jnp.ndarray,
+    pre_source_state: Phase1FieldState,
+    step_index: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Accumulate native port V/I DFT rows at the Phase XVI sample instant."""
+
+    assert isinstance(context.grid, Grid)
+    phase = jnp.exp(
+        -1j
+        * jnp.float32(2.0)
+        * jnp.pi
+        * freqs
+        * ((step_index + jnp.float32(1.0)) * jnp.float32(context.dt))
+    )
+    v_rows = []
+    i_rows = []
+    for recv_index, port in enumerate(ports):
+        voltage, current = _phase15_sample_lumped_port_vi(
+            pre_source_state,
+            grid=context.grid,
+            port_cell=tuple(port.cell),
+            component=str(port.component),
+        )
+        v_rows.append(
+            v_dft[recv_index]
+            + voltage.astype(jnp.complex64) * phase * jnp.float32(context.dt)
+        )
+        i_rows.append(
+            i_dft[recv_index]
+            + current.astype(jnp.complex64) * phase * jnp.float32(context.dt)
+        )
+    return jnp.stack(v_rows, axis=0), jnp.stack(i_rows, axis=0)
+
+
+def _phase16_inject_smatrix_column_source(
+    pre_source_state: Phase1FieldState,
+    source_value: jnp.ndarray,
+    port: Phase1SParamPortSpec,
+) -> Phase1FieldState:
+    i, j, k = port.cell
+    return _inject_sources(
+        pre_source_state,
+        jnp.asarray([source_value], dtype=jnp.float32),
+        ((int(i), int(j), int(k), str(port.component)),),
+    )
 
 
 def _phase16_smatrix_column_from_vi_dft(
@@ -2898,41 +3135,6 @@ def run_phase16_strategy_b_native_smatrix(
         axis=-1,
     )
 
-    def accumulate(v_dft, i_dft, pre_source_state, step_index):
-        phase = jnp.exp(
-            -1j
-            * jnp.float32(2.0)
-            * jnp.pi
-            * freqs
-            * ((step_index + jnp.float32(1.0)) * jnp.float32(context.dt))
-        )
-        v_rows = []
-        i_rows = []
-        for recv_index, port in enumerate(ports):
-            voltage, current = _phase15_sample_lumped_port_vi(
-                pre_source_state,
-                grid=context.grid,
-                port_cell=tuple(port.cell),
-                component=str(port.component),
-            )
-            v_rows.append(
-                v_dft[recv_index]
-                + voltage.astype(jnp.complex64) * phase * jnp.float32(context.dt)
-            )
-            i_rows.append(
-                i_dft[recv_index]
-                + current.astype(jnp.complex64) * phase * jnp.float32(context.dt)
-            )
-        return jnp.stack(v_rows, axis=0), jnp.stack(i_rows, axis=0)
-
-    def inject_column_source(pre_source_state, source_value, port):
-        i, j, k = port.cell
-        return _inject_sources(
-            pre_source_state,
-            jnp.asarray([source_value], dtype=jnp.float32),
-            ((int(i), int(j), int(k), str(port.component)),),
-        )
-
     columns = []
     for drive_index, drive_port in enumerate(ports):
         drive_source_values = source_values_by_port[:, drive_index]
@@ -2965,8 +3167,20 @@ def run_phase16_strategy_b_native_smatrix(
                 if context.pec_faces:
                     fdtd = apply_pec_faces(fdtd, context.pec_faces)
                 pre_source_state = _from_fdtd(fdtd)
-                v_next, i_next = accumulate(v_dft, i_dft, pre_source_state, step_index)
-                next_state = inject_column_source(pre_source_state, source_value, drive_port)
+                v_next, i_next = _phase16_accumulate_lumped_port_vi_dft(
+                    context,
+                    ports,
+                    freqs,
+                    v_dft,
+                    i_dft,
+                    pre_source_state,
+                    step_index,
+                )
+                next_state = _phase16_inject_smatrix_column_source(
+                    pre_source_state,
+                    source_value,
+                    drive_port,
+                )
                 return (next_state, next_cpml_state, v_next, i_next), None
 
             (_, _, v_dft, i_dft), _ = jax.lax.scan(
@@ -2982,8 +3196,20 @@ def run_phase16_strategy_b_native_smatrix(
                 step_index, source_value = xs
                 fdtd = update_he_fast(_to_fdtd(state), coeffs)
                 pre_source_state = _from_fdtd(fdtd)
-                v_next, i_next = accumulate(v_dft, i_dft, pre_source_state, step_index)
-                next_state = inject_column_source(pre_source_state, source_value, drive_port)
+                v_next, i_next = _phase16_accumulate_lumped_port_vi_dft(
+                    context,
+                    ports,
+                    freqs,
+                    v_dft,
+                    i_dft,
+                    pre_source_state,
+                    step_index,
+                )
+                next_state = _phase16_inject_smatrix_column_source(
+                    pre_source_state,
+                    source_value,
+                    drive_port,
+                )
                 return (next_state, v_next, i_next), None
 
             (_, v_dft, i_dft), _ = jax.lax.scan(
@@ -2996,6 +3222,428 @@ def run_phase16_strategy_b_native_smatrix(
 
     smatrix = jnp.stack(columns, axis=1)
     return jax.lax.stop_gradient(smatrix), jax.lax.stop_gradient(freqs)
+
+
+def _phase17_broadcast_objective_vector(
+    value: object,
+    *,
+    n_freqs: int,
+    dtype: jnp.dtype,
+) -> jnp.ndarray:
+    arr = jnp.asarray(value, dtype=dtype)
+    if arr.ndim == 0:
+        return jnp.broadcast_to(arr, (n_freqs,))
+    if arr.shape == (1,):
+        return jnp.broadcast_to(arr[0], (n_freqs,))
+    return arr
+
+
+def _phase17_weighted_smatrix_objective(
+    smatrix: jnp.ndarray,
+    objective_request: Phase1SMatrixObjectiveRequest,
+) -> jnp.ndarray:
+    """Pure scalar Strategy B native S-matrix objective."""
+
+    n_freqs = int(jnp.asarray(objective_request.freqs).shape[0])
+    total = jnp.asarray(0.0, dtype=jnp.float32)
+    total_weight = jnp.asarray(0.0, dtype=jnp.float32)
+    for term in objective_request.terms:
+        weight = _phase17_broadcast_objective_vector(
+            term.weight,
+            n_freqs=n_freqs,
+            dtype=jnp.float32,
+        )
+        selected = smatrix[int(term.row), int(term.col), :]
+        if term.mode == "mse":
+            target = _phase17_broadcast_objective_vector(
+                term.target,
+                n_freqs=n_freqs,
+                dtype=jnp.complex64,
+            )
+            contribution = jnp.abs(selected - target) ** 2
+        elif term.mode == "negative_power":
+            contribution = -(jnp.abs(selected) ** 2)
+        else:
+            raise ValueError(f"unsupported Phase XVII S-matrix objective mode {term.mode!r}")
+        total = total + jnp.sum(weight * contribution.astype(jnp.float32))
+        total_weight = total_weight + jnp.sum(weight)
+    return total / total_weight
+
+
+def _run_phase17_strategy_b_native_smatrix_objective_pec_segment(
+    context: Phase1HybridContext,
+    coeffs: UpdateCoeffs,
+    ports: tuple[Phase1SParamPortSpec, ...],
+    freqs: jnp.ndarray,
+    drive_port: Phase1SParamPortSpec,
+    *,
+    initial_state: Phase1FieldState,
+    initial_v_dft: jnp.ndarray,
+    initial_i_dft: jnp.ndarray,
+    step_indices: jnp.ndarray,
+    source_values: jnp.ndarray,
+    return_trace: bool = False,
+):
+    """Run one PEC objective segment using Phase XVI sample/source timing."""
+
+    def pec_step(carry, xs):
+        state, v_dft, i_dft = carry
+        step_index, source_value = xs
+        fdtd = update_he_fast(_to_fdtd(state), coeffs)
+        pre_source_state = _from_fdtd(fdtd)
+        v_next, i_next = _phase16_accumulate_lumped_port_vi_dft(
+            context,
+            ports,
+            freqs,
+            v_dft,
+            i_dft,
+            pre_source_state,
+            step_index,
+        )
+        next_state = _phase16_inject_smatrix_column_source(
+            pre_source_state,
+            source_value,
+            drive_port,
+        )
+        if return_trace:
+            return (next_state, v_next, i_next), (state, v_dft, i_dft)
+        return (next_state, v_next, i_next), None
+
+    (final_state, final_v_dft, final_i_dft), outputs = jax.lax.scan(
+        pec_step,
+        (initial_state, initial_v_dft, initial_i_dft),
+        (step_indices, source_values),
+    )
+    if return_trace:
+        states_before, v_dft_before, i_dft_before = outputs
+        return (
+            final_state,
+            final_v_dft,
+            final_i_dft,
+            states_before,
+            v_dft_before,
+            i_dft_before,
+        )
+    return final_state, final_v_dft, final_i_dft
+
+
+def _run_phase17_strategy_b_native_smatrix_objective_pec_column_forward(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    ports: tuple[Phase1SParamPortSpec, ...],
+    freqs: jnp.ndarray,
+    drive_index: int,
+    checkpoint_every: int,
+) -> _Phase17SMatrixColumnCheckpoints:
+    """Forward one driven PEC S-matrix objective column, saving segment starts."""
+
+    n_ports = len(ports)
+    n_freqs = int(freqs.shape[0])
+    v_dft = jnp.zeros((n_ports, n_freqs), dtype=jnp.complex64)
+    i_dft = jnp.zeros((n_ports, n_freqs), dtype=jnp.complex64)
+    state = context.initial_state
+    coeffs = _coeffs_from_eps(context, eps_r)
+    drive_port = ports[drive_index]
+    source_values = _phase16_sparam_source_values_from_eps(context, eps_r, drive_port)
+    step_indices = jnp.arange(context.n_steps, dtype=jnp.float32)
+
+    checkpoint_states: list[Phase1FieldState] = []
+    checkpoint_v: list[jnp.ndarray] = []
+    checkpoint_i: list[jnp.ndarray] = []
+    for start, end in _phase3_strategy_b_segments(context.n_steps, checkpoint_every):
+        checkpoint_states.append(state)
+        checkpoint_v.append(v_dft)
+        checkpoint_i.append(i_dft)
+        state, v_dft, i_dft = _run_phase17_strategy_b_native_smatrix_objective_pec_segment(
+            context,
+            coeffs,
+            ports,
+            freqs,
+            drive_port,
+            initial_state=state,
+            initial_v_dft=v_dft,
+            initial_i_dft=i_dft,
+            step_indices=step_indices[start:end],
+            source_values=source_values[start:end],
+        )
+
+    return _Phase17SMatrixColumnCheckpoints(
+        states=_stack_phase1_field_states(tuple(checkpoint_states)),
+        v_dft=jnp.stack(checkpoint_v, axis=0),
+        i_dft=jnp.stack(checkpoint_i, axis=0),
+        v_dft_final=v_dft,
+        i_dft_final=i_dft,
+    )
+
+
+def _run_phase17_strategy_b_native_smatrix_objective_pec_forward(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    objective_request: Phase1SMatrixObjectiveRequest,
+    checkpoint_every: int,
+) -> tuple[jnp.ndarray, tuple[_Phase17SMatrixColumnCheckpoints, ...]]:
+    """Forward PEC value path for the Phase XVII scalar objective custom VJP."""
+
+    assert context.s_param_request is not None
+    ports = tuple(context.s_param_request.ports)
+    freqs = jnp.asarray(objective_request.freqs, dtype=jnp.float32)
+    column_checkpoints = tuple(
+        _run_phase17_strategy_b_native_smatrix_objective_pec_column_forward(
+            context,
+            eps_r,
+            ports,
+            freqs,
+            drive_index,
+            checkpoint_every,
+        )
+        for drive_index in range(len(ports))
+    )
+    columns = [
+        _phase16_smatrix_column_from_vi_dft(
+            checkpoints.v_dft_final,
+            checkpoints.i_dft_final,
+            ports,
+            drive_index,
+        )
+        for drive_index, checkpoints in enumerate(column_checkpoints)
+    ]
+    smatrix = jnp.stack(columns, axis=1)
+    return _phase17_weighted_smatrix_objective(smatrix, objective_request), column_checkpoints
+
+
+def _reverse_phase17_strategy_b_native_smatrix_objective_pec_column(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    column_checkpoints: _Phase17SMatrixColumnCheckpoints,
+    ports: tuple[Phase1SParamPortSpec, ...],
+    freqs: jnp.ndarray,
+    drive_index: int,
+    v_dft_bar: jnp.ndarray,
+    i_dft_bar: jnp.ndarray,
+    checkpoint_every: int,
+) -> jnp.ndarray:
+    """Reverse one PEC S-matrix objective column through segmented replay."""
+
+    coeffs = _coeffs_from_eps(context, eps_r)
+    drive_port = ports[drive_index]
+    source_values = _phase16_sparam_source_values_from_eps(context, eps_r, drive_port)
+    raw_source_values = jnp.asarray(drive_port.source_waveform_raw, dtype=jnp.float32)
+    step_indices = jnp.arange(context.n_steps, dtype=jnp.float32)
+    lambda_next = _zeros_like_state(context.initial_state)
+    v_bar_next = v_dft_bar
+    i_bar_next = i_dft_bar
+    grad_eps = jnp.zeros_like(eps_r)
+
+    for segment_index, (start, end) in reversed(
+        tuple(enumerate(_phase3_strategy_b_segments(context.n_steps, checkpoint_every)))
+    ):
+        segment_start_state = _phase1_field_state_at(column_checkpoints.states, segment_index)
+        segment_start_v = column_checkpoints.v_dft[segment_index]
+        segment_start_i = column_checkpoints.i_dft[segment_index]
+        _, _, _, states_before, v_before, i_before = (
+            _run_phase17_strategy_b_native_smatrix_objective_pec_segment(
+                context,
+                coeffs,
+                ports,
+                freqs,
+                drive_port,
+                initial_state=segment_start_state,
+                initial_v_dft=segment_start_v,
+                initial_i_dft=segment_start_i,
+                step_indices=step_indices[start:end],
+                source_values=source_values[start:end],
+                return_trace=True,
+            )
+        )
+
+        def reverse_step(carry, xs):
+            lambda_after, v_after_bar, i_after_bar, grad_accum = carry
+            state_before, v_dft_before, i_dft_before, step_index, raw_source_value = xs
+
+            def step_from_eps(
+                state: Phase1FieldState,
+                v_dft: jnp.ndarray,
+                i_dft: jnp.ndarray,
+                eps_local: jnp.ndarray,
+            ):
+                fdtd = update_he_fast(_to_fdtd(state), _coeffs_from_eps(context, eps_local))
+                pre_source_state = _from_fdtd(fdtd)
+                v_next, i_next = _phase16_accumulate_lumped_port_vi_dft(
+                    context,
+                    ports,
+                    freqs,
+                    v_dft,
+                    i_dft,
+                    pre_source_state,
+                    step_index,
+                )
+                source_value = _phase16_sparam_source_value_from_raw(
+                    context,
+                    eps_local,
+                    drive_port,
+                    raw_source_value,
+                )
+                next_state = _phase16_inject_smatrix_column_source(
+                    pre_source_state,
+                    source_value,
+                    drive_port,
+                )
+                return next_state, v_next, i_next
+
+            _, step_vjp = jax.vjp(step_from_eps, state_before, v_dft_before, i_dft_before, eps_r)
+            lambda_before, v_before_bar, i_before_bar, grad_eps_step = step_vjp(
+                (lambda_after, v_after_bar, i_after_bar)
+            )
+            return (
+                lambda_before,
+                v_before_bar,
+                i_before_bar,
+                grad_accum + grad_eps_step,
+            ), None
+
+        (lambda_next, v_bar_next, i_bar_next, grad_eps), _ = jax.lax.scan(
+            reverse_step,
+            (lambda_next, v_bar_next, i_bar_next, grad_eps),
+            (
+                states_before,
+                v_before,
+                i_before,
+                step_indices[start:end],
+                raw_source_values[start:end],
+            ),
+            reverse=True,
+        )
+
+    return grad_eps
+
+
+def _reverse_phase17_strategy_b_native_smatrix_objective_pec(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    column_checkpoints: tuple[_Phase17SMatrixColumnCheckpoints, ...],
+    objective_request: Phase1SMatrixObjectiveRequest,
+    loss_bar: jnp.ndarray,
+    checkpoint_every: int,
+) -> jnp.ndarray:
+    """Reverse the scalar objective cotangent through all PEC replay columns."""
+
+    assert context.s_param_request is not None
+    ports = tuple(context.s_param_request.ports)
+    freqs = jnp.asarray(objective_request.freqs, dtype=jnp.float32)
+    v_finals = jnp.stack([checkpoints.v_dft_final for checkpoints in column_checkpoints], axis=0)
+    i_finals = jnp.stack([checkpoints.i_dft_final for checkpoints in column_checkpoints], axis=0)
+
+    def loss_from_final_vi(v_values: jnp.ndarray, i_values: jnp.ndarray) -> jnp.ndarray:
+        columns = [
+            _phase16_smatrix_column_from_vi_dft(
+                v_values[drive_index],
+                i_values[drive_index],
+                ports,
+                drive_index,
+            )
+            for drive_index in range(len(ports))
+        ]
+        return _phase17_weighted_smatrix_objective(
+            jnp.stack(columns, axis=1),
+            objective_request,
+        )
+
+    _, vi_vjp = jax.vjp(loss_from_final_vi, v_finals, i_finals)
+    v_bars, i_bars = vi_vjp(loss_bar)
+
+    grad_eps = jnp.zeros_like(eps_r)
+    for drive_index, checkpoints in enumerate(column_checkpoints):
+        grad_eps = grad_eps + _reverse_phase17_strategy_b_native_smatrix_objective_pec_column(
+            context,
+            eps_r,
+            checkpoints,
+            ports,
+            freqs,
+            drive_index,
+            v_bars[drive_index],
+            i_bars[drive_index],
+            checkpoint_every,
+        )
+    return grad_eps
+
+
+def _make_phase17_strategy_b_smatrix_objective_forward(
+    context: Phase1HybridContext,
+    objective_request: Phase1SMatrixObjectiveRequest,
+    checkpoint_every: int,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Create the explicit Phase XVII scalar S-matrix objective custom VJP."""
+
+    @jax.custom_vjp
+    def _forward_objective(eps_r: jnp.ndarray) -> jnp.ndarray:
+        loss, _ = _run_phase17_strategy_b_native_smatrix_objective_pec_forward(
+            context,
+            eps_r,
+            objective_request,
+            checkpoint_every,
+        )
+        return loss
+
+    def _forward_fwd(eps_r: jnp.ndarray):
+        loss, checkpoints = _run_phase17_strategy_b_native_smatrix_objective_pec_forward(
+            context,
+            eps_r,
+            objective_request,
+            checkpoint_every,
+        )
+        return loss, (eps_r, checkpoints)
+
+    def _forward_bwd(res, loss_bar: jnp.ndarray):
+        eps_r, checkpoints = res
+        grad_eps = _reverse_phase17_strategy_b_native_smatrix_objective_pec(
+            context,
+            eps_r,
+            checkpoints,
+            objective_request,
+            loss_bar,
+            checkpoint_every,
+        )
+        return (grad_eps,)
+
+    _forward_objective.defvjp(_forward_fwd, _forward_bwd)
+    return _forward_objective
+
+
+def run_phase17_strategy_b_native_smatrix_objective(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    objective_request: Phase1SMatrixObjectiveRequest,
+    *,
+    checkpoint_every: int | None,
+) -> jnp.ndarray:
+    """Run the explicit differentiable Strategy B native S-matrix scalar objective."""
+
+    reasons = _phase17_native_smatrix_objective_support_reasons(
+        boundary=context.boundary,
+        periodic=context.periodic,
+        grid=context.grid,
+        debye_spec=context.debye_spec,
+        lorentz_spec=context.lorentz_spec,
+        port_metadata=context.port_metadata,
+        s_param_request=context.s_param_request,
+        objective_request=objective_request,
+        checkpoint_every=checkpoint_every,
+    )
+    if reasons:
+        raise ValueError("; ".join(reasons))
+    assert checkpoint_every is not None
+    if isinstance(context.grid, NonUniformGrid):
+        raise ValueError("Phase XVII native Strategy B S-matrix objectives support only uniform grids")
+    for port in tuple(context.s_param_request.ports if context.s_param_request else ()):
+        _phase15_assert_port_cell_supports_current_loop(context.grid, tuple(port.cell), str(port.component))
+        if jnp.asarray(port.source_waveform_raw).shape[0] != context.n_steps:
+            raise ValueError("Phase XVII native S-matrix objective source waveform length must match n_steps")
+    forward = _make_phase17_strategy_b_smatrix_objective_forward(
+        context,
+        objective_request,
+        checkpoint_every,
+    )
+    return forward(context.resolved_eps_r(eps_r))
 
 
 def run_phase15_strategy_b_native_sparams(

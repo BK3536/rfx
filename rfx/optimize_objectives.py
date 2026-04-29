@@ -76,6 +76,61 @@ def _find_freq_indices(result_freqs: jnp.ndarray, target_freqs: jnp.ndarray) -> 
 # Public objective factories
 # ---------------------------------------------------------------------------
 
+def native_smatrix_objective_request(freqs, terms):
+    """Build an explicit Phase XVII native Strategy B S-matrix objective request.
+
+    This returns an objective *spec* for
+    ``Simulation.forward_hybrid_phase1_smatrix_objective_from_inputs(...)``;
+    it intentionally does not change the legacy ``objective(result)`` factories
+    below or make ``ForwardResult.s_params`` differentiable.
+    """
+
+    from rfx.hybrid_adjoint import Phase1SMatrixObjectiveRequest
+
+    return Phase1SMatrixObjectiveRequest(
+        freqs=jnp.asarray(freqs, dtype=jnp.float32),
+        terms=tuple(terms),
+    )
+
+
+def native_minimize_s11_request(freqs, *, target=0.0 + 0.0j, weight=1.0):
+    """Return an explicit Phase XVII request for minimizing native ``|S11-target|²``."""
+
+    from rfx.hybrid_adjoint import Phase1SMatrixObjectiveTerm
+
+    return native_smatrix_objective_request(
+        freqs,
+        (
+            Phase1SMatrixObjectiveTerm(
+                row=0,
+                col=0,
+                target=target,
+                weight=weight,
+                mode="mse",
+            ),
+        ),
+    )
+
+
+def native_maximize_s21_request(freqs, *, weight=1.0):
+    """Return an explicit Phase XVII request for maximizing native ``|S21|²``."""
+
+    from rfx.hybrid_adjoint import Phase1SMatrixObjectiveTerm
+
+    return native_smatrix_objective_request(
+        freqs,
+        (
+            Phase1SMatrixObjectiveTerm(
+                row=1,
+                col=0,
+                target=0.0 + 0.0j,
+                weight=weight,
+                mode="negative_power",
+            ),
+        ),
+    )
+
+
 def minimize_s11(
     freqs: jnp.ndarray | np.ndarray,
     target_db: float = -10.0,

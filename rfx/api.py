@@ -3743,6 +3743,54 @@ class Simulation:
             port_metadata=report.port_metadata,
         )
 
+    def inspect_hybrid_strategy_b_phase17_smatrix_objective_from_inputs(
+        self,
+        inputs: "Phase1HybridInputs",
+        objective_request: object,
+        *,
+        report: "Phase1HybridInspection | None" = None,
+        checkpoint_every: int | None = None,
+    ) -> "Phase1HybridInspection":
+        """Inspect the explicit Phase XVII differentiable S-matrix objective seam."""
+
+        if report is None:
+            report = self.inspect_hybrid_phase1_from_inputs(inputs)
+        phase6_report = self.inspect_hybrid_strategy_b_phase6_from_inputs(
+            inputs,
+            report=report,
+            checkpoint_every=checkpoint_every,
+        )
+        from rfx.hybrid_adjoint import (
+            Phase1HybridInspection,
+            _phase17_native_smatrix_objective_support_reasons,
+        )
+
+        reasons = list(phase6_report.reasons)
+        reasons.extend(
+            _phase17_native_smatrix_objective_support_reasons(
+                boundary=inputs.boundary,
+                periodic=inputs.periodic,
+                grid=inputs.grid,
+                debye_spec=inputs.debye_spec,
+                lorentz_spec=inputs.lorentz_spec,
+                port_metadata=inputs.port_metadata,
+                s_param_request=inputs.s_param_request,
+                objective_request=objective_request,
+                checkpoint_every=checkpoint_every,
+            )
+        )
+        reasons = list(dict.fromkeys(reasons))
+        if not reasons:
+            return report
+        return Phase1HybridInspection.unsupported(
+            reasons=tuple(reasons),
+            source_count=phase6_report.source_count,
+            probe_count=phase6_report.probe_count,
+            boundary=phase6_report.boundary,
+            periodic=phase6_report.periodic,
+            port_metadata=phase6_report.port_metadata,
+        )
+
     def inspect_hybrid_strategy_b_phase3(
         self,
         *,
@@ -4336,6 +4384,38 @@ class Simulation:
             time_series,
             s_params=s_params,
             freqs=freqs,
+        )
+
+    def forward_hybrid_phase1_smatrix_objective_from_inputs(
+        self,
+        inputs: "Phase1HybridInputs",
+        objective_request: object,
+        *,
+        eps_override: jnp.ndarray | None = None,
+        strategy: str = "b",
+        checkpoint_every: int | None = None,
+    ) -> jnp.ndarray:
+        """Run the explicit Phase XVII native Strategy B S-matrix scalar objective."""
+
+        if strategy not in {"b", "strategy_b"}:
+            raise ValueError("Phase XVII native S-matrix objectives require strategy='b'")
+        report = self.inspect_hybrid_strategy_b_phase17_smatrix_objective_from_inputs(
+            inputs,
+            objective_request,
+            checkpoint_every=checkpoint_every,
+        )
+        if not report.supported:
+            raise ValueError(report.reason_text)
+
+        from rfx.hybrid_adjoint import run_phase17_strategy_b_native_smatrix_objective
+
+        context = self.build_hybrid_phase1_context_from_inputs(inputs)
+        eps_r = context.resolved_eps_r(eps_override)
+        return run_phase17_strategy_b_native_smatrix_objective(
+            context,
+            eps_r,
+            objective_request,
+            checkpoint_every=checkpoint_every,
         )
 
     def forward_hybrid_phase1_from_context(

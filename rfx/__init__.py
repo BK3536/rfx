@@ -66,6 +66,9 @@ from rfx.checkpoint import (
     save_materials, load_materials,
 )
 from rfx.optimize_objectives import (
+    native_smatrix_objective_request,
+    native_minimize_s11_request,
+    native_maximize_s21_request,
     minimize_s11,
     maximize_s21,
     target_impedance,
@@ -104,6 +107,8 @@ from rfx.hybrid_adjoint import (
     Phase1HybridContext,
     Phase1SParamPortSpec,
     Phase1SParamRequest,
+    Phase1SMatrixObjectiveTerm,
+    Phase1SMatrixObjectiveRequest,
     Phase1HybridInspection,
     Phase1HybridPrepared,
     Phase1HybridInputs,
@@ -111,6 +116,7 @@ from rfx.hybrid_adjoint import (
     run_phase1_forward_time_series,
     run_phase15_strategy_b_native_sparams,
     run_phase16_strategy_b_native_smatrix,
+    run_phase17_strategy_b_native_smatrix_objective,
     make_phase1_hybrid_forward,
     phase1_hybrid_support_reasons,
     build_phase1_hybrid_context,
