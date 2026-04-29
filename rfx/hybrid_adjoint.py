@@ -126,14 +126,28 @@ class _Phase1HybridObservables(NamedTuple):
     ntff_data: NTFFData | None = None
 
 
+class Phase1SParamPortSpec(NamedTuple):
+    """Ordered native S-parameter port spec for Strategy B replay columns."""
+
+    index: int
+    cell: tuple[int, int, int]
+    component: str
+    impedance_ohm: float
+    source_waveform_raw: jnp.ndarray
+    excite_in_main_run: bool
+    direction: str | None = None
+    waveform_source: str = "active_port_waveform"
+
+
 class Phase1SParamRequest(NamedTuple):
     """Static native S-parameter request for the Strategy B replay seam."""
 
     freqs: jnp.ndarray
-    port_cell: tuple[int, int, int] | None
-    component: str | None
-    impedance_ohm: float | None
+    port_cell: tuple[int, int, int] | None = None
+    component: str | None = None
+    impedance_ohm: float | None = None
     observable_source: str = "strategy_b_native_sparams"
+    ports: tuple[Phase1SParamPortSpec, ...] = ()
 
 
 def phase1_forward_result(
@@ -850,10 +864,22 @@ def _passive_lumped_port_sigmas(port_metadata: object | None) -> tuple[float, ..
     return tuple(float(value) for value in getattr(port_metadata, "passive_lumped_port_sigmas", ()))
 
 
+def _passive_lumped_port_impedances(port_metadata: object | None) -> tuple[float, ...]:
+    if port_metadata is None:
+        return ()
+    return tuple(float(value) for value in getattr(port_metadata, "passive_lumped_port_impedances_ohm", ()))
+
+
 def _passive_lumped_port_components(port_metadata: object | None) -> tuple[str, ...]:
     if port_metadata is None:
         return ()
     return tuple(str(value) for value in getattr(port_metadata, "passive_lumped_port_components", ()))
+
+
+def _passive_lumped_port_directions(port_metadata: object | None) -> tuple[str | None, ...]:
+    if port_metadata is None:
+        return ()
+    return tuple(getattr(port_metadata, "passive_lumped_port_directions", ()))
 
 
 def _passive_lumped_port_had_pec(port_metadata: object | None) -> tuple[bool, ...]:
@@ -871,6 +897,7 @@ def _supports_phase2_lumped_port_proxy_subset(port_metadata: object | None) -> b
     passive_cells = _passive_lumped_port_cells(port_metadata)
     passive_components = _passive_lumped_port_components(port_metadata)
     passive_sigmas = _passive_lumped_port_sigmas(port_metadata)
+    passive_impedances = _passive_lumped_port_impedances(port_metadata)
     passive_had_pec = _passive_lumped_port_had_pec(port_metadata)
     port_cells = (tuple(port_metadata.excited_lumped_port_cell),) if port_metadata.excited_lumped_port_cell else ()
     port_cells = port_cells + passive_cells
@@ -891,17 +918,18 @@ def _supports_phase2_lumped_port_proxy_subset(port_metadata: object | None) -> b
         and len(passive_cells) == port_metadata.passive_ports
         and len(passive_components) == port_metadata.passive_ports
         and len(passive_sigmas) == port_metadata.passive_ports
+        and len(passive_impedances) == port_metadata.passive_ports
         and len(passive_had_pec) == port_metadata.passive_ports
         and not any(passive_had_pec)
         and len(set(port_cells)) == len(port_cells)
     )
 
 
-def _phase15_native_sparams_support_reasons(
+def _phase16_native_smatrix_support_reasons(
     port_metadata: object | None,
     s_param_request: Phase1SParamRequest | None,
 ) -> tuple[str, ...]:
-    """Return fail-closed reasons for the Phase XV native one-port S11 subset."""
+    """Return fail-closed reasons for the Phase XVI native full S-matrix subset."""
 
     if s_param_request is None:
         return ()
@@ -909,82 +937,147 @@ def _phase15_native_sparams_support_reasons(
     reasons: list[str] = []
     freqs = np.asarray(s_param_request.freqs)
     if freqs.ndim != 1 or freqs.size == 0 or not np.isfinite(freqs).all() or np.any(freqs <= 0.0):
-        reasons.append("Phase XV native Strategy B S-parameters require finite positive 1-D s_param_freqs")
+        reasons.append("Phase XVI native Strategy B S-matrix requires finite positive 1-D s_param_freqs")
 
     if port_metadata is None:
-        reasons.append("Phase XV native Strategy B S-parameters require one excited lumped port")
+        reasons.append("Phase XVI native Strategy B S-matrix requires one or two ordered lumped ports")
         return tuple(dict.fromkeys(reasons))
 
-    if getattr(port_metadata, "total_ports", 0) != 1:
-        reasons.append("Phase XV native Strategy B S-parameters support exactly one total lumped port")
+    total_ports = int(getattr(port_metadata, "total_ports", 0))
+    passive_ports = int(getattr(port_metadata, "passive_ports", 0))
+    if total_ports not in {1, 2}:
+        reasons.append("Phase XVI native Strategy B S-matrix supports one or two total lumped ports")
     if getattr(port_metadata, "excited_ports", 0) != 1:
-        reasons.append("Phase XV native Strategy B S-parameters require exactly one excited port")
-    if getattr(port_metadata, "passive_ports", 0) != 0:
-        reasons.append("Phase XV native Strategy B S-parameters do not support passive/two-port workflows")
+        reasons.append("Phase XVI native Strategy B S-matrix requires exactly one user-excited port")
+    if passive_ports not in {0, 1}:
+        reasons.append("Phase XVI native Strategy B S-matrix supports at most one passive lumped port")
     if getattr(port_metadata, "wire_ports", 0) != 0:
-        reasons.append("Phase XV native Strategy B S-parameters do not support wire ports")
+        reasons.append("Phase XVI native Strategy B S-matrix does not support wire ports")
     if getattr(port_metadata, "waveguide_ports", 0) != 0:
-        reasons.append("Phase XV native Strategy B S-parameters do not support waveguide ports")
+        reasons.append("Phase XVI native Strategy B S-matrix does not support waveguide ports")
     if getattr(port_metadata, "floquet_ports", 0) != 0:
-        reasons.append("Phase XV native Strategy B S-parameters do not support Floquet ports")
+        reasons.append("Phase XVI native Strategy B S-matrix does not support Floquet ports")
     if getattr(port_metadata, "soft_source_count", 0) != 0:
-        reasons.append("Phase XV native Strategy B S-parameters do not support mixed soft-source workflows")
+        reasons.append("Phase XVI native Strategy B S-matrix does not support mixed soft-source workflows")
     if getattr(port_metadata, "excited_lumped_port_cell", None) is None:
-        reasons.append("Phase XV native Strategy B S-parameters require an excited lumped-port cell")
+        reasons.append("Phase XVI native Strategy B S-matrix requires an excited lumped-port cell")
     if getattr(port_metadata, "excited_lumped_port_component", None) is None:
-        reasons.append("Phase XV native Strategy B S-parameters require an excited lumped-port component")
+        reasons.append("Phase XVI native Strategy B S-matrix requires an excited lumped-port component")
     if getattr(port_metadata, "excited_lumped_port_impedance_ohm", None) is None:
-        reasons.append("Phase XV native Strategy B S-parameters require explicit excited-port impedance")
-    if getattr(port_metadata, "excited_port_had_pec", False):
-        reasons.append("Phase XV native Strategy B S-parameters reject pre-existing PEC at the port cell")
+        reasons.append("Phase XVI native Strategy B S-matrix requires explicit excited-port impedance")
+    if getattr(port_metadata, "excited_port_had_pec", False) or any(_passive_lumped_port_had_pec(port_metadata)):
+        reasons.append("Phase XVI native Strategy B S-matrix rejects pre-existing PEC at port cells")
     if getattr(port_metadata, "design_region_overlaps_excited_port_cell", False):
-        reasons.append("Phase XV native Strategy B S-parameters reject design-region overlap with the port cell")
+        reasons.append("Phase XVI native Strategy B S-matrix rejects design-region overlap with the excited port cell")
+    if getattr(port_metadata, "design_region_overlaps_passive_lumped_port_cell", False):
+        reasons.append("Phase XVI native Strategy B S-matrix rejects design-region overlap with a passive port cell")
 
-    if s_param_request.port_cell is None:
-        reasons.append("Phase XV native Strategy B S-parameters request is missing the port cell")
-    elif (
-        getattr(port_metadata, "excited_lumped_port_cell", None) is not None
-        and tuple(int(v) for v in s_param_request.port_cell)
-        != tuple(int(v) for v in port_metadata.excited_lumped_port_cell)
-    ):
-        reasons.append("Phase XV native Strategy B S-parameter request cell does not match port metadata")
+    passive_cells = _passive_lumped_port_cells(port_metadata)
+    passive_components = _passive_lumped_port_components(port_metadata)
+    passive_sigmas = _passive_lumped_port_sigmas(port_metadata)
+    passive_impedances = _passive_lumped_port_impedances(port_metadata)
+    if len(passive_cells) != passive_ports:
+        reasons.append("Phase XVI native Strategy B S-matrix requires passive port cells for every passive port")
+    if len(passive_components) != passive_ports:
+        reasons.append("Phase XVI native Strategy B S-matrix requires passive port components for every passive port")
+    if len(passive_sigmas) != passive_ports:
+        reasons.append("Phase XVI native Strategy B S-matrix requires passive port sigmas for every passive port")
+    if len(passive_impedances) != passive_ports:
+        reasons.append("Phase XVI native Strategy B S-matrix requires explicit passive-port impedance")
 
-    if s_param_request.component is None:
-        reasons.append("Phase XV native Strategy B S-parameters request is missing the component")
-    elif (
-        getattr(port_metadata, "excited_lumped_port_component", None) is not None
-        and str(s_param_request.component) != str(port_metadata.excited_lumped_port_component)
-    ):
-        reasons.append("Phase XV native Strategy B S-parameter request component does not match port metadata")
+    ports = tuple(getattr(s_param_request, "ports", ()) or ())
+    if len(ports) != total_ports:
+        reasons.append("Phase XVI native Strategy B S-matrix request must preserve every supported port in public order")
+    if not ports:
+        reasons.append("Phase XVI native Strategy B S-matrix request is missing ordered port specs")
+    if sum(1 for port in ports if bool(port.excite_in_main_run)) != 1:
+        reasons.append("Phase XVI native Strategy B S-matrix request requires exactly one main-run excited port spec")
 
-    if s_param_request.impedance_ohm is None or not np.isfinite(float(s_param_request.impedance_ohm)):
-        reasons.append("Phase XV native Strategy B S-parameters request is missing finite impedance")
-    elif float(s_param_request.impedance_ohm) <= 0.0:
-        reasons.append("Phase XV native Strategy B S-parameters require positive impedance")
-    elif (
-        getattr(port_metadata, "excited_lumped_port_impedance_ohm", None) is not None
-        and not np.isclose(
-            float(s_param_request.impedance_ohm),
-            float(port_metadata.excited_lumped_port_impedance_ohm),
-            rtol=1e-9,
-            atol=0.0,
-        )
-    ):
-        reasons.append("Phase XV native Strategy B S-parameter request impedance does not match port metadata")
+    ordered_cells = tuple(
+        tuple(int(v) for v in cell)
+        for cell in getattr(port_metadata, "ordered_lumped_port_cells", ())
+    )
+    ordered_components = tuple(str(value) for value in getattr(port_metadata, "ordered_lumped_port_components", ()))
+    ordered_impedances = tuple(float(value) for value in getattr(port_metadata, "ordered_lumped_port_impedances_ohm", ()))
+    ordered_excite = tuple(bool(value) for value in getattr(port_metadata, "ordered_lumped_port_excite", ()))
+    ordered_directions = tuple(getattr(port_metadata, "ordered_lumped_port_directions", ()))
+    ordered_waveforms = tuple(getattr(port_metadata, "ordered_lumped_port_source_waveforms_raw", ()))
+    if len(ordered_cells) != total_ports:
+        reasons.append("Phase XVI native Strategy B S-matrix metadata must preserve public lumped-port order")
+    if len(ordered_impedances) != total_ports:
+        reasons.append("Phase XVI native Strategy B S-matrix metadata must preserve every port impedance")
+    if len(ordered_waveforms) != total_ports:
+        reasons.append("Phase XVI native Strategy B S-matrix metadata must preserve sidecar source waveforms")
+    if any(direction is not None for direction in ordered_directions):
+        reasons.append("Phase XVI native Strategy B lumped S-matrix does not support explicit port direction yet")
+
+    seen_cells: set[tuple[int, int, int]] = set()
+    for idx, port in enumerate(ports):
+        cell = tuple(int(v) for v in port.cell)
+        if cell in seen_cells:
+            reasons.append("Phase XVI native Strategy B S-matrix requires unique port cells")
+        seen_cells.add(cell)
+        if idx < len(ordered_cells) and cell != ordered_cells[idx]:
+            reasons.append("Phase XVI native Strategy B S-matrix request port order does not match metadata")
+        if idx < len(ordered_components) and str(port.component) != ordered_components[idx]:
+            reasons.append("Phase XVI native Strategy B S-matrix request component does not match metadata")
+        if idx < len(ordered_impedances) and not np.isclose(
+            float(port.impedance_ohm), ordered_impedances[idx], rtol=1e-9, atol=0.0,
+        ):
+            reasons.append("Phase XVI native Strategy B S-matrix request impedance does not match metadata")
+        if idx < len(ordered_excite) and bool(port.excite_in_main_run) != ordered_excite[idx]:
+            reasons.append("Phase XVI native Strategy B S-matrix request excitation flags do not match metadata")
+        if port.direction is not None:
+            reasons.append("Phase XVI native Strategy B lumped S-matrix does not support explicit port direction yet")
+        if port.impedance_ohm is None or not np.isfinite(float(port.impedance_ohm)):
+            reasons.append("Phase XVI native Strategy B S-matrix request is missing finite impedance")
+        elif float(port.impedance_ohm) <= 0.0:
+            reasons.append("Phase XVI native Strategy B S-matrix requires positive impedance")
+        waveform = np.asarray(port.source_waveform_raw)
+        if waveform.ndim != 1 or waveform.size == 0:
+            reasons.append("Phase XVI native Strategy B S-matrix port source waveform must be a non-empty 1-D array")
+        elif not np.isfinite(waveform).all():
+            reasons.append("Phase XVI native Strategy B S-matrix port source waveform must be finite")
+
+    if not ports and total_ports == 1:
+        if s_param_request.port_cell is None:
+            reasons.append("Phase XVI native Strategy B S-matrix request is missing the port cell")
+        if s_param_request.component is None:
+            reasons.append("Phase XVI native Strategy B S-matrix request is missing the component")
+        if s_param_request.impedance_ohm is None or not np.isfinite(float(s_param_request.impedance_ohm)):
+            reasons.append("Phase XVI native Strategy B S-matrix request is missing finite impedance")
 
     return tuple(dict.fromkeys(reasons))
+
+
+def _phase15_native_sparams_support_reasons(
+    port_metadata: object | None,
+    s_param_request: Phase1SParamRequest | None,
+) -> tuple[str, ...]:
+    """Compatibility alias for the evolved Phase XVI native S-matrix gate."""
+
+    return _phase16_native_smatrix_support_reasons(port_metadata, s_param_request)
+
+
+def _supports_phase16_native_smatrix_subset(
+    port_metadata: object | None,
+    s_param_request: Phase1SParamRequest | None,
+) -> bool:
+    """Return whether metadata/request match the Phase XVI native S-matrix subset."""
+
+    return s_param_request is not None and not _phase16_native_smatrix_support_reasons(
+        port_metadata,
+        s_param_request,
+    )
 
 
 def _supports_phase15_native_sparams_subset(
     port_metadata: object | None,
     s_param_request: Phase1SParamRequest | None,
 ) -> bool:
-    """Return whether metadata/request match the exact Phase XV one-port S11 subset."""
+    """Compatibility alias for the evolved Phase XVI native S-matrix subset."""
 
-    return s_param_request is not None and not _phase15_native_sparams_support_reasons(
-        port_metadata,
-        s_param_request,
-    )
+    return _supports_phase16_native_smatrix_subset(port_metadata, s_param_request)
 
 
 def _supported_lumped_port_sigmas_by_cell(
@@ -2721,136 +2814,197 @@ def _phase15_assert_port_cell_supports_current_loop(
 ) -> None:
     i, j, k = port_cell
     if component == "ez" and (i <= 0 or j <= 0):
-        raise ValueError("Phase XV native S11 requires ez port cell away from -x/-y boundaries")
+        raise ValueError("native lumped-port S-parameters require ez port cell away from -x/-y boundaries")
     if component == "ex" and (j <= 0 or k <= 0):
-        raise ValueError("Phase XV native S11 requires ex port cell away from -y/-z boundaries")
+        raise ValueError("native lumped-port S-parameters require ex port cell away from -y/-z boundaries")
     if component == "ey" and (i <= 0 or k <= 0):
-        raise ValueError("Phase XV native S11 requires ey port cell away from -x/-z boundaries")
+        raise ValueError("native lumped-port S-parameters require ey port cell away from -x/-z boundaries")
     nx, ny, nz = grid.shape
     if not (0 <= i < nx and 0 <= j < ny and 0 <= k < nz):
-        raise ValueError("Phase XV native S11 port cell is outside the grid")
+        raise ValueError("native lumped-port S-parameters port cell is outside the grid")
 
 
-def _phase15_s11_from_vi_dft(
+def _phase16_sparam_source_values_from_eps(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+    port: Phase1SParamPortSpec,
+) -> jnp.ndarray:
+    i, j, k = port.cell
+    eps = eps_r[i, j, k] * jnp.float32(EPS_0)
+    sigma = context.sigma[i, j, k]
+    loss = sigma * jnp.float32(context.dt) / (jnp.float32(2.0) * eps)
+    cb = (jnp.float32(context.dt) / eps) / (jnp.float32(1.0) + loss)
+    return jnp.asarray(port.source_waveform_raw, dtype=jnp.float32) * cb
+
+
+def _phase16_smatrix_column_from_vi_dft(
     v_dft: jnp.ndarray,
     i_dft: jnp.ndarray,
-    impedance_ohm: float,
+    ports: tuple[Phase1SParamPortSpec, ...],
+    drive_index: int,
 ) -> jnp.ndarray:
-    """Compute one-port S11 from V/I DFTs using the full S-matrix convention."""
+    z_drive = jnp.asarray(ports[drive_index].impedance_ohm, dtype=jnp.float32)
+    a_drive = (-v_dft[drive_index] + z_drive * i_dft[drive_index]) / (
+        jnp.float32(2.0) * jnp.sqrt(z_drive)
+    )
+    safe_a = jnp.where(jnp.abs(a_drive) > 0.0, a_drive, jnp.ones_like(a_drive))
+    responses = []
+    for recv_index, port in enumerate(ports):
+        z_recv = jnp.asarray(port.impedance_ohm, dtype=jnp.float32)
+        b_recv = (-v_dft[recv_index] - z_recv * i_dft[recv_index]) / (
+            jnp.float32(2.0) * jnp.sqrt(z_recv)
+        )
+        responses.append(b_recv / safe_a)
+    return jnp.stack(responses, axis=0)
 
-    z0 = jnp.asarray(impedance_ohm, dtype=jnp.float32)
-    a = (-v_dft + z0 * i_dft) / (jnp.float32(2.0) * jnp.sqrt(z0))
-    b = (-v_dft - z0 * i_dft) / (jnp.float32(2.0) * jnp.sqrt(z0))
-    safe_a = jnp.where(jnp.abs(a) > 0.0, a, jnp.ones_like(a))
-    return b / safe_a
+
+def run_phase16_strategy_b_native_smatrix(
+    context: Phase1HybridContext,
+    eps_r: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Run the forward-only Strategy B native one-/two-port S-matrix sidecar replay."""
+
+    request = context.s_param_request
+    if request is None:
+        raise ValueError("Phase XVI native S-matrix requires an explicit s_param_request")
+    reasons = _phase16_native_smatrix_support_reasons(context.port_metadata, request)
+    if reasons:
+        raise ValueError("; ".join(reasons))
+    if isinstance(context.grid, NonUniformGrid):
+        raise ValueError("Phase XVI native Strategy B S-matrix supports only uniform grids")
+    if context.periodic != (False, False, False):
+        raise ValueError("Phase XVI native Strategy B S-matrix does not support periodic workflows")
+    if context.debye_spec is not None or context.lorentz_spec is not None:
+        raise ValueError("Phase XVI native Strategy B S-matrix supports only lossless nondispersive materials")
+    if context.boundary not in {"pec", "cpml"}:
+        raise ValueError(f"boundary={context.boundary!r} is unsupported")
+
+    ports = tuple(request.ports)
+    if not ports:
+        raise ValueError("Phase XVI native S-matrix requires ordered port specs")
+    for port in ports:
+        _phase15_assert_port_cell_supports_current_loop(context.grid, tuple(port.cell), str(port.component))
+        if jnp.asarray(port.source_waveform_raw).shape[0] != context.n_steps:
+            raise ValueError("Phase XVI native S-matrix source waveform length must match n_steps")
+
+    freqs = jnp.asarray(request.freqs, dtype=jnp.float32)
+    n_ports = len(ports)
+    v0 = jnp.zeros((n_ports, freqs.shape[0]), dtype=jnp.complex64)
+    i0 = jnp.zeros((n_ports, freqs.shape[0]), dtype=jnp.complex64)
+    materials = _materials_from_eps(context, eps_r)
+    step_indices = jnp.arange(context.n_steps, dtype=jnp.float32)
+    source_values_by_port = jnp.stack(
+        [_phase16_sparam_source_values_from_eps(context, eps_r, port) for port in ports],
+        axis=-1,
+    )
+
+    def accumulate(v_dft, i_dft, pre_source_state, step_index):
+        phase = jnp.exp(
+            -1j
+            * jnp.float32(2.0)
+            * jnp.pi
+            * freqs
+            * ((step_index + jnp.float32(1.0)) * jnp.float32(context.dt))
+        )
+        v_rows = []
+        i_rows = []
+        for recv_index, port in enumerate(ports):
+            voltage, current = _phase15_sample_lumped_port_vi(
+                pre_source_state,
+                grid=context.grid,
+                port_cell=tuple(port.cell),
+                component=str(port.component),
+            )
+            v_rows.append(
+                v_dft[recv_index]
+                + voltage.astype(jnp.complex64) * phase * jnp.float32(context.dt)
+            )
+            i_rows.append(
+                i_dft[recv_index]
+                + current.astype(jnp.complex64) * phase * jnp.float32(context.dt)
+            )
+        return jnp.stack(v_rows, axis=0), jnp.stack(i_rows, axis=0)
+
+    def inject_column_source(pre_source_state, source_value, port):
+        i, j, k = port.cell
+        return _inject_sources(
+            pre_source_state,
+            jnp.asarray([source_value], dtype=jnp.float32),
+            ((int(i), int(j), int(k), str(port.component)),),
+        )
+
+    columns = []
+    for drive_index, drive_port in enumerate(ports):
+        drive_source_values = source_values_by_port[:, drive_index]
+        if context.boundary == "cpml":
+            assert context.cpml_params is not None
+
+            def cpml_step(carry, xs):
+                state, cpml_state, v_dft, i_dft = carry
+                step_index, source_value = xs
+                fdtd = update_h(_to_fdtd(state), materials, context.dt, context.dx, periodic=context.periodic)
+                fdtd, next_cpml_state = apply_cpml_h(
+                    fdtd,
+                    context.cpml_params,
+                    cpml_state,
+                    context.grid,
+                    context.cpml_axes,
+                    materials=materials,
+                )
+                fdtd = update_e(fdtd, materials, context.dt, context.dx, periodic=context.periodic)
+                fdtd, next_cpml_state = apply_cpml_e(
+                    fdtd,
+                    context.cpml_params,
+                    next_cpml_state,
+                    context.grid,
+                    context.cpml_axes,
+                    materials=materials,
+                )
+                if context.pec_axes:
+                    fdtd = apply_pec(fdtd, axes=context.pec_axes)
+                if context.pec_faces:
+                    fdtd = apply_pec_faces(fdtd, context.pec_faces)
+                pre_source_state = _from_fdtd(fdtd)
+                v_next, i_next = accumulate(v_dft, i_dft, pre_source_state, step_index)
+                next_state = inject_column_source(pre_source_state, source_value, drive_port)
+                return (next_state, next_cpml_state, v_next, i_next), None
+
+            (_, _, v_dft, i_dft), _ = jax.lax.scan(
+                cpml_step,
+                (context.initial_state, _zero_cpml_state(context.grid), v0, i0),
+                (step_indices, drive_source_values),
+            )
+        else:
+            coeffs = _coeffs_from_materials(context, materials)
+
+            def pec_step(carry, xs):
+                state, v_dft, i_dft = carry
+                step_index, source_value = xs
+                fdtd = update_he_fast(_to_fdtd(state), coeffs)
+                pre_source_state = _from_fdtd(fdtd)
+                v_next, i_next = accumulate(v_dft, i_dft, pre_source_state, step_index)
+                next_state = inject_column_source(pre_source_state, source_value, drive_port)
+                return (next_state, v_next, i_next), None
+
+            (_, v_dft, i_dft), _ = jax.lax.scan(
+                pec_step,
+                (context.initial_state, v0, i0),
+                (step_indices, drive_source_values),
+            )
+
+        columns.append(_phase16_smatrix_column_from_vi_dft(v_dft, i_dft, ports, drive_index))
+
+    smatrix = jnp.stack(columns, axis=1)
+    return jax.lax.stop_gradient(smatrix), jax.lax.stop_gradient(freqs)
 
 
 def run_phase15_strategy_b_native_sparams(
     context: Phase1HybridContext,
     eps_r: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Run the forward-only Strategy B native one-port S11 sidecar replay."""
+    """Compatibility wrapper for the evolved Phase XVI native S-matrix replay."""
 
-    request = context.s_param_request
-    if request is None:
-        raise ValueError("Phase XV native S-parameters require an explicit s_param_request")
-    reasons = _phase15_native_sparams_support_reasons(context.port_metadata, request)
-    if reasons:
-        raise ValueError("; ".join(reasons))
-    if isinstance(context.grid, NonUniformGrid):
-        raise ValueError("Phase XV native Strategy B S-parameters support only uniform grids")
-    if context.periodic != (False, False, False):
-        raise ValueError("Phase XV native Strategy B S-parameters do not support periodic workflows")
-    if context.debye_spec is not None or context.lorentz_spec is not None:
-        raise ValueError("Phase XV native Strategy B S-parameters support only lossless nondispersive materials")
-    if context.boundary not in {"pec", "cpml"}:
-        raise ValueError(f"boundary={context.boundary!r} is unsupported")
-    assert request.port_cell is not None
-    assert request.component is not None
-    assert request.impedance_ohm is not None
-
-    port_cell = tuple(int(v) for v in request.port_cell)
-    component = str(request.component)
-    _phase15_assert_port_cell_supports_current_loop(context.grid, port_cell, component)
-
-    freqs = jnp.asarray(request.freqs, dtype=jnp.float32)
-    v0 = jnp.zeros(freqs.shape, dtype=jnp.complex64)
-    i0 = jnp.zeros(freqs.shape, dtype=jnp.complex64)
-    materials = _materials_from_eps(context, eps_r)
-    src_waveforms = _source_waveforms_from_eps(context, eps_r)
-    step_indices = jnp.arange(src_waveforms.shape[0], dtype=jnp.float32)
-
-    def accumulate(v_dft, i_dft, pre_source_state, step_index):
-        voltage, current = _phase15_sample_lumped_port_vi(
-            pre_source_state,
-            grid=context.grid,
-            port_cell=port_cell,
-            component=component,
-        )
-        post_update_time = (step_index + jnp.float32(1.0)) * jnp.float32(context.dt)
-        phase = jnp.exp(-1j * jnp.float32(2.0) * jnp.pi * freqs * post_update_time)
-        v_next = v_dft + voltage.astype(jnp.complex64) * phase * jnp.float32(context.dt)
-        i_next = i_dft + current.astype(jnp.complex64) * phase * jnp.float32(context.dt)
-        return v_next, i_next
-
-    if context.boundary == "cpml":
-        assert context.cpml_params is not None
-
-        def cpml_step(carry, xs):
-            state, cpml_state, v_dft, i_dft = carry
-            step_index, src_vals = xs
-            fdtd = update_h(_to_fdtd(state), materials, context.dt, context.dx, periodic=context.periodic)
-            fdtd, next_cpml_state = apply_cpml_h(
-                fdtd,
-                context.cpml_params,
-                cpml_state,
-                context.grid,
-                context.cpml_axes,
-                materials=materials,
-            )
-            fdtd = update_e(fdtd, materials, context.dt, context.dx, periodic=context.periodic)
-            fdtd, next_cpml_state = apply_cpml_e(
-                fdtd,
-                context.cpml_params,
-                next_cpml_state,
-                context.grid,
-                context.cpml_axes,
-                materials=materials,
-            )
-            if context.pec_axes:
-                fdtd = apply_pec(fdtd, axes=context.pec_axes)
-            if context.pec_faces:
-                fdtd = apply_pec_faces(fdtd, context.pec_faces)
-            pre_source_state = _from_fdtd(fdtd)
-            v_next, i_next = accumulate(v_dft, i_dft, pre_source_state, step_index)
-            next_state = _inject_sources(pre_source_state, src_vals, context.src_meta)
-            return (next_state, next_cpml_state, v_next, i_next), None
-
-        (_, _, v_dft, i_dft), _ = jax.lax.scan(
-            cpml_step,
-            (context.initial_state, _zero_cpml_state(context.grid), v0, i0),
-            (step_indices, src_waveforms),
-        )
-    else:
-        coeffs = _coeffs_from_materials(context, materials)
-
-        def pec_step(carry, xs):
-            state, v_dft, i_dft = carry
-            step_index, src_vals = xs
-            fdtd = update_he_fast(_to_fdtd(state), coeffs)
-            pre_source_state = _from_fdtd(fdtd)
-            v_next, i_next = accumulate(v_dft, i_dft, pre_source_state, step_index)
-            next_state = _inject_sources(pre_source_state, src_vals, context.src_meta)
-            return (next_state, v_next, i_next), None
-
-        (_, v_dft, i_dft), _ = jax.lax.scan(
-            pec_step,
-            (context.initial_state, v0, i0),
-            (step_indices, src_waveforms),
-        )
-
-    s11 = _phase15_s11_from_vi_dft(v_dft, i_dft, float(request.impedance_ohm))
-    return jax.lax.stop_gradient(s11[None, None, :]), jax.lax.stop_gradient(freqs)
+    return run_phase16_strategy_b_native_smatrix(context, eps_r)
 
 
 def _states_after_from_trace(

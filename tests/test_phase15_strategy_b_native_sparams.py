@@ -151,17 +151,18 @@ def test_phase15_sparam_freqs_validate_fail_closed(bad_freqs, message):
         sim.build_hybrid_phase1_inputs(n_steps=8, s_param_freqs=bad_freqs)
 
 
-def test_phase15_passive_two_port_request_remains_unsupported():
+def test_phase15_passive_two_port_request_promotes_to_phase16_full_matrix():
     sim = _make_one_port_sim()
     sim.add_port((0.007, 0.004, 0.004), "ez", impedance=50.0, excite=False)
     inputs = sim.build_hybrid_phase1_inputs(n_steps=16, s_param_freqs=jnp.array([3.0e9]))
 
     report = sim.inspect_hybrid_strategy_b_phase6_from_inputs(inputs, checkpoint_every=8)
 
-    assert not report.supported
-    assert "Phase XV native Strategy B S-parameters do not support passive/two-port workflows" in report.reason_text
-    with pytest.raises(ValueError, match="passive/two-port"):
-        sim.forward_hybrid_phase1_from_inputs(inputs, strategy="b", checkpoint_every=8)
+    assert report.supported, report.reason_text
+    result = sim.forward_hybrid_phase1_from_inputs(inputs, strategy="b", checkpoint_every=8)
+    assert result.s_params is not None
+    assert result.s_params.shape == (2, 2, 1)
+    assert np.isfinite(np.asarray(result.s_params)).all()
 
 
 @pytest.mark.parametrize(

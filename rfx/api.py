@@ -321,13 +321,24 @@ class _Phase1PortMetadata(NamedTuple):
     excited_lumped_port_component: str | None = None
     excited_lumped_port_sigma: float | None = None
     excited_lumped_port_impedance_ohm: float | None = None
+    excited_lumped_port_direction: str | None = None
     excited_port_had_pec: bool = False
     design_region_overlaps_excited_port_cell: bool = False
     passive_lumped_port_cells: tuple[tuple[int, int, int], ...] = ()
     passive_lumped_port_components: tuple[str, ...] = ()
     passive_lumped_port_sigmas: tuple[float, ...] = ()
+    passive_lumped_port_impedances_ohm: tuple[float, ...] = ()
+    passive_lumped_port_directions: tuple[str | None, ...] = ()
     passive_lumped_port_had_pec: tuple[bool, ...] = ()
     design_region_overlaps_passive_lumped_port_cell: bool = False
+    ordered_lumped_port_cells: tuple[tuple[int, int, int], ...] = ()
+    ordered_lumped_port_components: tuple[str, ...] = ()
+    ordered_lumped_port_sigmas: tuple[float, ...] = ()
+    ordered_lumped_port_impedances_ohm: tuple[float, ...] = ()
+    ordered_lumped_port_excite: tuple[bool, ...] = ()
+    ordered_lumped_port_had_pec: tuple[bool, ...] = ()
+    ordered_lumped_port_directions: tuple[str | None, ...] = ()
+    ordered_lumped_port_source_waveforms_raw: tuple[tuple[float, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -3646,7 +3657,7 @@ class Simulation:
         if inputs.pec_occupancy is not None:
             reasons.append("Phase VI Strategy B does not support pec_occupancy/PEC topology replay")
         if inputs.s_param_request is not None and inputs.periodic != (False, False, False):
-            reasons.append("Phase XV native Strategy B S-parameters do not support periodic workflows")
+            reasons.append("Phase XVI native Strategy B S-matrix does not support periodic workflows")
 
         port_metadata = inputs.port_metadata
         total_ports = 0 if port_metadata is None else getattr(port_metadata, "total_ports", 0)
@@ -3676,10 +3687,10 @@ class Simulation:
                     "Phase VI Strategy B port proxy rejects design-region overlap with a passive port cell"
                 )
             if inputs.s_param_request is not None:
-                from rfx.hybrid_adjoint import _phase15_native_sparams_support_reasons
+                from rfx.hybrid_adjoint import _phase16_native_smatrix_support_reasons
 
                 reasons.extend(
-                    _phase15_native_sparams_support_reasons(
+                    _phase16_native_smatrix_support_reasons(
                         port_metadata,
                         inputs.s_param_request,
                     )
@@ -3692,10 +3703,10 @@ class Simulation:
                 "Phase VI Strategy B supports conductivity only for the bounded lumped-port proxy"
             )
         elif inputs.s_param_request is not None:
-            from rfx.hybrid_adjoint import _phase15_native_sparams_support_reasons
+            from rfx.hybrid_adjoint import _phase16_native_smatrix_support_reasons
 
             reasons.extend(
-                _phase15_native_sparams_support_reasons(
+                _phase16_native_smatrix_support_reasons(
                     port_metadata,
                     inputs.s_param_request,
                 )
@@ -3815,17 +3826,60 @@ class Simulation:
         if freqs is None:
             return None
 
-        from rfx.hybrid_adjoint import Phase1SParamRequest
+        from rfx.hybrid_adjoint import Phase1SParamPortSpec, Phase1SParamRequest
 
         cell = getattr(port_metadata, "excited_lumped_port_cell", None)
         port_cell = tuple(int(v) for v in cell) if cell is not None else None
         component = getattr(port_metadata, "excited_lumped_port_component", None)
         impedance = getattr(port_metadata, "excited_lumped_port_impedance_ohm", None)
+        ordered_cells = tuple(
+            tuple(int(v) for v in cell)
+            for cell in getattr(port_metadata, "ordered_lumped_port_cells", ())
+        )
+        ordered_components = tuple(str(value) for value in getattr(
+            port_metadata, "ordered_lumped_port_components", (),
+        ))
+        ordered_impedances = tuple(float(value) for value in getattr(
+            port_metadata, "ordered_lumped_port_impedances_ohm", (),
+        ))
+        ordered_excite = tuple(bool(value) for value in getattr(
+            port_metadata, "ordered_lumped_port_excite", (),
+        ))
+        ordered_directions = tuple(getattr(
+            port_metadata, "ordered_lumped_port_directions", (),
+        ))
+        ordered_waveforms = tuple(getattr(
+            port_metadata, "ordered_lumped_port_source_waveforms_raw", (),
+        ))
+        ports = ()
+        if ordered_cells:
+            ports = tuple(
+                Phase1SParamPortSpec(
+                    index=idx,
+                    cell=ordered_cells[idx],
+                    component=ordered_components[idx] if idx < len(ordered_components) else "",
+                    impedance_ohm=(
+                        ordered_impedances[idx]
+                        if idx < len(ordered_impedances)
+                        else float("nan")
+                    ),
+                    source_waveform_raw=(
+                        jnp.asarray(ordered_waveforms[idx], dtype=jnp.float32)
+                        if idx < len(ordered_waveforms)
+                        else jnp.zeros((0,), dtype=jnp.float32)
+                    ),
+                    excite_in_main_run=ordered_excite[idx] if idx < len(ordered_excite) else False,
+                    direction=ordered_directions[idx] if idx < len(ordered_directions) else None,
+                    waveform_source="active_port_waveform",
+                )
+                for idx in range(len(ordered_cells))
+            )
         return Phase1SParamRequest(
             freqs=freqs,
             port_cell=port_cell,
             component=str(component) if component is not None else None,
             impedance_ohm=float(impedance) if impedance is not None else None,
+            ports=ports,
         )
 
     def build_hybrid_phase1_inputs(
@@ -3920,7 +3974,7 @@ class Simulation:
                 reasons=(
                     "Phase V nonuniform hybrid supports only add_source()/probe workflows"
                     if s_param_request is None
-                    else "Phase XV native Strategy B S-parameters support only uniform one-port lumped workflows",
+                    else "Phase XVI native Strategy B S-matrix supports only uniform lumped-port workflows",
                 ),
                 source_count=len(raw_sources),
                 probe_count=len(probes),
@@ -4263,7 +4317,7 @@ class Simulation:
         from rfx.hybrid_adjoint import (
             _make_phase3_strategy_b_source_probe_forward,
             phase1_forward_result,
-            run_phase15_strategy_b_native_sparams,
+            run_phase16_strategy_b_native_smatrix,
         )
 
         context = self.build_hybrid_phase1_context_from_inputs(inputs)
@@ -4276,7 +4330,7 @@ class Simulation:
         s_params = None
         freqs = None
         if context.s_param_request is not None:
-            s_params, freqs = run_phase15_strategy_b_native_sparams(context, eps_r)
+            s_params, freqs = run_phase16_strategy_b_native_smatrix(context, eps_r)
         return phase1_forward_result(
             context.grid,
             time_series,
@@ -4527,12 +4581,34 @@ class Simulation:
         excited_lumped_port_component = None
         excited_lumped_port_sigma = None
         excited_lumped_port_impedance_ohm = None
+        excited_lumped_port_direction = None
         excited_port_had_pec = False
         passive_lumped_port_cells = []
         passive_lumped_port_components = []
         passive_lumped_port_sigmas = []
+        passive_lumped_port_impedances_ohm = []
+        passive_lumped_port_directions = []
         passive_lumped_port_had_pec = []
+        ordered_lumped_port_cells = []
+        ordered_lumped_port_components = []
+        ordered_lumped_port_sigmas = []
+        ordered_lumped_port_impedances_ohm = []
+        ordered_lumped_port_excite = []
+        ordered_lumped_port_had_pec = []
+        ordered_lumped_port_directions = []
+        ordered_lumped_port_source_waveforms_raw = []
         times = jnp.arange(n_steps, dtype=jnp.float32) * grid.dt
+        active_lumped_waveform = next(
+            (
+                pe.waveform
+                for pe in self._ports
+                if pe.impedance != 0.0
+                and pe.extent is None
+                and pe.excite
+                and pe.waveform is not None
+            ),
+            None,
+        )
 
         for pe in self._ports:
             if pe.impedance == 0.0:
@@ -4599,8 +4675,22 @@ class Simulation:
             ):
                 port_had_pec = True
             materials = setup_lumped_port(grid, lp, materials)
+            d_par = port_d_parallel(grid, idx, pe.component)
+            if active_lumped_waveform is not None:
+                sparam_raw_waveform = jax.vmap(active_lumped_waveform)(times) / d_par
+            else:
+                sparam_raw_waveform = jnp.zeros_like(times)
+            ordered_lumped_port_cells.append(tuple(int(v) for v in idx))
+            ordered_lumped_port_components.append(pe.component)
+            ordered_lumped_port_sigmas.append(float(port_sigma_value))
+            ordered_lumped_port_impedances_ohm.append(float(pe.impedance))
+            ordered_lumped_port_excite.append(bool(pe.excite))
+            ordered_lumped_port_had_pec.append(port_had_pec)
+            ordered_lumped_port_directions.append(pe.direction)
+            ordered_lumped_port_source_waveforms_raw.append(
+                tuple(float(value) for value in np.asarray(sparam_raw_waveform))
+            )
             if pe.excite:
-                d_par = port_d_parallel(grid, idx, pe.component)
                 raw_waveform = jax.vmap(pe.waveform)(times) / d_par
                 raw_phase1_sources.append(
                     (idx[0], idx[1], idx[2], pe.component, raw_waveform)
@@ -4611,11 +4701,14 @@ class Simulation:
                     excited_lumped_port_component = pe.component
                     excited_lumped_port_sigma = port_sigma_value
                     excited_lumped_port_impedance_ohm = float(pe.impedance)
+                    excited_lumped_port_direction = pe.direction
                     excited_port_had_pec = port_had_pec
             else:
                 passive_lumped_port_cells.append(tuple(int(v) for v in idx))
                 passive_lumped_port_components.append(pe.component)
                 passive_lumped_port_sigmas.append(float(port_sigma_value))
+                passive_lumped_port_impedances_ohm.append(float(pe.impedance))
+                passive_lumped_port_directions.append(pe.direction)
                 passive_lumped_port_had_pec.append(port_had_pec)
             if pec_mask_local is not None:
                 pec_mask_local = pec_mask_local.at[idx[0], idx[1], idx[2]].set(False)
@@ -4700,11 +4793,22 @@ class Simulation:
                 excited_lumped_port_component=excited_lumped_port_component,
                 excited_lumped_port_sigma=excited_lumped_port_sigma,
                 excited_lumped_port_impedance_ohm=excited_lumped_port_impedance_ohm,
+                excited_lumped_port_direction=excited_lumped_port_direction,
                 excited_port_had_pec=excited_port_had_pec,
                 passive_lumped_port_cells=tuple(passive_lumped_port_cells),
                 passive_lumped_port_components=tuple(passive_lumped_port_components),
                 passive_lumped_port_sigmas=tuple(passive_lumped_port_sigmas),
+                passive_lumped_port_impedances_ohm=tuple(passive_lumped_port_impedances_ohm),
+                passive_lumped_port_directions=tuple(passive_lumped_port_directions),
                 passive_lumped_port_had_pec=tuple(passive_lumped_port_had_pec),
+                ordered_lumped_port_cells=tuple(ordered_lumped_port_cells),
+                ordered_lumped_port_components=tuple(ordered_lumped_port_components),
+                ordered_lumped_port_sigmas=tuple(ordered_lumped_port_sigmas),
+                ordered_lumped_port_impedances_ohm=tuple(ordered_lumped_port_impedances_ohm),
+                ordered_lumped_port_excite=tuple(ordered_lumped_port_excite),
+                ordered_lumped_port_had_pec=tuple(ordered_lumped_port_had_pec),
+                ordered_lumped_port_directions=tuple(ordered_lumped_port_directions),
+                ordered_lumped_port_source_waveforms_raw=tuple(ordered_lumped_port_source_waveforms_raw),
             )
         return _PreparedUniformForwardInputs(
             materials=materials,
