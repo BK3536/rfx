@@ -290,64 +290,6 @@ def run_uniform(
             )
         )
 
-    # Stage-1 conformal PEC face-shift: compute per-face α when the
-    # BoundarySpec has at least one Boundary(conformal=True) face.
-    pec_face_alpha: dict | None = None
-    _conformal_faces: set = set()
-    _bspec = getattr(sim, "_boundary_spec", None)
-    if _bspec is not None:
-        _cfaces_candidate = _bspec.conformal_pec_faces()
-        if _cfaces_candidate:
-            from rfx.boundaries.conformal_face import (
-                compute_pec_alpha_for_axis_aligned_face,
-                _check_axis_aligned_only,
-            )
-            # Stage-2 guard: raise for curved/rotated PEC geometry
-            pec_shapes_for_check = getattr(sim, "_pec_shapes", None) or []
-            _check_axis_aligned_only(pec_shapes_for_check)
-            _conformal_faces = _cfaces_candidate
-            pec_face_alpha = {}
-            # Compute α for each conformal face from the waveguide port aperture.
-            # For the WR-90 case: x-normal port → faces are y_hi and z_hi.
-            # Alpha for y_hi: wall at port.a, cells along y.
-            # Alpha for z_hi: wall at port.b, cells along z.
-            # Use the first waveguide port entry to get the physical aperture dims.
-            if sim._waveguide_ports:
-                _first_pe = sim._waveguide_ports[0]
-                _normal = _first_pe.direction[1]   # 'x', 'y', or 'z'
-                _dx = float(grid.dx)
-                _cpml_y = getattr(grid, "pad_y_lo", 0)
-                _cpml_z = getattr(grid, "pad_z_lo", 0)
-                _cpml_x = getattr(grid, "pad_x_lo", 0)
-                if _normal == "x":
-                    # Physical domain counts (strip CPML padding)
-                    _ny_phys = grid.ny - 2 * _cpml_y
-                    _nz_phys = grid.nz - 2 * _cpml_z
-                    import numpy as _np
-                    # port.a → physical y dimension of the waveguide
-                    _cell_lo_y = _np.arange(_ny_phys) * _dx
-                    _widths_y = _np.full(_ny_phys, _dx)
-                    _port_a = _first_pe.y_range[1] if hasattr(_first_pe, "y_range") and _first_pe.y_range else (grid.ny - 2 * _cpml_y) * _dx
-                    _port_b = _first_pe.z_range[1] if hasattr(_first_pe, "z_range") and _first_pe.z_range else (grid.nz - 2 * _cpml_z) * _dx
-                    if "y_hi" in _conformal_faces:
-                        pec_face_alpha["y_hi"] = compute_pec_alpha_for_axis_aligned_face(
-                            _port_a, _cell_lo_y, _widths_y, face_side="hi"
-                        )
-                    if "y_lo" in _conformal_faces:
-                        # y_lo: wall at physical 0 → α=1 for first cell → atten=0
-                        pec_face_alpha["y_lo"] = _np.ones(_ny_phys, dtype=_np.float32)
-                    if "z_hi" in _conformal_faces:
-                        _cell_lo_z = _np.arange(_nz_phys) * _dx
-                        _widths_z = _np.full(_nz_phys, _dx)
-                        pec_face_alpha["z_hi"] = compute_pec_alpha_for_axis_aligned_face(
-                            _port_b, _cell_lo_z, _widths_z, face_side="hi"
-                        )
-                    if "z_lo" in _conformal_faces:
-                        # z_lo: wall at physical 0 → α=1 for first cell → atten=0
-                        pec_face_alpha["z_lo"] = _np.ones(_nz_phys, dtype=_np.float32)
-            if not pec_face_alpha:
-                pec_face_alpha = None
-
     if sim._waveguide_ports:
         cpml_axes = grid.cpml_axes
         pec_axes = "".join(axis for axis in "xyz" if axis not in cpml_axes)
@@ -357,10 +299,7 @@ def run_uniform(
                 if pe.freqs is not None
                 else jnp.linspace(sim._freq_max / 10, sim._freq_max, pe.n_freqs)
             )
-            waveguide_ports.append(sim._build_waveguide_port_config(
-                pe, grid, freqs_arr, n_steps,
-                conformal_face_alphas=pec_face_alpha if pec_face_alpha else None,
-            ))
+            waveguide_ports.append(sim._build_waveguide_port_config(pe, grid, freqs_arr, n_steps))
 
     if sim._tfsf is not None:
         from rfx.sources.tfsf import init_tfsf
@@ -512,7 +451,6 @@ def run_uniform(
             lumped_rlc=rlc_metas,
             kerr_chi3=kerr_chi3,
             field_dtype=field_dtype,
-            pec_face_alpha=pec_face_alpha,
         )
 
     # S-parameters: use JIT-integrated DFT for wire ports (fast),

@@ -316,7 +316,6 @@ def precompute_coeffs(
     dx: float,
     *,
     pec_axes: str = "",
-    pec_face_alpha: "dict[str, object] | None" = None,
 ) -> UpdateCoeffs:
     """Pre-compute all FDTD update coefficients.
 
@@ -328,16 +327,6 @@ def precompute_coeffs(
         Axes on which to bake PEC (zero tangential E) into the
         coefficients.  For example ``"xyz"`` zeros Ca/Cb at all 6
         boundary faces so that ``apply_pec()`` is no longer needed.
-    pec_face_alpha : dict[str, array] or None
-        Per-face fractional fill arrays for Stage-1 conformal PEC.
-        Keys are face labels such as ``"y_hi"`` or ``"z_lo"``; values
-        are 1-D float32 arrays (length = number of cells along that
-        transverse axis, physical domain only).  When a key is present
-        the corresponding face row uses ``ca *= (1 − α)`` /
-        ``cb *= (1 − α)`` instead of a hard zero.  ``pec_axes`` is
-        still used to select *which* faces receive PEC treatment; the
-        alpha array overrides the binary step on those faces only.
-        ``None`` (default) reproduces the unchanged binary behaviour.
 
     Returns
     -------
@@ -382,15 +371,6 @@ def precompute_coeffs(
             ca_ey = ca_ey.at[:, :, 0].set(0.0).at[:, :, -1].set(0.0)
             cb_ex = cb_ex.at[:, :, 0].set(0.0).at[:, :, -1].set(0.0)
             cb_ey = cb_ey.at[:, :, 0].set(0.0).at[:, :, -1].set(0.0)
-
-    # Stage-1 conformal PEC face-shift.
-    # pec_face_alpha is reserved for future use (currently not used in
-    # precompute_coeffs — the conformal boundary-face zeroing is handled
-    # post-update in apply_conformal_pec_faces to preserve the Yee update
-    # correctness: the full-binary zero from pec_axes handles cells with
-    # α=1, and the post-update fractional multiply handles α<1 cells that
-    # are excluded from pec_axes by the caller).
-    # This parameter is kept here for API compatibility and future extension.
 
     return UpdateCoeffs(
         ch=ch,

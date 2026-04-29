@@ -723,7 +723,6 @@ def init_waveguide_port(
     mode_profile: str = "discrete",
     grid=None,
     h_offset: tuple[float, float] = (0.5, 0.5),
-    conformal_face_alphas: "dict[str, object] | None" = None,
 ) -> WaveguidePortConfig:
     """Initialize a waveguide port with precomputed mode profiles.
 
@@ -743,15 +742,6 @@ def init_waveguide_port(
         inside a PEC conductor (the cell at the array boundary on a +face
         marked PEC). Without this, uniform-Grid callers integrate over
         the ghost row, producing an ~8% PEC-short |S11| deficit.
-    conformal_face_alphas : dict[str, array] or None
-        When provided, maps face labels (e.g. ``"y_hi"``) to 1-D float32
-        alpha arrays computed from the physical port aperture.  DROP
-        zeroing for a face is skipped only when: (a) the face is present
-        in this dict, AND (b) the boundary cell's alpha is truly
-        fractional (α < 1, meaning the physical wall does NOT align with
-        the grid edge).  When α=1 everywhere (domain-aligned port), DROP
-        is preserved to maintain PEC-short / reciprocity correctness.
-        Default ``None`` preserves the current DROP behaviour bit-identically.
     """
     # Duck-type: if `dx` looks like a NU grid (has dx_arr / dz arrays),
     # use per-axis widths slicing the aperture; else assume scalar dx.
@@ -874,30 +864,10 @@ def init_waveguide_port(
             f"{u_axis_name}_hi" in pec_faces)
         v_hi_face_pec = (v_axis_name not in cpml_axes) or (
             f"{v_axis_name}_hi" in pec_faces)
-        _cfa = conformal_face_alphas or {}
-        # Stage-1 conformal PEC: DROP is skipped for a face only when
-        # conformal is active AND the boundary cell is truly fractional
-        # (α[-1] < 1). This means the physical wall is inside the last
-        # cell, so the conformal post-update multiply handles the correction
-        # and DROP would double-count. When α[-1] = 1 everywhere (wall
-        # aligns with grid edge or test domain) DROP is preserved to
-        # maintain PEC-short / reciprocity gates bit-identically.
         if u_hi == u_grid_size and u_hi_face_pec and u_widths_np.size > 0:
-            u_face_lbl = f"{u_axis_name}_hi"
-            _u_skip_drop = (
-                u_face_lbl in _cfa
-                and float(_cfa[u_face_lbl][-1]) < 0.9999
-            )
-            if not _u_skip_drop:
-                u_aperture_weights[-1] = 0.0
+            u_aperture_weights[-1] = 0.0
         if v_hi == v_grid_size and v_hi_face_pec and v_widths_np.size > 0:
-            v_face_lbl = f"{v_axis_name}_hi"
-            _v_skip_drop = (
-                v_face_lbl in _cfa
-                and float(_cfa[v_face_lbl][-1]) < 0.9999
-            )
-            if not _v_skip_drop:
-                v_aperture_weights[-1] = 0.0
+            v_aperture_weights[-1] = 0.0
     aperture_dA_np = (
         (u_widths_np * u_aperture_weights)[:, None]
         * (v_widths_np * v_aperture_weights)[None, :]
@@ -1944,7 +1914,6 @@ def extract_waveguide_s_matrix(
     lorentz: tuple | None = None,
     ref_shifts: list[float] | tuple[float, float] | None = None,
     aniso_eps: tuple | None = None,
-    pec_face_alpha: "dict | None" = None,
 ) -> jnp.ndarray:
     """Assemble an x-directed waveguide S-matrix via one-driven-port-at-a-time runs."""
     if len(port_cfgs) < 2:
@@ -1992,7 +1961,6 @@ def extract_waveguide_s_matrix(
             lorentz=lorentz,
             waveguide_ports=driven_cfgs,
             aniso_eps=aniso_eps,
-            pec_face_alpha=pec_face_alpha,
         )
         final_cfgs = result.waveguide_ports or ()
         if len(final_cfgs) != n_ports:
@@ -2031,7 +1999,6 @@ def extract_waveguide_s_params_normalized(
     ref_lorentz: tuple | None = None,
     ref_shifts: list[float] | tuple[float, ...] | None = None,
     aniso_eps: tuple | None = None,
-    pec_face_alpha: "dict | None" = None,
 ) -> jnp.ndarray:
     """Two-run normalized waveguide S-matrix.
 
@@ -2118,7 +2085,6 @@ def extract_waveguide_s_params_normalized(
         cpml_axes=cpml_axes,
         pec_axes=pec_axes,
         periodic=periodic,
-        pec_face_alpha=pec_face_alpha,
     )
     # ``aniso_eps`` is per-component smoothed permittivity for the device
     # geometry. The reference run is vacuum and has no ε interfaces, so

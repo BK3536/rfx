@@ -474,7 +474,6 @@ def run(
     kerr_chi3: jnp.ndarray | None = None,
     field_dtype=None,
     return_state: bool = True,
-    pec_face_alpha: "dict | None" = None,
 ) -> SimResult:
     """Run a compiled FDTD simulation via ``jax.lax.scan``.
 
@@ -554,17 +553,6 @@ def run(
     else:
         pec_axes = "".join(axis for axis in pec_axes if axis in default_pec_axes)
 
-    # Stage-1 conformal PEC: exclude axes whose faces are handled by
-    # apply_conformal_pec_faces (fractional multiply) from pec_axes so
-    # that apply_pec does NOT hard-zero those rows (it would override the
-    # fractional correction).  The conformal path handles y_hi/y_lo etc.
-    # via the post-update multiply; binary zeroing is redundant and wrong.
-    if pec_face_alpha:
-        _conformal_axes = set()
-        for _face_lbl in pec_face_alpha:
-            _conformal_axes.add(_face_lbl[0])  # "y_hi" → "y", "z_lo" → "z"
-        pec_axes = "".join(a for a in pec_axes if a not in _conformal_axes)
-
     # ---- per-face PEC from grid.pec_faces ----
     _pec_faces = getattr(grid, "pec_faces", None) or set()
     use_pec_faces = bool(_pec_faces)
@@ -590,7 +578,6 @@ def run(
     use_pec_mask = pec_mask is not None
     use_pec_occupancy = pec_occupancy is not None
     use_conformal = conformal_weights is not None
-    use_conformal_face = pec_face_alpha is not None
     wire_port_sparams = wire_port_sparams or []
     use_wire_sparams = len(wire_port_sparams) > 0
     lumped_port_sparams = lumped_port_sparams or []
@@ -633,8 +620,7 @@ def run(
     # medium grids; enable only when explicitly requested via GPU backend.
     use_fast_he = _fast_eligible and _on_gpu
     if use_fast_he:
-        _fast_coeffs = precompute_coeffs(materials, dt, dx, pec_axes=pec_axes,
-                                          pec_face_alpha=pec_face_alpha)
+        _fast_coeffs = precompute_coeffs(materials, dt, dx, pec_axes=pec_axes)
 
     # ---- initialise states ----
     _field_dtype = field_dtype if field_dtype is not None else jnp.float32
@@ -848,9 +834,6 @@ def run(
                 st = apply_pec(st, axes=pec_axes)
             if use_pec_faces:
                 st = apply_pec_faces(st, _pec_faces_frozen)
-            if use_conformal_face:
-                from rfx.boundaries.pec import apply_conformal_pec_faces as _apply_cf_pec
-                st = _apply_cf_pec(st, pec_face_alpha)
 
             if use_conformal:
                 from rfx.geometry.conformal import apply_conformal_pec
@@ -1228,7 +1211,6 @@ def run_until_decay(
     lumped_port_sparams: list | None = None,
     lumped_rlc: list | None = None,
     kerr_chi3: jnp.ndarray | None = None,
-    pec_face_alpha: "dict | None" = None,
     field_dtype=None,
     return_state: bool = True,
 ) -> SimResult:
@@ -1315,7 +1297,6 @@ def run_until_decay(
     use_pec_mask = pec_mask is not None
     use_pec_occupancy = pec_occupancy is not None
     use_conformal = conformal_weights is not None
-    use_conformal_face_decay = pec_face_alpha is not None
     wire_port_sparams = wire_port_sparams or []
     use_wire_sparams = len(wire_port_sparams) > 0
     lumped_port_sparams = lumped_port_sparams or []
@@ -1503,9 +1484,6 @@ def run_until_decay(
             st = apply_pec(st, axes=pec_axes)
         if use_pec_faces:
             st = apply_pec_faces(st, _pec_faces_frozen)
-        if use_conformal_face_decay:
-            from rfx.boundaries.pec import apply_conformal_pec_faces as _apply_cf_pec_d
-            st = _apply_cf_pec_d(st, pec_face_alpha)
 
         if use_conformal:
             from rfx.geometry.conformal import apply_conformal_pec

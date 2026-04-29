@@ -450,7 +450,7 @@ class Simulation:
         solver: str = "yee",
         adi_cfl_factor: float = 5.0,
     ):
-        from rfx.boundaries.spec import BoundarySpec, normalize_boundary
+        from rfx.boundaries.spec import BoundarySpec, Boundary, normalize_boundary
 
         # T7-B: accept BoundarySpec directly or normalise a legacy scalar
         # boundary=<str>. A BoundarySpec provided here is authoritative;
@@ -2015,7 +2015,6 @@ class Simulation:
         grid: Grid,
         freqs: jnp.ndarray,
         n_steps: int,
-        conformal_face_alphas: "dict | None" = None,
     ):
         normal_axis = entry.direction[1]
         axis_idx = {"x": 0, "y": 1, "z": 2}[normal_axis]
@@ -2097,7 +2096,6 @@ class Simulation:
             waveform=entry.waveform,
             mode_profile=entry.mode_profile,
             grid=grid,
-            conformal_face_alphas=conformal_face_alphas,
         )
         return cfg
 
@@ -2360,60 +2358,6 @@ class Simulation:
                     grid, shape_eps_pairs, background_eps=1.0,
                 )
 
-        # Stage-1 conformal PEC: compute α arrays from BoundarySpec and
-        # inject into extractor runs. Mirrors the logic in run_uniform.
-        _wg_pec_face_alpha: dict | None = None
-        _bspec = getattr(self, "_boundary_spec", None)
-        if _bspec is not None:
-            _cfaces = _bspec.conformal_pec_faces()
-            if _cfaces and entries:
-                import numpy as _np
-                from rfx.boundaries.conformal_face import (
-                    compute_pec_alpha_for_axis_aligned_face,
-                    _check_axis_aligned_only,
-                )
-                _pec_shapes_check = [
-                    e.shape for e in self._geometry
-                    if self._resolve_material(e.material_name).sigma > 1e6
-                ] if self._geometry else []
-                _check_axis_aligned_only(_pec_shapes_check)
-                _alpha_dict: dict = {}
-                _first_e = entries[0]
-                _norm = _first_e.direction[1]
-                _dx = float(grid.dx)
-                if _norm == "x":
-                    _cpml_y = getattr(grid, "pad_y_lo", 0)
-                    _cpml_z = getattr(grid, "pad_z_lo", 0)
-                    _ny_phys = grid.ny - 2 * _cpml_y
-                    _nz_phys = grid.nz - 2 * _cpml_z
-                    _port_a = _first_e.y_range[1] if (hasattr(_first_e, "y_range") and _first_e.y_range) else _ny_phys * _dx
-                    _port_b = _first_e.z_range[1] if (hasattr(_first_e, "z_range") and _first_e.z_range) else _nz_phys * _dx
-                    if "y_hi" in _cfaces:
-                        _cell_lo_y = _np.arange(_ny_phys) * _dx
-                        _alpha_dict["y_hi"] = compute_pec_alpha_for_axis_aligned_face(
-                            _port_a, _cell_lo_y, _np.full(_ny_phys, _dx), face_side="hi"
-                        )
-                    if "y_lo" in _cfaces:
-                        _alpha_dict["y_lo"] = _np.ones(_ny_phys, dtype=_np.float32)
-                    if "z_hi" in _cfaces:
-                        _cell_lo_z = _np.arange(_nz_phys) * _dx
-                        _alpha_dict["z_hi"] = compute_pec_alpha_for_axis_aligned_face(
-                            _port_b, _cell_lo_z, _np.full(_nz_phys, _dx), face_side="hi"
-                        )
-                    if "z_lo" in _cfaces:
-                        _alpha_dict["z_lo"] = _np.ones(_nz_phys, dtype=_np.float32)
-                if _alpha_dict:
-                    _wg_pec_face_alpha = _alpha_dict
-
-        # Also pass conformal_faces to _build_waveguide_port_config so DROP
-        # is skipped when conformal is active (avoid double-counting).
-        if _wg_pec_face_alpha is not None:
-            raw_cfgs = [self._build_waveguide_port_config(
-                entry, grid, freqs, n_steps,
-                conformal_face_alphas=_wg_pec_face_alpha,
-            ) for entry in entries]
-            cfgs = raw_cfgs
-
         if normalize:
             # Build reference materials: vacuum everywhere (no user geometry).
             from rfx.core.yee import init_materials as _init_vacuum_materials
@@ -2433,7 +2377,6 @@ class Simulation:
                 ref_lorentz=None,
                 ref_shifts=ref_shifts,
                 aniso_eps=aniso_eps,
-                pec_face_alpha=_wg_pec_face_alpha,
             )
         else:
             s_params = extract_waveguide_s_matrix(
@@ -2448,7 +2391,6 @@ class Simulation:
                 lorentz=lorentz,
                 ref_shifts=ref_shifts,
                 aniso_eps=aniso_eps,
-                pec_face_alpha=_wg_pec_face_alpha,
             )
         reference_planes = np.array(
             [
