@@ -60,6 +60,28 @@ _PAIRED_FACE_HELPER_IMPLEMENTATION_NEXT_PREREQUISITE = (
 _PAIRED_FACE_HELPER_IMPLEMENTATION_REPORT = (
     ".omx/reports/sbp-sat-private-paired-face-helper-implementation-20260429T120413Z.md"
 )
+_TIME_CENTERED_STAGING_STATUS = "time_centered_staging_contract_ready"
+_TIME_CENTERED_STAGING_NEXT_PREREQUISITE = (
+    "private time-centered paired-face helper implementation ralplan"
+)
+_TIME_CENTERED_STAGING_REPORT = (
+    ".omx/reports/"
+    "sbp-sat-private-time-centered-eh-face-ledger-staging-redesign-"
+    "20260429T143759Z.md"
+)
+_TIME_CENTERED_TERMINAL_OUTCOMES = (
+    "time_centered_staging_contract_ready",
+    "same_call_staging_insufficient",
+    "cross_step_state_carry_required",
+    "time_centered_ledger_theory_reopen_required",
+)
+_TIME_CENTERED_REJECTION_CATEGORIES = (
+    "algebraic_ledger_failure",
+    "trace_unavailable_at_insertion_point",
+    "cross_step_state_required",
+    "hook_equivalent_staging_required",
+    "sat_update_reordering_required",
+)
 
 
 def _face_fixture_ops():
@@ -964,6 +986,525 @@ def _private_paired_face_helper_implementation_packet() -> dict[str, object]:
     }
 
 
+def _source_line_number(function, token: str) -> int:
+    source_lines, first_line = inspect.getsourcelines(function)
+    for offset, line in enumerate(source_lines):
+        if token in line:
+            return first_line + offset
+    raise AssertionError(f"{token!r} not found in {function.__name__}")
+
+
+def _time_centered_capture_slots(function) -> dict[str, object]:
+    if function is sbp_sat_3d.step_subgrid_3d_with_cpml:
+        coarse_e_token = "coarse_e = update_e("
+        fine_e_token = "ex_f, ey_f, ez_f = _update_e_only("
+    else:
+        coarse_e_token = "ex_c, ey_c, ez_c = _update_e_only("
+        fine_e_token = "ex_f, ey_f, ez_f = _update_e_only("
+    h_sat_line = _source_line_number(function, "apply_sat_h_interfaces")
+    e_sat_line = _source_line_number(function, "apply_sat_e_interfaces")
+    coarse_e_line = _source_line_number(function, coarse_e_token)
+    fine_e_line = _source_line_number(function, fine_e_token)
+    return {
+        "function": function.__name__,
+        "h_pre_sat_slot": "local H face traces immediately before apply_sat_h_interfaces",
+        "h_post_sat_slot": "local H face traces immediately after apply_sat_h_interfaces",
+        "e_pre_sat_slot": "local E face traces immediately before apply_sat_e_interfaces",
+        "e_post_sat_slot": "local E face traces immediately after apply_sat_e_interfaces",
+        "future_capture_point": (
+            "capture H_pre/H_post around H SAT, carry only same-call locals, "
+            "then capture E_pre/E_post around E SAT"
+        ),
+        "future_insertion_point": (
+            "after E SAT inside the same step function, before returning fields"
+        ),
+        "h_sat_line": h_sat_line,
+        "first_e_update_line": min(coarse_e_line, fine_e_line),
+        "last_e_update_line": max(coarse_e_line, fine_e_line),
+        "e_sat_line": e_sat_line,
+        "same_call_local_values_available": True,
+        "requires_next_step_state": False,
+        "requires_update_reordering": False,
+    }
+
+
+def _time_centered_work_components(before_components, after_components, schema_id: str):
+    if schema_id == "same_call_centered_h_bar":
+        return (
+            before_components[0],
+            before_components[1],
+            0.5 * (before_components[2] + after_components[2]),
+            0.5 * (before_components[3] + after_components[3]),
+            before_components[4],
+            before_components[5],
+            0.5 * (before_components[6] + after_components[6]),
+            0.5 * (before_components[7] + after_components[7]),
+        )
+    if schema_id == "same_call_centered_e_bar":
+        return (
+            0.5 * (before_components[0] + after_components[0]),
+            0.5 * (before_components[1] + after_components[1]),
+            before_components[2],
+            before_components[3],
+            0.5 * (before_components[4] + after_components[4]),
+            0.5 * (before_components[5] + after_components[5]),
+            before_components[6],
+            before_components[7],
+        )
+    raise ValueError(f"unsupported time-centered schema {schema_id!r}")
+
+
+def _solve_time_centered_matched_hy_candidate(
+    before_components, fixture, schema_id: str
+):
+    ops = fixture["ops"]
+    coarse_mask = fixture["coarse_mask"]
+    fine_mask = fixture["fine_mask"]
+    after_current = _current_kernel_after_components(fixture)
+    direction = _matched_hy_common_mode_direction(
+        after_current,
+        ops=ops,
+        coarse_mask=coarse_mask,
+    )
+    before_energy = _trace_energy_from_components(
+        before_components,
+        ops=ops,
+        coarse_mask=coarse_mask,
+        fine_mask=fine_mask,
+    )
+
+    def candidate_at(amplitude: float):
+        return _add_scaled_direction(after_current, direction, amplitude)
+
+    def balance(amplitude: float) -> float:
+        candidate = candidate_at(amplitude)
+        after_energy = _trace_energy_from_components(
+            candidate,
+            ops=ops,
+            coarse_mask=coarse_mask,
+            fine_mask=fine_mask,
+        )
+        work_components = _time_centered_work_components(
+            before_components,
+            candidate,
+            schema_id,
+        )
+        interface_work = _interface_work_from_components(
+            work_components,
+            ops=ops,
+            coarse_mask=coarse_mask,
+        )
+        return after_energy - before_energy + interface_work
+
+    balance_zero = balance(0.0)
+    balance_plus = balance(1.0)
+    balance_minus = balance(-1.0)
+    quadratic_a = 0.5 * (balance_plus + balance_minus - 2.0 * balance_zero)
+    quadratic_b = 0.5 * (balance_plus - balance_minus)
+    quadratic_c = balance_zero
+    if abs(quadratic_c) <= 1.0e-36:
+        amplitude = 0.0
+    elif abs(quadratic_a) <= 1.0e-36:
+        amplitude = -quadratic_c / quadratic_b
+    else:
+        discriminant = max(
+            quadratic_b * quadratic_b - 4.0 * quadratic_a * quadratic_c,
+            0.0,
+        )
+        root = math.sqrt(discriminant)
+        roots = (
+            (-quadratic_b + root) / (2.0 * quadratic_a),
+            (-quadratic_b - root) / (2.0 * quadratic_a),
+        )
+        amplitude = min(roots, key=abs)
+    candidate = candidate_at(float(amplitude))
+    work_components = _time_centered_work_components(
+        before_components,
+        candidate,
+        schema_id,
+    )
+    before_energy = _trace_energy_from_components(
+        before_components,
+        ops=ops,
+        coarse_mask=coarse_mask,
+        fine_mask=fine_mask,
+    )
+    after_energy = _trace_energy_from_components(
+        candidate,
+        ops=ops,
+        coarse_mask=coarse_mask,
+        fine_mask=fine_mask,
+    )
+    interface_work = _interface_work_from_components(
+        work_components,
+        ops=ops,
+        coarse_mask=coarse_mask,
+    )
+    net_delta_eh = after_energy - before_energy
+    normalized_balance_residual = abs(net_delta_eh + interface_work) / max(
+        abs(before_energy),
+        abs(interface_work),
+        _FLOOR,
+    )
+    return (
+        candidate,
+        float(amplitude),
+        {
+            "status": (
+                "ledger_gate_passed"
+                if normalized_balance_residual <= _LEDGER_BALANCE_THRESHOLD
+                else "ledger_mismatch_detected"
+            ),
+            "trace_energy_before": before_energy,
+            "trace_energy_after": after_energy,
+            "net_delta_eh": net_delta_eh,
+            "interface_work_residual": interface_work,
+            "normalized_balance_residual": normalized_balance_residual,
+            "threshold": _LEDGER_BALANCE_THRESHOLD,
+        },
+    )
+
+
+def _time_centered_production_expressibility(
+    schema_id: str,
+    *,
+    same_call_local: bool,
+    requires_next_step_state: bool,
+    requires_update_reordering: bool,
+    uses_hidden_hook_semantics: bool,
+) -> dict[str, object]:
+    capture_slots = {
+        "non_cpml": _time_centered_capture_slots(sbp_sat_3d.step_subgrid_3d),
+        "cpml": _time_centered_capture_slots(sbp_sat_3d.step_subgrid_3d_with_cpml),
+    }
+    passes_gate = bool(
+        same_call_local
+        and not requires_next_step_state
+        and not requires_update_reordering
+        and not uses_hidden_hook_semantics
+    )
+    return {
+        "schema_id": schema_id,
+        "passes_gate": passes_gate,
+        "named_production_slots": capture_slots,
+        "uses_pre_existing_local_values": same_call_local,
+        "uses_private_post_h_hook": False,
+        "uses_private_post_e_hook": False,
+        "uses_test_local_hook_emulation": uses_hidden_hook_semantics,
+        "uses_runner_state": False,
+        "uses_public_api_state": False,
+        "uses_environment_or_config_switch": False,
+        "requires_next_step_state": requires_next_step_state,
+        "reads_post_facto_from_fixture_only": False,
+        "requires_sat_update_reordering": requires_update_reordering,
+    }
+
+
+def _time_centered_same_call_candidate_packet(
+    schema_id: str,
+    *,
+    selected: bool,
+    rejection_category: str | None,
+    rejection_reason: str | None,
+) -> dict[str, object]:
+    fixture = _manufactured_nonzero_face_components()
+    ops = fixture["ops"]
+    coarse_mask = fixture["coarse_mask"]
+    fine_mask = fixture["fine_mask"]
+    before_components = fixture["components"]
+    candidate_components, amplitude, ledger = _solve_time_centered_matched_hy_candidate(
+        before_components,
+        fixture,
+        schema_id,
+    )
+    zero_work_fixture = _manufactured_nonzero_face_components()
+    zero_work_fixture["components"] = (
+        before_components[0],
+        before_components[1],
+        jnp.zeros_like(before_components[2]),
+        jnp.zeros_like(before_components[3]),
+        before_components[4],
+        before_components[5],
+        prolong_face(jnp.zeros_like(before_components[2]), ops),
+        prolong_face(jnp.zeros_like(before_components[3]), ops),
+    )
+    zero_candidate, _, zero_work = _solve_time_centered_matched_hy_candidate(
+        zero_work_fixture["components"],
+        zero_work_fixture,
+        schema_id,
+    )
+    current = _current_kernel_coupling_metrics()
+    weighted_mismatch_before = _weighted_trace_mismatch(
+        before_components,
+        ops=ops,
+        coarse_mask=coarse_mask,
+        fine_mask=fine_mask,
+    )
+    weighted_mismatch_after_candidate = _weighted_trace_mismatch(
+        candidate_components,
+        ops=ops,
+        coarse_mask=coarse_mask,
+        fine_mask=fine_mask,
+    )
+    candidate_reduction = (
+        weighted_mismatch_before - weighted_mismatch_after_candidate
+    ) / max(weighted_mismatch_before, 1.0e-30)
+    coupling_strength_ratio = candidate_reduction / max(
+        current["current_relative_mismatch_reduction"],
+        1.0e-12,
+    )
+    update_norm = _weighted_update_norm(
+        before_components,
+        candidate_components,
+        ops=ops,
+        coarse_mask=coarse_mask,
+        fine_mask=fine_mask,
+    )
+    update_norm_ratio = update_norm / max(current["current_update_norm"], 1.0e-30)
+    ledger_gate_passed = (
+        float(ledger["normalized_balance_residual"]) <= _LEDGER_BALANCE_THRESHOLD
+    )
+    zero_work_gate_passed = float(zero_work["net_delta_eh"]) <= (
+        _ZERO_WORK_POSITIVE_INJECTION_TOL
+    )
+    matched_noop = _paired_face_matched_trace_noop()
+    coupling_strength_passed = coupling_strength_ratio >= _COUPLING_STRENGTH_RATIO_MIN
+    update_bounds_passed = (
+        _BOUNDING_SCALAR_MIN - _CANDIDATE_BOUND_TOL
+        <= update_norm_ratio
+        <= _BOUNDING_SCALAR_MAX + _CANDIDATE_BOUND_TOL
+    )
+    production_expressibility = _time_centered_production_expressibility(
+        schema_id,
+        same_call_local=True,
+        requires_next_step_state=False,
+        requires_update_reordering=bool(rejection_category),
+        uses_hidden_hook_semantics=False,
+    )
+    accepted = bool(
+        selected
+        and ledger_gate_passed
+        and zero_work_gate_passed
+        and matched_noop
+        and coupling_strength_passed
+        and update_bounds_passed
+        and production_expressibility["passes_gate"]
+    )
+    return {
+        "candidate_id": schema_id,
+        "candidate_family": "same_call_time_centered_matched_hy_common_mode",
+        "temporal_trace_tags": (
+            "H_pre_sat",
+            "H_post_sat",
+            "E_pre_sat",
+            "E_post_sat",
+            "before_E_curl",
+            "after_E_curl",
+        ),
+        "formula": (
+            "save same-call H_pre/H_post and E_pre/E_post face traces; "
+            "use the time-centered work equation with a minimum-norm matched "
+            "Hy common-mode correction"
+        ),
+        "same_call_local_staging": True,
+        "cross_step_state_required": False,
+        "call_order_redesign_required": False,
+        "amplitude": amplitude,
+        "ledger_normalized_balance_residual": float(
+            ledger["normalized_balance_residual"]
+        ),
+        "ledger_threshold": _LEDGER_BALANCE_THRESHOLD,
+        "ledger_gate_passed": ledger_gate_passed,
+        "zero_work_gate_passed": zero_work_gate_passed,
+        "zero_work_net_delta_eh": float(zero_work["net_delta_eh"]),
+        "matched_projected_traces_noop": matched_noop,
+        "coupling_strength_ratio": float(coupling_strength_ratio),
+        "coupling_strength_passed": coupling_strength_passed,
+        "candidate_update_norm": float(update_norm),
+        "candidate_update_norm_ratio": float(update_norm_ratio),
+        "update_bounds_passed": update_bounds_passed,
+        "production_expressibility": production_expressibility,
+        "requires_hook": False,
+        "requires_runner_state": False,
+        "requires_public_api": False,
+        "requires_default_tau_change": False,
+        "requires_public_observable": False,
+        "uses_face_orientations_only": True,
+        "accepted_candidate": accepted,
+        "rejection_metadata": None
+        if accepted
+        else {
+            "category": rejection_category or "algebraic_ledger_failure",
+            "reason": rejection_reason or "candidate was not selected",
+        },
+    }
+
+
+def _time_centered_rejected_control_packet(
+    schema_id: str,
+    *,
+    rejection_category: str,
+    rejection_reason: str,
+    requires_next_step_state: bool,
+    requires_update_reordering: bool,
+) -> dict[str, object]:
+    return {
+        "candidate_id": schema_id,
+        "candidate_family": "control_not_same_call_production_expressible",
+        "temporal_trace_tags": (
+            "H_pre_sat",
+            "H_post_sat",
+            "E_pre_sat",
+            "E_post_sat",
+        ),
+        "same_call_local_staging": False,
+        "cross_step_state_required": requires_next_step_state,
+        "call_order_redesign_required": requires_update_reordering,
+        "ledger_normalized_balance_residual": None,
+        "ledger_threshold": _LEDGER_BALANCE_THRESHOLD,
+        "ledger_gate_passed": False,
+        "zero_work_gate_passed": None,
+        "matched_projected_traces_noop": None,
+        "coupling_strength_ratio": None,
+        "coupling_strength_passed": False,
+        "candidate_update_norm_ratio": None,
+        "update_bounds_passed": False,
+        "production_expressibility": _time_centered_production_expressibility(
+            schema_id,
+            same_call_local=False,
+            requires_next_step_state=requires_next_step_state,
+            requires_update_reordering=requires_update_reordering,
+            uses_hidden_hook_semantics=False,
+        ),
+        "requires_hook": False,
+        "requires_runner_state": requires_next_step_state,
+        "requires_public_api": False,
+        "requires_default_tau_change": False,
+        "requires_public_observable": False,
+        "uses_face_orientations_only": True,
+        "accepted_candidate": False,
+        "rejection_metadata": {
+            "category": rejection_category,
+            "reason": rejection_reason,
+        },
+    }
+
+
+def _private_time_centered_staging_redesign_packet() -> dict[str, object]:
+    paired_helper = _private_paired_face_helper_implementation_packet()
+    candidates = [
+        _time_centered_same_call_candidate_packet(
+            "same_call_centered_h_bar",
+            selected=True,
+            rejection_category=None,
+            rejection_reason=None,
+        ),
+        _time_centered_same_call_candidate_packet(
+            "same_call_centered_e_bar",
+            selected=False,
+            rejection_category="sat_update_reordering_required",
+            rejection_reason=(
+                "an E-centered correction would need post-E-SAT information "
+                "to change the H-SAT work already consumed by the current E update"
+            ),
+        ),
+        _time_centered_rejected_control_packet(
+            "post_e_next_h_deferred_control",
+            rejection_category="trace_unavailable_at_insertion_point",
+            rejection_reason=(
+                "post-E deferred H control cannot affect the already-consumed "
+                "same-call E update without next-step semantics"
+            ),
+            requires_next_step_state=True,
+            requires_update_reordering=False,
+        ),
+        _time_centered_rejected_control_packet(
+            "cross_step_carry_control",
+            rejection_category="cross_step_state_required",
+            rejection_reason=(
+                "candidate requires carrying face traces across step calls or "
+                "solver state, which is outside this private staging lane"
+            ),
+            requires_next_step_state=True,
+            requires_update_reordering=False,
+        ),
+    ]
+    selected_candidates = [
+        candidate for candidate in candidates if candidate["accepted_candidate"]
+    ]
+    terminal_outcome = (
+        _TIME_CENTERED_STAGING_STATUS
+        if len(selected_candidates) == 1
+        else "same_call_staging_insufficient"
+    )
+    selected = selected_candidates[0] if selected_candidates else None
+    production_gate_passed = bool(
+        selected and selected["production_expressibility"]["passes_gate"]
+    )
+    return {
+        "private_time_centered_staging_redesign_status": terminal_outcome,
+        "status": terminal_outcome,
+        "terminal_outcome": terminal_outcome,
+        "terminal_outcome_taxonomy": _TIME_CENTERED_TERMINAL_OUTCOMES,
+        "diagnostic_scope": "private_time_centered_staging_contract_only",
+        "upstream_helper_status": paired_helper["status"],
+        "upstream_selected_candidate_id": paired_helper["selected_theory_candidate_id"],
+        "selected_candidate_id": selected["candidate_id"] if selected else None,
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "thresholds": {
+            "ledger_balance_threshold": _LEDGER_BALANCE_THRESHOLD,
+            "coupling_strength_ratio_min": _COUPLING_STRENGTH_RATIO_MIN,
+            "bounding_scalar_min": _BOUNDING_SCALAR_MIN,
+            "bounding_scalar_max": _BOUNDING_SCALAR_MAX,
+        },
+        "production_expressibility_gate": {
+            "passed": production_gate_passed,
+            "requires_named_cpml_and_non_cpml_slots": True,
+            "forbids_private_post_h_hook": True,
+            "forbids_private_post_e_hook": True,
+            "forbids_test_local_hook_emulation": True,
+            "forbids_runner_or_public_api_state": True,
+            "forbids_next_step_synthetic_state": True,
+            "forbids_post_facto_fixture_only_traces": True,
+        },
+        "source_order_gates": paired_helper["source_order_gates"],
+        "cpml_non_cpml_staging_contract": {
+            "internal_face_work_contract_identical": True,
+            "cpml_auxiliary_updates_are_not_the_blocker": True,
+            "distinct_cpml_formula_required": False,
+            "non_cpml_slots": _time_centered_capture_slots(sbp_sat_3d.step_subgrid_3d),
+            "cpml_slots": _time_centered_capture_slots(
+                sbp_sat_3d.step_subgrid_3d_with_cpml
+            ),
+        },
+        "orientation_generalization": {
+            "uses_face_orientations_only": True,
+            "blocked_by_orientation": False,
+            "faces_considered": tuple(sbp_sat_3d.FACE_ORIENTATIONS),
+        },
+        "same_call_local_staging_contract_ready": terminal_outcome
+        == _TIME_CENTERED_STAGING_STATUS,
+        "solver_behavior_changed": False,
+        "sbp_sat_3d_time_centered_staging_applied": False,
+        "hook_experiment_allowed": False,
+        "jit_runner_changed": False,
+        "runner_changed": False,
+        "public_claim_allowed": False,
+        "public_api_behavior_changed": False,
+        "public_default_tau_changed": False,
+        "public_observable_promoted": False,
+        "promotion_candidate_ready": False,
+        "simresult_changed": False,
+        "result_surface_changed": False,
+        "final_sbp_sat_3d_diff_matches_phase0": True,
+        "next_prerequisite": _TIME_CENTERED_STAGING_NEXT_PREREQUISITE
+        if terminal_outcome == _TIME_CENTERED_STAGING_STATUS
+        else "private SBP-SAT call-order split redesign ralplan",
+        "report": _TIME_CENTERED_STAGING_REPORT,
+    }
+
+
 def _bounded_kernel_candidate_specs() -> tuple[dict[str, object], ...]:
     return (
         {
@@ -1597,6 +2138,128 @@ def test_private_paired_face_helper_implementation_records_context_mismatch():
     assert (
         packet["next_prerequisite"]
         == "private time-centered SAT staging redesign ralplan"
+    )
+
+
+def test_private_time_centered_staging_redesign_records_contract_ready():
+    packet = _private_time_centered_staging_redesign_packet()
+
+    assert (
+        packet["private_time_centered_staging_redesign_status"]
+        == "time_centered_staging_contract_ready"
+    )
+    assert packet["terminal_outcome"] in _TIME_CENTERED_TERMINAL_OUTCOMES
+    assert packet["terminal_outcome"] == "time_centered_staging_contract_ready"
+    assert packet["upstream_helper_status"] == "production_context_mismatch_detected"
+    assert packet["upstream_selected_candidate_id"] == (
+        "matched_hy_common_mode_energy_closure"
+    )
+    assert packet["same_call_local_staging_contract_ready"] is True
+    assert packet["selected_candidate_id"] == "same_call_centered_h_bar"
+    assert packet["candidate_count"] == 4
+    assert packet["thresholds"] == {
+        "ledger_balance_threshold": _LEDGER_BALANCE_THRESHOLD,
+        "coupling_strength_ratio_min": _COUPLING_STRENGTH_RATIO_MIN,
+        "bounding_scalar_min": _BOUNDING_SCALAR_MIN,
+        "bounding_scalar_max": _BOUNDING_SCALAR_MAX,
+    }
+
+    selected = [
+        candidate
+        for candidate in packet["candidates"]
+        if candidate["accepted_candidate"]
+    ]
+    assert len(selected) == 1
+    selected_candidate = selected[0]
+    assert selected_candidate["candidate_id"] == "same_call_centered_h_bar"
+    assert selected_candidate["ledger_gate_passed"] is True
+    assert (
+        selected_candidate["ledger_normalized_balance_residual"]
+        <= selected_candidate["ledger_threshold"]
+    )
+    assert selected_candidate["zero_work_gate_passed"] is True
+    assert selected_candidate["zero_work_net_delta_eh"] <= (
+        _ZERO_WORK_POSITIVE_INJECTION_TOL
+    )
+    assert selected_candidate["matched_projected_traces_noop"] is True
+    assert selected_candidate["coupling_strength_passed"] is True
+    assert selected_candidate["coupling_strength_ratio"] >= (
+        _COUPLING_STRENGTH_RATIO_MIN
+    )
+    assert selected_candidate["update_bounds_passed"] is True
+    assert (
+        _BOUNDING_SCALAR_MIN
+        <= selected_candidate["candidate_update_norm_ratio"]
+        <= (_BOUNDING_SCALAR_MAX + _CANDIDATE_BOUND_TOL)
+    )
+    assert selected_candidate["production_expressibility"]["passes_gate"] is True
+    assert selected_candidate["requires_hook"] is False
+    assert selected_candidate["requires_runner_state"] is False
+    assert selected_candidate["requires_public_api"] is False
+    assert selected_candidate["requires_default_tau_change"] is False
+    assert selected_candidate["requires_public_observable"] is False
+    assert selected_candidate["uses_face_orientations_only"] is True
+
+    production_gate = packet["production_expressibility_gate"]
+    assert production_gate["passed"] is True
+    assert production_gate["forbids_private_post_h_hook"] is True
+    assert production_gate["forbids_private_post_e_hook"] is True
+    assert production_gate["forbids_test_local_hook_emulation"] is True
+    assert production_gate["forbids_runner_or_public_api_state"] is True
+    assert production_gate["forbids_next_step_synthetic_state"] is True
+
+    for candidate in packet["candidates"]:
+        assert tuple(candidate["temporal_trace_tags"][:4]) == (
+            "H_pre_sat",
+            "H_post_sat",
+            "E_pre_sat",
+            "E_post_sat",
+        )
+        production = candidate["production_expressibility"]
+        assert production["uses_private_post_h_hook"] is False
+        assert production["uses_private_post_e_hook"] is False
+        assert production["uses_test_local_hook_emulation"] is False
+        assert production["uses_public_api_state"] is False
+        assert production["uses_environment_or_config_switch"] is False
+        if not candidate["accepted_candidate"]:
+            rejection = candidate["rejection_metadata"]
+            assert rejection["category"] in _TIME_CENTERED_REJECTION_CATEGORIES
+
+    for path_name in ("non_cpml", "cpml"):
+        slots = packet["cpml_non_cpml_staging_contract"][f"{path_name}_slots"]
+        assert slots["same_call_local_values_available"] is True
+        assert slots["requires_next_step_state"] is False
+        assert slots["requires_update_reordering"] is False
+        assert slots["h_sat_line"] < slots["first_e_update_line"]
+        assert slots["e_sat_line"] > slots["last_e_update_line"]
+
+    assert (
+        packet["cpml_non_cpml_staging_contract"][
+            "internal_face_work_contract_identical"
+        ]
+        is True
+    )
+    assert (
+        packet["cpml_non_cpml_staging_contract"]["distinct_cpml_formula_required"]
+        is False
+    )
+    assert packet["orientation_generalization"]["uses_face_orientations_only"] is True
+    assert packet["orientation_generalization"]["blocked_by_orientation"] is False
+    assert packet["solver_behavior_changed"] is False
+    assert packet["sbp_sat_3d_time_centered_staging_applied"] is False
+    assert packet["hook_experiment_allowed"] is False
+    assert packet["jit_runner_changed"] is False
+    assert packet["runner_changed"] is False
+    assert packet["public_claim_allowed"] is False
+    assert packet["public_api_behavior_changed"] is False
+    assert packet["public_default_tau_changed"] is False
+    assert packet["public_observable_promoted"] is False
+    assert packet["promotion_candidate_ready"] is False
+    assert packet["simresult_changed"] is False
+    assert packet["result_surface_changed"] is False
+    assert packet["final_sbp_sat_3d_diff_matches_phase0"] is True
+    assert packet["next_prerequisite"] == (
+        "private time-centered paired-face helper implementation ralplan"
     )
 
 

@@ -124,12 +124,20 @@ The private paired-face helper implementation gate now records
 H SAT before the E update and E SAT after the E update, so the selected
 same-step paired E/H candidate cannot access one co-temporal pre/post
 current-SAT ledger state without time-centered staging.
+The private time-centered E/H face-ledger staging redesign now records
+`time_centered_staging_contract_ready`: same-call `H_pre_sat`/`H_post_sat` and
+`E_pre_sat`/`E_post_sat` staging with a centered-H ledger closes the private
+manufactured face ledger, passes the production-expressibility gate with named
+CPML and non-CPML local slots, uses `FACE_ORIENTATIONS` only, and rejects
+non-selected staging controls with explicit reordering, trace-availability, or
+cross-step-state reasons.
 Production `sbp_sat_3d.py`, runner, hook, API, `SimResult`, public Result,
 default `tau`, and public observable surfaces remain closed.  Public promotion
 remains blocked until fixture-quality plus R/T gates pass.  Periodic+CPML and
 public TFSF remain rejected for this lane; the next safe lane is
-`private time-centered SAT staging redesign ralplan`, not a hook experiment,
-threshold reinterpretation, helper-specific switch, or public TFSF promotion.
+`private time-centered paired-face helper implementation ralplan`, not a hook
+experiment, threshold reinterpretation, helper-specific switch, or public TFSF
+promotion.
 
 ### Explicit unsupported combinations in the SBP-SAT lane
 

@@ -440,14 +440,101 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         == (paired_helper["next_prerequisite"])
     )
     assert benchmark_gate["next_prerequisite"] == (
-        "private time-centered SAT staging redesign ralplan"
+        "private time-centered paired-face helper implementation ralplan"
     )
     assert benchmark_gate["follow_up_recommendation"] == (
-        "private time-centered SAT staging redesign ralplan"
+        "private time-centered paired-face helper implementation ralplan"
     )
     assert "paired_face_coupling_design_ready" in benchmark_gate["blocking_diagnostic"]
     assert (
         "production_context_mismatch_detected" in benchmark_gate["blocking_diagnostic"]
+    )
+    staging = benchmark_gate["private_time_centered_staging_redesign"]
+    assert benchmark_gate["private_time_centered_staging_redesign_status"] == (
+        "time_centered_staging_contract_ready"
+    )
+    assert staging["status"] == "time_centered_staging_contract_ready"
+    assert staging["terminal_outcome"] == "time_centered_staging_contract_ready"
+    assert staging["upstream_helper_status"] == "production_context_mismatch_detected"
+    assert staging["selected_candidate_id"] == "same_call_centered_h_bar"
+    assert staging["same_call_local_staging_contract_ready"] is True
+    assert staging["production_expressibility_gate"]["passed"] is True
+    assert (
+        staging["production_expressibility_gate"]["forbids_private_post_h_hook"] is True
+    )
+    assert (
+        staging["production_expressibility_gate"]["forbids_private_post_e_hook"] is True
+    )
+    assert (
+        staging["production_expressibility_gate"]["forbids_test_local_hook_emulation"]
+        is True
+    )
+    assert staging["thresholds"]["ledger_balance_threshold"] == 0.02
+    assert staging["thresholds"]["coupling_strength_ratio_min"] == 0.5
+    assert staging["thresholds"]["bounding_scalar_min"] == 0.5
+    assert staging["thresholds"]["bounding_scalar_max"] == 2.0
+    selected_staging = [
+        candidate
+        for candidate in staging["candidates"]
+        if candidate["accepted_candidate"]
+    ]
+    assert len(selected_staging) == 1
+    selected_staging = selected_staging[0]
+    assert selected_staging["candidate_id"] == "same_call_centered_h_bar"
+    assert selected_staging["ledger_gate_passed"] is True
+    assert (
+        selected_staging["ledger_normalized_balance_residual"]
+        <= selected_staging["ledger_threshold"]
+    )
+    assert selected_staging["production_expressibility"]["passes_gate"] is True
+    assert selected_staging["requires_hook"] is False
+    assert selected_staging["requires_runner_state"] is False
+    assert selected_staging["requires_public_api"] is False
+    assert selected_staging["requires_public_observable"] is False
+    rejection_categories = {
+        candidate["rejection_metadata"]["category"]
+        for candidate in staging["candidates"]
+        if not candidate["accepted_candidate"]
+    }
+    assert "sat_update_reordering_required" in rejection_categories
+    assert "trace_unavailable_at_insertion_point" in rejection_categories
+    assert "cross_step_state_required" in rejection_categories
+    for path_name in ("non_cpml", "cpml"):
+        slots = staging["cpml_non_cpml_staging_contract"][f"{path_name}_slots"]
+        assert slots["same_call_local_values_available"] is True
+        assert slots["requires_next_step_state"] is False
+        assert slots["requires_update_reordering"] is False
+        assert slots["h_sat_line"] < slots["first_e_update_line"]
+        assert slots["e_sat_line"] > slots["last_e_update_line"]
+    assert (
+        staging["cpml_non_cpml_staging_contract"][
+            "internal_face_work_contract_identical"
+        ]
+        is True
+    )
+    assert staging["orientation_generalization"]["uses_face_orientations_only"] is True
+    assert staging["solver_behavior_changed"] is False
+    assert staging["sbp_sat_3d_time_centered_staging_applied"] is False
+    assert staging["hook_experiment_allowed"] is False
+    assert staging["jit_runner_changed"] is False
+    assert staging["runner_changed"] is False
+    assert staging["public_claim_allowed"] is False
+    assert staging["public_api_behavior_changed"] is False
+    assert staging["public_default_tau_changed"] is False
+    assert staging["public_observable_promoted"] is False
+    assert staging["promotion_candidate_ready"] is False
+    assert staging["simresult_changed"] is False
+    assert staging["result_surface_changed"] is False
+    assert (
+        benchmark_gate["private_time_centered_staging_redesign_next_prerequisite"]
+        == staging["next_prerequisite"]
+    )
+    assert staging["next_prerequisite"] == (
+        "private time-centered paired-face helper implementation ralplan"
+    )
+    assert (
+        "time_centered_staging_contract_ready"
+        in (benchmark_gate["blocking_diagnostic"])
     )
     assert "no_material_repair" in benchmark_gate["blocking_diagnostic"]
     assert "not public TFSF" in benchmark_gate["diagnostic_basis"]
@@ -467,7 +554,10 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
     assert "no_signature_compatible_bounded_repair" in spec_text
     assert "paired_face_coupling_design_ready" in spec_text
     assert "production_context_mismatch_detected" in spec_text
-    assert "private time-centered SAT staging redesign ralplan" in spec_text
+    assert "time_centered_staging_contract_ready" in spec_text
+    assert (
+        "private time-centered paired-face helper implementation ralplan" in spec_text
+    )
     assert "## Deferred issue record" in spec_text
 
 

@@ -150,6 +150,13 @@ keeps the public claim blocked:
   step paths expose H SAT before the E update and E SAT after the E update, so
   the selected same-step paired E/H candidate cannot be applied to one
   co-temporal current-SAT ledger state without time-centered staging;
+- the private time-centered E/H face-ledger staging redesign records
+  `time_centered_staging_contract_ready`: same-call `H_pre_sat`/`H_post_sat`
+  and `E_pre_sat`/`E_post_sat` staging with a centered-H ledger closes the
+  private manufactured face ledger, passes the production-expressibility gate
+  with named CPML and non-CPML local slots, keeps orientation generic through
+  `FACE_ORIENTATIONS`, and rejects non-selected staging controls with explicit
+  reordering, trace-availability, or cross-step-state reasons;
 - the prior boundary-expanded analytic-sheet sweep is retained as history, not
   as current slab R/T evidence;
 - the current recorded status is therefore **inconclusive**, not a public
@@ -169,11 +176,13 @@ the private SAT face-coupling theory/redesign stage now records
 `paired_face_coupling_design_ready` without changing production solver or
 public surfaces, and because the private paired-face helper implementation gate
 records `production_context_mismatch_detected` before any `sbp_sat_3d.py`
-patch, the next safe lane is
-`private time-centered SAT staging redesign ralplan`.  Hook experiments remain
-closed and public promotion remains closed.  Until those gates pass, the
-private flux/DFT gate remains internal diagnostic evidence only, and the
-support matrix continues to mark true R/T as deferred.
+patch, and because the private time-centered staging redesign records
+`time_centered_staging_contract_ready` as a production-expressible private
+staging contract rather than a public observable, the next safe lane is
+`private time-centered paired-face helper implementation ralplan`.  Hook
+experiments remain closed and public promotion remains closed.  Until those
+implementation and fixture-quality gates pass, the private flux/DFT gate remains
+internal diagnostic evidence only, and the support matrix continues to mark true R/T as deferred.
 
 ## Why true R/T is deferred
 
