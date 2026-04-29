@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -179,6 +180,29 @@ def test_optional_solver_wrapper_records_executed_pass_and_tolerance_fail():
     assert failed["executed"] is True
     assert failed["passed"] is False
     assert failed["failure_reason"] == "solver_correlation_tolerance_exceeded"
+
+
+
+
+def test_optional_solver_wrapper_restores_cwd_when_solver_changes_directory(tmp_path):
+    original = Path.cwd()
+    solver_cwd = tmp_path / "solver-cwd"
+    solver_cwd.mkdir()
+
+    def runner(_fixture):
+        os.chdir(solver_cwd)
+        return 1.0e9
+
+    record = phase14._run_optional_solver_correlation(
+        "meep",
+        required=False,
+        fixture={"strategy_b_frequency_hz": 1.0e9},
+        runner=runner,
+        availability_checker=lambda _solver: True,
+    )
+
+    assert record["passed"] is True
+    assert Path.cwd() == original
 
 
 def test_phase13_baseline_policy_accepts_green_and_rejects_blocked(tmp_path):

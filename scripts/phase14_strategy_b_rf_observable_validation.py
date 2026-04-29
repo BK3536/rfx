@@ -15,6 +15,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 import platform
 import subprocess
 import sys
@@ -430,6 +431,7 @@ def _run_optional_solver_correlation(
 
     runner = runner or _default_solver_runner(solver)
     started = time.perf_counter()
+    cwd_before = Path.cwd()
     try:
         reference_frequency = float(runner(fixture))
     except Exception as exc:  # noqa: BLE001 - convert optional solver failures to evidence.
@@ -450,6 +452,11 @@ def _run_optional_solver_correlation(
             "error": str(exc),
             "runtime_s": round(time.perf_counter() - started, 6),
         }
+    finally:
+        try:
+            os.chdir(cwd_before)
+        except FileNotFoundError:
+            os.chdir(ROOT)
 
     if strategy_b_frequency is None:
         err = math.inf
@@ -778,7 +785,12 @@ def build_phase14_artifact(
     return artifact
 
 
+def repo_path(path: Path) -> Path:
+    return path if path.is_absolute() else ROOT / path
+
+
 def write_artifact(artifact: Mapping[str, Any], output: Path, *, indent: int | None) -> None:
+    output = repo_path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(artifact, indent=indent, sort_keys=True), encoding="utf-8")
 
@@ -812,7 +824,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     artifact = build_phase14_artifact(
-        phase13_baseline=args.phase13_baseline,
+        phase13_baseline=repo_path(args.phase13_baseline),
         external_solvers=args.external_solver,
         require_external_solver=args.require_external_solver,
         execute_workload=args.execute_workload,
