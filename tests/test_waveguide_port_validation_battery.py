@@ -345,79 +345,20 @@ def test_reciprocity_asymmetric_obstacle_known_gap():
 # Assertions:
 # (a) monotone: |S21(2mm)-S21(1.5mm)| <= |S21(3mm)-S21(2mm)|
 # (b) absolute: fine-mesh change < 0.10
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Mesh-convergence regression after the 2026-04-27 DROP-weight fix "
-        "(commit bcd67d2 lifted PEC-short min |S11| 0.94 -> 0.9997). "
-        "The 2026-04-26 dead-end note hypothesised the multi-mode receive "
-        "extractor would recover this — it does not. Empirically (today, "
-        "scripts/spikes/2026-04-27/_path_c_ablation.py companion), running "
-        "with n_modes=2 dispatches through extract_multimode_s_params_normalized "
-        "and produces the same per-mesh |S21| values: at f=6 GHz the only "
-        "propagating mode in the 40x20 mm guide is TE10 (TE01 cutoff 7.5 GHz, "
-        "TE20 cutoff 7.5 GHz) so higher modes carry no power to the receive "
-        "port and there is nothing to project away. The actual root cause is "
-        "the modal-template normalisation's mesh-dependence: dropping the "
-        "+face cell changes integral(|E|^2.dA) by 7%/5%/4% at dx={3,2,1.5} mm, "
-        "and that uneven proportion shifts the effective TE10 amplitude "
-        "between meshes. Recovery requires either a fractional boundary-cell "
-        "weight that converges to a well-defined dx -> 0 limit (e.g. the "
-        "OpenEMS user-pinned integration box) or a probe-style integration "
-        "that doesn't go through aperture_dA-based template normalisation. "
-        "Out of scope for the DROP-weight closure; tracking as follow-up. "
-        "2026-04-27 falsification round (scripts/spikes/2026-04-27/): "
-        "(a) 11-point v_hi weight sweep shows sharp discontinuity at w=0; "
-        "no single weight satisfies both PEC-short and mesh-conv. "
-        "(b) Asymmetric template-norm vs sim-extract weights cap PEC-short "
-        "|S11| at 0.96 because waveguide_port.py:623-628 zeros templates "
-        "where dA<=0, propagating norm-side DROP into runtime extraction. "
-        "(c) Analytic vs discrete templates differ by 0.0004 in |S11| -- "
-        "template form is not the bug. (d) PEC closed-cavity resonance "
-        "test recovers TM modes within 1.5%% of analytic at Q ~ 1e7-1e9, "
-        "confirming FDTD-core PEC handling is sound. (e) 2026-04-27 late "
-        "evening — Phase 1A.0 (analytic beta/Z swap) gives only +1.6%% on "
-        "KEEP-both PEC-short. Phase 1A.1 (position-aware analytic "
-        "projection on full aperture, analytic Z) yields mean |S11|=1.000 "
-        "(Meep class!) but per-frequency oscillation is +/-7%% from Yee "
-        "numerical dispersion at the test resolution (~30 cells/lambda). "
-        "DROP-both with Yee-discrete Z is more per-freq tight (+/-0.05%%) "
-        "because the Z-vs-beta convention matches. Conclusion: rfx port "
-        "extractor is Meep-class in MEAN; per-freq +/-7%% residual is the "
-        "intrinsic Yee dispersion footprint, NOT a port-code bug. True "
-        "recovery would require finer mesh OR subpixel PEC handling in "
-        "rfx/core/yee.py (multi-month FDTD-core work). Not in scope for "
-        "port-extractor follow-ups. "
-        "(g) 2026-04-28 end-of-day: the dump-derived per-frequency "
-        "PEC-short |S11| oscillation that drove (a)-(f) and the codex "
-        "#1/#2 ablations was traced to a missing Yee leapfrog half-step "
-        "correction (exp(+j*omega*dt/2) on the H_y spectrum) in the "
-        "diagnostic comparator at scripts/diagnostics/wr90_port/"
-        "s11_from_dumps.py — NOT a real rfx FDTD residual. With that "
-        "correction landed (commits 2fb9b76, 3e2754c) the dump-recipe "
-        "spread drops from 0.1326 to 0.0166 at R=1 (Meep-class). The "
-        "production extractor was always applying that correction "
-        "through _co_located_current_spectrum and was always Meep-class "
-        "on this geometry. The mesh-convergence regression below is a "
-        "SEPARATE issue from the resolved per-frequency oscillation; "
-        "it is the only remaining waveguide-port-side residual. "
-        "(h) 2026-04-29 evening — the handover-doc fractional cell-"
-        "overlap weight (path 1 of "
-        "docs/research_notes/2026-04-29_item_c_handover.md) was "
-        "implemented and tested. ∑aperture_dA converges exactly to "
-        "port.a·port.b at every dx (structural goal works). But on the "
-        "staircase Yee grid the PEC sits at Nu·dx, not port.a — at "
-        "WR-90 dx=1 mm the boundary cell carries weight ~0.86 and "
-        "admits non-physical normal-E (apply_pec_faces only zeros "
-        "tangential E). Net regressions: cv11 PEC-short |S11| diff vs "
-        "OpenEMS 0.025 → 0.094 (gate 0.050), "
-        "test_reciprocity_asymmetric_structure 0.041 → 0.078 (gate "
-        "0.05). Reverted. DROP stays in place; the fix is subpixel PEC "
-        "handling in rfx/core/yee.py, not a port-extractor knob. See "
-        "handover §'Why path 1 fails' for the trade-off table."
-    ),
-)
+#
+# 2026-04-29 unblocked. The 2026-04-22..04-29 saga that locked this test
+# as xfail (DROP weight, fractional aperture path-1, conformal PEC stage 1
+# attempts) was chasing a phantom: the "modal-template normalisation
+# mesh-dependence" hypothesis was wrong. The actual root cause was
+# `Box.mask_on_coords` closed-closed semantics (issue #75) — the εr=4
+# obstacle was being painted with N+1 cells per axis at each dx, and the
+# uneven cell-count rounding across {3, 2, 1.5} mm produced the
+# 0.0370/0.0547 non-monotone |S21| jitter. Half-open Box semantics
+# (`coords < hi` instead of `<=`) lands the obstacle on N cells consistently
+# across the ladder; |S21| now refines monotonically (coarse_delta 0.021,
+# fine_delta 0.003 at dx ∈ {3, 2, 1.5} mm). Subpixel PEC at staircase walls
+# remains an architectural gap (see docs/agent-memory/rfx-known-issues.md)
+# but it does NOT manifest in this test once obstacle painting is correct.
 def test_mesh_convergence_s21_scaled_cpml():
     freq = 6.0e9
     obstacles = [((0.05, 0.0, 0.0), (0.07, 0.04, 0.02), 4.0)]

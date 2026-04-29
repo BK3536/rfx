@@ -82,6 +82,15 @@ class Box:
             # three cells (issue #48 / deep dive), because the ±0.51·dc
             # snap window from the coarse edge of the domain reaches
             # through both the metal cell and its graded neighbours.
+            #
+            # Issue #75: the thin-sheet `< 0.51·dc` window admits BOTH
+            # adjacent cells when ``mid`` lies exactly on a cell boundary
+            # (e.g. ``Box((17,..), (18,..))`` at dx=1mm gives ``mid=17.5``
+            # with cells at 17 and 18 mm both at distance 0.5·dc < 0.51·dc).
+            # Volume path closed-closed semantics ``coords <= hi`` admits
+            # one extra cell whenever ``hi`` lands on a cell centre.
+            # Both fixed below: thin-sheet snaps to single argmin-nearest
+            # cell, volume path uses half-open ``coords < hi``.
             coords_np = np.asarray(coords)
             mid = (lo + hi) * 0.5
             extent = float(hi - lo)
@@ -94,9 +103,14 @@ class Box:
                                     0, coords_np.size - 2))
                 dc_local = float(coords_np[k_mid + 1] - coords_np[k_mid])
             if extent <= dc_local * 1.01:
-                # Thin sheet: snap to the single nearest cell centre.
-                return jnp.abs(coords - mid) < dc_local * 0.51
-            return (coords >= lo) & (coords <= hi)
+                # Thin sheet: paint the single cell whose centre is nearest
+                # to ``mid``. Argmin guarantees exactly one cell regardless
+                # of where ``mid`` falls relative to cell boundaries.
+                nearest_idx = int(np.argmin(np.abs(coords_np - mid)))
+                out = np.zeros(coords_np.shape, dtype=bool)
+                out[nearest_idx] = True
+                return jnp.asarray(out)
+            return (coords >= lo) & (coords < hi)
 
         mx = _axis_mask(x, self.corner_lo[0], self.corner_hi[0])
         my = _axis_mask(y, self.corner_lo[1], self.corner_hi[1])
