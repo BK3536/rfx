@@ -10,8 +10,10 @@ not widened by the helper.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
+import hashlib
+import inspect
 import json
 from typing import NamedTuple
 import warnings
@@ -34,6 +36,7 @@ from rfx.runners.subgridded import (
     _build_benchmark_flux_plane_specs,
     _build_private_analytic_sheet_source_specs,
     _build_private_tfsf_incident_specs,
+    run_private_tfsf_reference_flux,
     run_subgridded_benchmark_flux,
 )
 from rfx.sources.sources import CustomWaveform
@@ -63,17 +66,89 @@ _NEXT_PREREQUISITE = (
     "flux, port, or S-parameter promotion"
 )
 _TFSF_NEXT_PREREQUISITE = (
-    "build a same-contract private reference/normalization repair before "
-    "reopening slab R/T scoring or any public true R/T, DFT, flux, TFSF, port, "
+    "open a private solver/interface-floor investigation before low-level hook "
+    "experiments or any public true R/T, DFT, flux, TFSF, port, or S-parameter "
+    "promotion"
+)
+_INTERFACE_FLOOR_NEXT_PREREQUISITE = (
+    "open a private SBP-SAT interface energy-transfer repair plan before "
+    "low-level hook experiments or any public true R/T, DFT, flux, TFSF, port, "
     "or S-parameter promotion"
 )
+_PRIVATE_REPAIR_NO_MATERIAL_NEXT_PREREQUISITE = (
+    "open a private SBP-SAT energy-transfer theory/design review before "
+    "low-level hook experiments or any public true R/T, DFT, flux, TFSF, port, "
+    "or S-parameter promotion"
+)
+_PRIVATE_REPAIR_ACCEPTED_NEXT_PREREQUISITE = (
+    "open a private fixture-quality recovery plan using the accepted private "
+    "energy-transfer candidate before any public promotion"
+)
+_PRIVATE_REPAIR_REPAIRED_NEXT_PREREQUISITE = (
+    "open a private slab R/T scoring gate plan; keep public promotion deferred "
+    "until a separate public-support ralplan approves it"
+)
+_PRIVATE_REPAIR_EVIDENCE_ARTIFACT_TEMPLATE = (
+    ".omx/reports/sbp-sat-private-interface-energy-transfer-repair-{timestamp}.md"
+)
+_PRIVATE_TRUE_RT_SLOW_COMMAND = (
+    "pytest -q tests/test_sbp_sat_true_rt_flux_dft_benchmark.py -m 'gpu and slow' -s"
+)
 _TFSF_NO_GO_REASON = (
-    "private TFSF-style incident fixture lacks a same-contract reference; "
-    "slab R/T scoring is intentionally skipped"
+    "private TFSF-style incident fixture has a same-contract reference, but "
+    "vacuum/reference fixture-quality gates remain inconclusive; slab R/T "
+    "scoring is intentionally skipped"
 )
 _NORMALIZATION_FLOOR = 1e-30
 _NONFLOOR_FACTOR = 1e12
 _MIN_CLAIMS_BEARING_BINS = 2
+_TRANSVERSE_MAGNITUDE_CV_MAX = 0.01
+_TRANSVERSE_PHASE_SPREAD_DEG_MAX = 1.0
+_VACUUM_MAGNITUDE_ERROR_MAX = 0.02
+_VACUUM_PHASE_ERROR_DEG_MAX = 2.0
+_DOMINANT_IMPROVEMENT_MIN = 0.50
+_PAIRED_IMPROVEMENT_MIN = 0.25
+_NEW_BLOCKER_REGRESSION_MAX = 0.25
+
+_ALLOWED_SAME_RUN_REPAIR_CAUSAL_CLASSES = frozenset(
+    {
+        "measurement_or_reference_helper",
+        "source_waveform_or_stagger",
+        "plane_placement_or_phase_center",
+        "finite_aperture_source_edge",
+        "fixture_interface_geometry",
+    }
+)
+_DISALLOWED_SAME_RUN_REPAIR_CAUSAL_CLASSES = frozenset(
+    {
+        "sbp_sat_interface_floor",
+        "private_hook_order_or_stagger",
+        "unresolved_after_ladder",
+    }
+)
+_INTERFACE_FLOOR_SUBCLASSES = frozenset(
+    {
+        "fixture_interface_geometry",
+        "fixture_interface_geometry_candidate",
+        "coarse_fine_energy_transfer_mismatch",
+        "cpml_interface_proximity_artifact",
+        "solver_interface_floor_persistent",
+        "hook_contingency_direct_invariant",
+        "unresolved_interface_floor",
+    }
+)
+_PRIVATE_REPAIR_TAU_CANDIDATES = (0.25, 0.5, 0.75, 1.0)
+_PRIVATE_REPAIR_STATUSES = frozenset(
+    {
+        "accepted_private_candidate",
+        "repaired_private_floor",
+        "no_material_repair",
+    }
+)
+_FRONT_BACK_RATIO_FORMULA = "signed_back / max(abs(signed_front), floor)"
+_FRONT_BACK_RATIO_ERROR_FORMULA = (
+    "abs(subgrid_ratio - uniform_ratio) / max(abs(uniform_ratio), floor)"
+)
 
 
 class _GuardFixture:
@@ -94,6 +169,7 @@ class _FluxFixtureConfig:
     uniform_dx: float = 1.0e-3
     coarse_dx: float = 2.0e-3
     ratio: int = 2
+    tau: float = 0.5
     n_steps: int = 700
     refinement_x_range: tuple[float, float] = (0.012, 0.028)
     refinement_y_range: tuple[float, float] = (0.012, 0.028)
@@ -116,6 +192,8 @@ class _FluxFixtureConfig:
     def __post_init__(self) -> None:
         if self.ratio <= 0:
             raise ValueError("fixture ratio must be positive")
+        if self.tau <= 0:
+            raise ValueError("fixture tau must be positive")
         if not np.isclose(self.dx_f, self.uniform_dx):
             raise ValueError("fixture fine dx must match uniform fine reference dx")
         for label, span in {
@@ -196,6 +274,7 @@ class _FluxFixtureConfig:
             "y_range": self.refinement_y_range,
             "z_range": self.refinement_z_range,
             "ratio": self.ratio,
+            "tau": self.tau,
         }
 
     @property
@@ -251,6 +330,7 @@ class _FluxFixtureConfig:
             "coarse_dx": self.coarse_dx,
             "uniform_dx": self.uniform_dx,
             "ratio": self.ratio,
+            "tau": self.tau,
             "n_steps": self.n_steps,
             "refinement": self.refinement,
             "shape_f": list(self.shape_f),
@@ -302,6 +382,17 @@ def _guard_sim() -> Simulation:
     sim.add_refinement(z_range=(0.012, 0.028), ratio=2)
     sim.add_source(position=(0.020, 0.020, 0.020), component="ez")
     sim.add_probe(position=(0.020, 0.020, 0.022), component="ez")
+    return sim
+
+
+def _guard_reference_sim() -> Simulation:
+    sim = Simulation(
+        freq_max=5e9,
+        domain=(0.04, 0.04, 0.04),
+        boundary="pec",
+        dx=1e-3,
+    )
+    sim.add_probe(position=(0.020, 0.020, 0.022), component="ex")
     return sim
 
 
@@ -402,6 +493,58 @@ def test_private_tfsf_benchmark_run_does_not_populate_public_dft_or_flux_results
     assert run.result.flux_monitors is None
     assert len(run.benchmark_flux_planes) == 1
     assert run.benchmark_flux_planes[0].name == "private_guard"
+
+
+def test_private_tfsf_reference_run_does_not_populate_public_dft_or_flux_results():
+    sim = _guard_reference_sim()
+    assert sim._refinement is None
+
+    run = run_private_tfsf_reference_flux(
+        sim,
+        n_steps=4,
+        planes=(_private_guard_plane(),),
+        private_tfsf_incidents=(_private_guard_tfsf_incident(),),
+    )
+
+    assert sim._refinement is None
+    assert run.result.dft_planes is None
+    assert run.result.flux_monitors is None
+    assert len(run.benchmark_flux_planes) == 1
+    assert run.benchmark_flux_planes[0].name == "private_guard"
+
+
+def test_private_tfsf_reference_run_rejects_public_flux_requests():
+    sim = _guard_reference_sim()
+    sim.add_flux_monitor(
+        axis="z",
+        coordinate=0.020,
+        freqs=_GuardFixture.freqs,
+        size=(0.006, 0.006),
+        center=(0.020, 0.020),
+    )
+
+    with pytest.raises(ValueError, match="rejects public observables"):
+        run_private_tfsf_reference_flux(
+            sim,
+            n_steps=4,
+            planes=(_private_guard_plane(),),
+            private_tfsf_incidents=(_private_guard_tfsf_incident(),),
+        )
+
+
+def test_private_tfsf_reference_helper_uses_pre_cpml_private_slots():
+    source = inspect.getsource(run_private_tfsf_reference_flux)
+
+    h_update = source.index("state = update_h(")
+    h_private = source.index("state = _apply_private_h_all(state, step_idx)")
+    h_cpml = source.index("apply_cpml_h(")
+    e_update = source.index("state = update_e(")
+    e_private = source.index("state = _apply_private_e_all(state, step_idx)")
+    e_cpml = source.index("apply_cpml_e(")
+
+    assert h_update < h_private < h_cpml < e_update < e_private < e_cpml
+    assert "run_uniform(" not in source
+    assert "sim.run(" not in source
 
 
 def _plane_specs(
@@ -1001,6 +1144,13 @@ class _FixtureRun(NamedTuple):
     planes: tuple[object, object]
 
 
+def _fixture_run_from_private_benchmark(run) -> _FixtureRun:
+    planes = run.benchmark_flux_planes
+    signed_flux = tuple(np.asarray(_benchmark_flux_spectrum(p)) for p in planes)
+    complex_flux = tuple(_complex_flux(p) for p in planes)
+    return _FixtureRun(float(run.result.dt), complex_flux, signed_flux, planes)
+
+
 def _finite_or_fail(label: str, values: np.ndarray) -> dict[str, object] | None:
     if not np.all(np.isfinite(values)):
         return {"classification": "fail", "reason": f"{label} contains NaN/Inf"}
@@ -1080,10 +1230,6 @@ def _run_flux_fixture(
 ) -> _FixtureRun:
     if source_kind not in {"analytic_sheet", "private_tfsf"}:
         raise ValueError(f"unknown private benchmark source kind {source_kind!r}")
-    if not subgrid and source_kind != "analytic_sheet":
-        raise ValueError(
-            "private TFSF-style fixtures require the subgrid benchmark path"
-        )
 
     dx = fixture.coarse_dx if subgrid else fixture.uniform_dx
     size = fixture.aperture_size[0] if aperture_size is None else aperture_size
@@ -1101,7 +1247,8 @@ def _run_flux_fixture(
     if subgrid:
         sim.add_refinement(**fixture.refinement)
     else:
-        _add_uniform_sheet_sources(sim, fixture)
+        if source_kind == "analytic_sheet":
+            _add_uniform_sheet_sources(sim, fixture)
     sim.add_probe(position=fixture.source, component=fixture.source_component)
 
     if subgrid:
@@ -1126,10 +1273,16 @@ def _run_flux_fixture(
                     else ()
                 ),
             )
-        planes = run.benchmark_flux_planes
-        signed_flux = tuple(np.asarray(_benchmark_flux_spectrum(p)) for p in planes)
-        complex_flux = tuple(_complex_flux(p) for p in planes)
-        return _FixtureRun(float(run.result.dt), complex_flux, signed_flux, planes)
+        return _fixture_run_from_private_benchmark(run)
+
+    if source_kind == "private_tfsf":
+        run = run_private_tfsf_reference_flux(
+            sim,
+            n_steps=fixture.n_steps,
+            planes=_plane_requests(plane_shift_cells, aperture_size, fixture),
+            private_tfsf_incidents=(_benchmark_tfsf_incident(fixture=fixture),),
+        )
+        return _fixture_run_from_private_benchmark(run)
 
     dz = plane_shift_cells * fixture.dx_f
     sim.add_flux_monitor(
@@ -1242,7 +1395,10 @@ def _transverse_uniformity_metadata(
             )
 
     return {
-        "passed": bool(max_cv <= 0.01 and max_phase_spread <= 1.0),
+        "passed": bool(
+            max_cv <= _TRANSVERSE_MAGNITUDE_CV_MAX
+            and max_phase_spread <= _TRANSVERSE_PHASE_SPREAD_DEG_MAX
+        ),
         "max_magnitude_cv": max_cv,
         "max_phase_spread_deg": max_phase_spread,
         "per_plane": per_plane,
@@ -1266,11 +1422,503 @@ def _vacuum_stability_metadata(
     phase_error = _phase_error_deg(sub, ref)
     return {
         "passed": bool(
-            float(np.max(mag_error)) <= 0.02 and float(np.max(phase_error)) <= 2.0
+            float(np.max(mag_error)) <= _VACUUM_MAGNITUDE_ERROR_MAX
+            and float(np.max(phase_error)) <= _VACUUM_PHASE_ERROR_DEG_MAX
         ),
         "max_magnitude_error": float(np.max(mag_error)),
         "max_phase_error_deg": float(np.max(phase_error)),
     }
+
+
+def _reference_quality_thresholds() -> dict[str, dict[str, float | int]]:
+    return {
+        "usable_passband": {
+            "min_bins": _MIN_CLAIMS_BEARING_BINS,
+            "front_back_peak_fraction": 0.20,
+            "nonfloor_factor_times_normalization_floor": _NONFLOOR_FACTOR,
+        },
+        "transverse_uniformity": {
+            "magnitude_cv_max": _TRANSVERSE_MAGNITUDE_CV_MAX,
+            "phase_spread_deg_max": _TRANSVERSE_PHASE_SPREAD_DEG_MAX,
+        },
+        "vacuum_stability": {
+            "relative_magnitude_error_max": _VACUUM_MAGNITUDE_ERROR_MAX,
+            "phase_error_deg_max": _VACUUM_PHASE_ERROR_DEG_MAX,
+        },
+    }
+
+
+def _reference_quality_thresholds_checksum(
+    thresholds: dict[str, dict[str, float | int]] | None = None,
+) -> str:
+    payload = json.dumps(
+        _reference_quality_thresholds() if thresholds is None else thresholds,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _causal_truth_table() -> dict[str, dict[str, object]]:
+    base_positive = ("positive_evidence",)
+    base_guard = ("guard_evidence", "baseline_metrics", "candidate_metrics")
+    return {
+        "measurement_or_reference_helper": {
+            "positive_evidence": base_positive,
+            "guard_evidence": ("public_outputs_absent",),
+            "same_run_repair_allowed": True,
+        },
+        "source_waveform_or_stagger": {
+            "positive_evidence": base_positive,
+            "guard_evidence": base_guard + ("rung1_measurement_self_oracle_passed",),
+            "same_run_repair_allowed": True,
+        },
+        "plane_placement_or_phase_center": {
+            "positive_evidence": base_positive,
+            "guard_evidence": base_guard
+            + ("rung1_measurement_self_oracle_passed", "rung2_source_checked"),
+            "same_run_repair_allowed": True,
+        },
+        "finite_aperture_source_edge": {
+            "positive_evidence": base_positive,
+            "guard_evidence": base_guard + ("full_aperture_metrics_visible",),
+            "same_run_repair_allowed": True,
+        },
+        "aperture_edge_plus_interface_or_amplitude": {
+            "positive_evidence": base_positive,
+            "guard_evidence": base_guard + ("full_aperture_metrics_visible",),
+            "same_run_repair_allowed": False,
+        },
+        "fixture_interface_geometry": {
+            "positive_evidence": base_positive,
+            "guard_evidence": base_guard + ("rungs_1_to_4_not_sufficient",),
+            "same_run_repair_allowed": True,
+        },
+        "sbp_sat_interface_floor": {
+            "positive_evidence": base_positive,
+            "guard_evidence": base_guard
+            + ("source_plane_aperture_controls_not_material",),
+            "same_run_repair_allowed": False,
+        },
+        "private_hook_order_or_stagger": {
+            "positive_evidence": base_positive,
+            "guard_evidence": base_guard + ("hook_contingency_justification",),
+            "same_run_repair_allowed": False,
+        },
+        "unresolved_after_ladder": {
+            "positive_evidence": ("conflicting_or_insufficient_evidence",),
+            "guard_evidence": ("all_entered_rungs_recorded",),
+            "same_run_repair_allowed": False,
+        },
+    }
+
+
+def _reference_quality_metrics(
+    *,
+    usable_bins: int,
+    uniformity: dict[str, object],
+    vacuum_stability: dict[str, object],
+    source_eta0_consistency: dict[str, object] | None = None,
+) -> dict[str, float | int]:
+    metrics: dict[str, float | int] = {
+        "transverse_phase_spread_deg": float(uniformity["max_phase_spread_deg"]),
+        "transverse_magnitude_cv": float(uniformity["max_magnitude_cv"]),
+        "vacuum_relative_magnitude_error": float(
+            vacuum_stability["max_magnitude_error"]
+        ),
+        "vacuum_phase_error_deg": float(vacuum_stability["max_phase_error_deg"]),
+        "usable_bins": int(usable_bins),
+    }
+    if source_eta0_consistency is not None:
+        metrics["source_eta0_relative_error"] = float(
+            source_eta0_consistency["relative_error"]
+        )
+    return metrics
+
+
+def _metric_threshold(metric: str) -> float:
+    thresholds = {
+        "transverse_phase_spread_deg": _TRANSVERSE_PHASE_SPREAD_DEG_MAX,
+        "transverse_magnitude_cv": _TRANSVERSE_MAGNITUDE_CV_MAX,
+        "vacuum_relative_magnitude_error": _VACUUM_MAGNITUDE_ERROR_MAX,
+        "vacuum_phase_error_deg": _VACUUM_PHASE_ERROR_DEG_MAX,
+        "source_eta0_relative_error": _VACUUM_MAGNITUDE_ERROR_MAX,
+    }
+    return float(thresholds[metric])
+
+
+def _paired_metrics_for(dominant_metric: str) -> tuple[str, ...]:
+    if dominant_metric == "transverse_phase_spread_deg":
+        return ("transverse_magnitude_cv", "vacuum_phase_error_deg")
+    if dominant_metric == "transverse_magnitude_cv":
+        return ("transverse_phase_spread_deg", "vacuum_relative_magnitude_error")
+    if dominant_metric == "vacuum_phase_error_deg":
+        return ("vacuum_relative_magnitude_error", "transverse_phase_spread_deg")
+    if dominant_metric == "vacuum_relative_magnitude_error":
+        return ("vacuum_phase_error_deg", "transverse_magnitude_cv")
+    if dominant_metric == "source_eta0_relative_error":
+        return ("vacuum_relative_magnitude_error", "vacuum_phase_error_deg")
+    return ()
+
+
+def _relative_metric_improvement(before: float, after: float) -> float:
+    if not np.isfinite(before) and np.isfinite(after):
+        return 1.0
+    if not np.isfinite(before):
+        return 0.0
+    if abs(before) <= _NORMALIZATION_FLOOR:
+        return 0.0 if after >= before else 1.0
+    return float((before - after) / abs(before))
+
+
+def _material_improvement_decision(
+    *,
+    baseline_metrics: dict[str, float | int],
+    candidate_metrics: dict[str, float | int],
+    dominant_metric: str,
+    thresholds_checksum: str | None = None,
+    expected_thresholds_checksum: str | None = None,
+) -> dict[str, object]:
+    """Apply the causal-ladder 50%/25% anti-cherry-pick rule."""
+
+    expected = _reference_quality_thresholds_checksum()
+    checksum = expected if thresholds_checksum is None else thresholds_checksum
+    expected_checksum = (
+        expected
+        if expected_thresholds_checksum is None
+        else expected_thresholds_checksum
+    )
+    checksum_matches = checksum == expected_checksum
+
+    dominant_before = float(baseline_metrics[dominant_metric])
+    dominant_after = float(candidate_metrics[dominant_metric])
+    dominant_improvement = _relative_metric_improvement(
+        dominant_before,
+        dominant_after,
+    )
+    dominant_threshold_crossed = dominant_after <= _metric_threshold(dominant_metric)
+    dominant_ok = (
+        dominant_improvement >= _DOMINANT_IMPROVEMENT_MIN or dominant_threshold_crossed
+    )
+
+    paired_results = {}
+    paired_ok = False
+    for paired_metric in _paired_metrics_for(dominant_metric):
+        if (
+            paired_metric not in baseline_metrics
+            or paired_metric not in candidate_metrics
+        ):
+            continue
+        before = float(baseline_metrics[paired_metric])
+        after = float(candidate_metrics[paired_metric])
+        improvement = _relative_metric_improvement(before, after)
+        threshold_crossed = after <= _metric_threshold(paired_metric)
+        ok = improvement >= _PAIRED_IMPROVEMENT_MIN or threshold_crossed
+        paired_results[paired_metric] = {
+            "baseline": before,
+            "candidate": after,
+            "relative_improvement": improvement,
+            "threshold_crossed": bool(threshold_crossed),
+            "passed": bool(ok),
+        }
+        paired_ok = paired_ok or ok
+
+    usable_bins_ok = (
+        int(candidate_metrics.get("usable_bins", 0)) >= _MIN_CLAIMS_BEARING_BINS
+    )
+    new_blocker_regressions = []
+    for metric, before_value in baseline_metrics.items():
+        if metric in {dominant_metric, "usable_bins"}:
+            continue
+        if metric not in candidate_metrics:
+            continue
+        before = float(before_value)
+        after = float(candidate_metrics[metric])
+        if not (np.isfinite(before) and np.isfinite(after)):
+            continue
+        if (
+            before > _NORMALIZATION_FLOOR
+            and after > _metric_threshold(metric)
+            and (after - before) / before > _NEW_BLOCKER_REGRESSION_MAX
+        ):
+            new_blocker_regressions.append(
+                {
+                    "metric": metric,
+                    "baseline": before,
+                    "candidate": after,
+                    "relative_regression": float((after - before) / before),
+                }
+            )
+
+    passed = bool(
+        checksum_matches
+        and dominant_ok
+        and paired_ok
+        and usable_bins_ok
+        and not new_blocker_regressions
+    )
+    if not checksum_matches:
+        decision = "threshold_mismatch_inconclusive"
+    elif new_blocker_regressions:
+        decision = "tradeoff_inconclusive"
+    elif passed:
+        decision = "causal_candidate"
+    else:
+        decision = "inconclusive"
+    return {
+        "version": 1,
+        "dominant_improvement_min": _DOMINANT_IMPROVEMENT_MIN,
+        "paired_improvement_min": _PAIRED_IMPROVEMENT_MIN,
+        "new_blocker_regression_max": _NEW_BLOCKER_REGRESSION_MAX,
+        "dominant_metric": dominant_metric,
+        "dominant": {
+            "baseline": dominant_before,
+            "candidate": dominant_after,
+            "relative_improvement": dominant_improvement,
+            "threshold_crossed": bool(dominant_threshold_crossed),
+            "passed": bool(dominant_ok),
+        },
+        "paired": paired_results,
+        "paired_passed": bool(paired_ok),
+        "usable_bins_passed": bool(usable_bins_ok),
+        "thresholds_checksum": checksum,
+        "expected_thresholds_checksum": expected_checksum,
+        "thresholds_checksum_matches": bool(checksum_matches),
+        "new_blocker_regressions": new_blocker_regressions,
+        "passed": passed,
+        "classification_decision": decision,
+    }
+
+
+def _causal_ladder_candidate_record(
+    *,
+    candidate_id: str,
+    rung: str,
+    parameters: dict[str, object],
+    cheap_rationale: str,
+    baseline_packet_id: str,
+    before_metrics: dict[str, float | int],
+    after_metrics: dict[str, float | int],
+    classification_decision: dict[str, object],
+    predeclared: bool = True,
+    command_requirement: dict[str, object] | None = None,
+    full_aperture_metrics: dict[str, float | int] | None = None,
+    candidate_class: str | None = None,
+) -> dict[str, object]:
+    command_requirement = (
+        {"slow_command_required": False, "slow_command": None}
+        if command_requirement is None
+        else command_requirement
+    )
+    record: dict[str, object] = {
+        "candidate_id": candidate_id,
+        "rung": rung,
+        "predeclared": bool(predeclared),
+        "parameters": parameters,
+        "cheap_rationale": cheap_rationale,
+        "baseline_packet_id": baseline_packet_id,
+        "thresholds_checksum": _reference_quality_thresholds_checksum(),
+        "command_requirement": command_requirement,
+        "slow_command_required": bool(command_requirement["slow_command_required"]),
+        "slow_command": command_requirement.get("slow_command"),
+        "metrics_before": before_metrics,
+        "metrics_after": after_metrics,
+        "before_metrics": before_metrics,
+        "after_metrics": after_metrics,
+        "classification_decision": classification_decision,
+    }
+    if candidate_class is not None:
+        record["candidate_class"] = candidate_class
+    if full_aperture_metrics is not None:
+        record["full_aperture_metrics"] = full_aperture_metrics
+    return record
+
+
+def _causal_candidate_classification(
+    *,
+    candidate: dict[str, object],
+    intended_class: str,
+) -> str:
+    if not candidate.get("predeclared", False):
+        return "inconclusive"
+    decision = candidate["classification_decision"]
+    if not isinstance(decision, dict) or not decision.get("passed", False):
+        return "inconclusive"
+    return intended_class
+
+
+def _source_eta0_consistency_metadata(
+    electric_values: np.ndarray,
+    magnetic_values: np.ndarray,
+    *,
+    eta0: float,
+    tolerance: float = _VACUUM_MAGNITUDE_ERROR_MAX,
+) -> dict[str, object]:
+    electric = np.asarray(electric_values, dtype=np.float64)
+    magnetic = np.asarray(magnetic_values, dtype=np.float64)
+    expected = electric / float(eta0)
+    mask = np.abs(expected) > max(
+        float(np.max(np.abs(expected))) * 1.0e-12,
+        _NORMALIZATION_FLOOR,
+    )
+    if int(np.sum(mask)) == 0:
+        relative_error = float("inf")
+    else:
+        relative_error = float(
+            np.max(
+                np.abs(np.abs(magnetic[mask]) - np.abs(expected[mask]))
+                / np.maximum(np.abs(expected[mask]), _NORMALIZATION_FLOOR)
+            )
+        )
+    return {
+        "metric": "source_eta0_relative_error",
+        "relative_error": relative_error,
+        "threshold": float(tolerance),
+        "passed": bool(relative_error <= tolerance),
+        "formula": "max(abs(abs(H)-abs(E/eta0))/max(abs(E/eta0), floor))",
+    }
+
+
+def _default_hook_contingency_justification(
+    *,
+    per_rung_status: dict[str, str] | None = None,
+    direct_invariant_test: dict[str, object] | None = None,
+    fixed_candidate: str = "baseline_full_aperture",
+) -> dict[str, object]:
+    per_rung_status = {} if per_rung_status is None else per_rung_status
+    required = ("rung1", "rung2", "rung3", "rung4", "rung5")
+    rung_negative = all(per_rung_status.get(rung) == "negative" for rung in required)
+    direct_failed = bool(
+        direct_invariant_test is not None
+        and direct_invariant_test.get("passed") is False
+    )
+    eligible = bool(rung_negative or direct_failed)
+    return {
+        "eligible": eligible,
+        "negative_evidence_required": list(required),
+        "per_rung_status": per_rung_status,
+        "direct_invariant_test": direct_invariant_test,
+        "expected": None
+        if direct_invariant_test is None
+        else direct_invariant_test.get("expected"),
+        "actual": None
+        if direct_invariant_test is None
+        else direct_invariant_test.get("actual"),
+        "fixed_candidate": fixed_candidate,
+        "hypothesis": (
+            "specific hook order/sign/index hypothesis required" if eligible else None
+        ),
+        "why_hook_scope_is_allowed": (
+            "rungs 1-5 are negative or a direct invariant failed" if eligible else None
+        ),
+        "rollback_policy": "remove diagnostic if not materially improving",
+    }
+
+
+def _same_run_repair_allowed(causal_class: str) -> bool:
+    return causal_class in _ALLOWED_SAME_RUN_REPAIR_CAUSAL_CLASSES
+
+
+def _row2_no_claim_for_causal_class(causal_class: str) -> dict[str, object]:
+    return {
+        "causal_class": causal_class,
+        "reference_quality_ready": False,
+        "fixture_quality_ready": False,
+        "slab_rt_scored": False,
+        "public_claim_allowed": False,
+        "follow_up_recommendation": "open a narrower follow-up plan before claims-bearing repair",
+    }
+
+
+def _reference_quality_blocker_ranking(
+    *,
+    usable_bins: int,
+    nonfloor_flux: bool,
+    uniformity: dict[str, object],
+    vacuum_stability: dict[str, object],
+) -> list[dict[str, object]]:
+    """Rank row-2 blockers without relaxing or reinterpreting gate thresholds."""
+
+    candidates = [
+        {
+            "name": "transverse_phase_spread_deg",
+            "gate": "transverse_uniformity",
+            "observed": float(uniformity["max_phase_spread_deg"]),
+            "threshold": _TRANSVERSE_PHASE_SPREAD_DEG_MAX,
+            "passed": float(uniformity["max_phase_spread_deg"])
+            <= _TRANSVERSE_PHASE_SPREAD_DEG_MAX,
+            "diagnostic_hint": "finite-aperture edge diffraction, phase-front tilt, or plane-placement mismatch",
+        },
+        {
+            "name": "vacuum_relative_magnitude_error",
+            "gate": "vacuum_stability",
+            "observed": float(vacuum_stability["max_magnitude_error"]),
+            "threshold": _VACUUM_MAGNITUDE_ERROR_MAX,
+            "passed": float(vacuum_stability["max_magnitude_error"])
+            <= _VACUUM_MAGNITUDE_ERROR_MAX,
+            "diagnostic_hint": "uniform/subgrid amplitude mismatch or SBP-SAT interface reflection floor",
+        },
+        {
+            "name": "transverse_magnitude_cv",
+            "gate": "transverse_uniformity",
+            "observed": float(uniformity["max_magnitude_cv"]),
+            "threshold": _TRANSVERSE_MAGNITUDE_CV_MAX,
+            "passed": float(uniformity["max_magnitude_cv"])
+            <= _TRANSVERSE_MAGNITUDE_CV_MAX,
+            "diagnostic_hint": "finite-aperture edge diffraction or scored-aperture/source-span mismatch",
+        },
+        {
+            "name": "vacuum_phase_error_deg",
+            "gate": "vacuum_stability",
+            "observed": float(vacuum_stability["max_phase_error_deg"]),
+            "threshold": _VACUUM_PHASE_ERROR_DEG_MAX,
+            "passed": float(vacuum_stability["max_phase_error_deg"])
+            <= _VACUUM_PHASE_ERROR_DEG_MAX,
+            "diagnostic_hint": "source timing, plane placement, or interface phase mismatch",
+        },
+        {
+            "name": "usable_passband_bins",
+            "gate": "usable_passband",
+            "observed": int(usable_bins),
+            "threshold": _MIN_CLAIMS_BEARING_BINS,
+            "passed": int(usable_bins) >= _MIN_CLAIMS_BEARING_BINS,
+            "diagnostic_hint": "insufficient non-floor frequency bins",
+        },
+        {
+            "name": "nonfloor_front_back_flux",
+            "gate": "analytic_incident_consistency",
+            "observed": bool(nonfloor_flux),
+            "threshold": True,
+            "passed": bool(nonfloor_flux),
+            "diagnostic_hint": "front/back signed flux fell to the normalization floor",
+        },
+    ]
+    ranked = []
+    for entry in candidates:
+        observed = entry["observed"]
+        threshold = entry["threshold"]
+        if isinstance(observed, bool):
+            severity = 0.0 if observed is threshold else float("inf")
+        elif entry["name"] == "usable_passband_bins":
+            severity = (
+                0.0 if entry["passed"] else float(threshold) / max(float(observed), 1.0)
+            )
+        else:
+            severity = float(observed) / max(float(threshold), _NORMALIZATION_FLOOR)
+        ranked.append(entry | {"severity_vs_threshold": float(severity)})
+    return sorted(
+        ranked,
+        key=lambda item: (bool(item["passed"]), -float(item["severity_vs_threshold"])),
+    )
+
+
+def _dominant_reference_quality_blocker(
+    blockers: list[dict[str, object]],
+) -> str:
+    for blocker in blockers:
+        if not blocker["passed"]:
+            return str(blocker["name"])
+    return "none"
 
 
 def _serial_complex(values: np.ndarray) -> list[list[float]]:
@@ -1310,6 +1958,396 @@ def _flux_diagnostics(
             )
         ]
     return diagnostics
+
+
+def _interface_distance_margins(
+    fixture: _FluxFixtureConfig,
+) -> dict[str, float]:
+    """Record source/plane distances to the nearest SBP-SAT interface."""
+
+    distances = {
+        "sheet_to_lower_z_interface_m": fixture.sheet_coordinate
+        - fixture.refinement_z_range[0],
+        "sheet_to_upper_z_interface_m": fixture.refinement_z_range[1]
+        - fixture.sheet_coordinate,
+        "front_plane_to_lower_z_interface_m": fixture.front_plane
+        - fixture.refinement_z_range[0],
+        "front_plane_to_upper_z_interface_m": fixture.refinement_z_range[1]
+        - fixture.front_plane,
+        "back_plane_to_lower_z_interface_m": fixture.back_plane
+        - fixture.refinement_z_range[0],
+        "back_plane_to_upper_z_interface_m": fixture.refinement_z_range[1]
+        - fixture.back_plane,
+        "sheet_x_min_to_interface_m": fixture.sheet_x_span[0]
+        - fixture.refinement_x_range[0],
+        "sheet_x_max_to_interface_m": fixture.refinement_x_range[1]
+        - fixture.sheet_x_span[1],
+        "sheet_y_min_to_interface_m": fixture.sheet_y_span[0]
+        - fixture.refinement_y_range[0],
+        "sheet_y_max_to_interface_m": fixture.refinement_y_range[1]
+        - fixture.sheet_y_span[1],
+    }
+    distances["min_source_or_plane_to_interface_m"] = float(
+        min(
+            distances["sheet_to_lower_z_interface_m"],
+            distances["sheet_to_upper_z_interface_m"],
+            distances["front_plane_to_lower_z_interface_m"],
+            distances["front_plane_to_upper_z_interface_m"],
+            distances["back_plane_to_lower_z_interface_m"],
+            distances["back_plane_to_upper_z_interface_m"],
+            distances["sheet_x_min_to_interface_m"],
+            distances["sheet_x_max_to_interface_m"],
+            distances["sheet_y_min_to_interface_m"],
+            distances["sheet_y_max_to_interface_m"],
+        )
+    )
+    return {key: float(value) for key, value in distances.items()}
+
+
+def _front_back_signed_flux_ratio(
+    signed_flux: tuple[np.ndarray, np.ndarray],
+    mask: np.ndarray,
+) -> np.ndarray:
+    front = np.asarray(signed_flux[0], dtype=np.float64)[mask]
+    back = np.asarray(signed_flux[1], dtype=np.float64)[mask]
+    return back / np.maximum(np.abs(front), _NORMALIZATION_FLOOR)
+
+
+def _front_back_ratio_residual(
+    *,
+    uniform_signed_flux: tuple[np.ndarray, np.ndarray],
+    subgrid_signed_flux: tuple[np.ndarray, np.ndarray],
+    mask: np.ndarray,
+    fixture: _FluxFixtureConfig,
+) -> dict[str, object]:
+    """Private coarse/fine front-back residual used by interface diagnostics."""
+
+    mask = np.asarray(mask, dtype=bool)
+    if int(np.sum(mask)) == 0:
+        return {
+            "front_back_ratio_formula": _FRONT_BACK_RATIO_FORMULA,
+            "ratio_error_formula": _FRONT_BACK_RATIO_ERROR_FORMULA,
+            "threshold": _VACUUM_MAGNITUDE_ERROR_MAX,
+            "valid": False,
+            "reason": "no scored passband bins",
+            "usable_bins": 0,
+            "scored_freqs_hz": [],
+            "uniform_front_back_ratio": [],
+            "subgrid_front_back_ratio": [],
+            "ratio_error_by_freq": [],
+            "max_ratio_error": float("inf"),
+            "median_ratio_error": float("inf"),
+            "front_back_ratio_sign_consistent": False,
+            "uniform_reference_self_error": 0.0,
+            "uniform_reference_below_threshold": True,
+        }
+
+    uniform_ratio = _front_back_signed_flux_ratio(uniform_signed_flux, mask)
+    subgrid_ratio = _front_back_signed_flux_ratio(subgrid_signed_flux, mask)
+    ratio_error = np.abs(subgrid_ratio - uniform_ratio) / np.maximum(
+        np.abs(uniform_ratio),
+        _NORMALIZATION_FLOOR,
+    )
+    sign_consistent = bool(
+        np.all(np.signbit(uniform_ratio) == np.signbit(subgrid_ratio))
+    )
+    return {
+        "front_back_ratio_formula": _FRONT_BACK_RATIO_FORMULA,
+        "ratio_error_formula": _FRONT_BACK_RATIO_ERROR_FORMULA,
+        "threshold": _VACUUM_MAGNITUDE_ERROR_MAX,
+        "valid": True,
+        "usable_bins": int(np.sum(mask)),
+        "scored_freqs_hz": fixture.scored_freqs[mask].tolist(),
+        "uniform_front_back_ratio": [float(value) for value in uniform_ratio],
+        "subgrid_front_back_ratio": [float(value) for value in subgrid_ratio],
+        "ratio_error_by_freq": [float(value) for value in ratio_error],
+        "max_ratio_error": float(np.max(ratio_error)),
+        "median_ratio_error": float(np.median(ratio_error)),
+        "front_back_ratio_sign_consistent": sign_consistent,
+        "uniform_reference_self_error": 0.0,
+        "uniform_reference_below_threshold": True,
+    }
+
+
+def _interface_energy_transfer_summary(
+    candidates: list[dict[str, object]],
+) -> dict[str, object]:
+    """Summarize whether a private front/back residual is stable across variants."""
+
+    valid = [
+        candidate
+        for candidate in candidates
+        if candidate.get("status") == "scored"
+        and bool(candidate["energy_transfer"]["valid"])
+    ]
+    max_errors = [
+        float(candidate["energy_transfer"]["max_ratio_error"]) for candidate in valid
+    ]
+    if len(valid) < 2:
+        return {
+            "front_back_ratio_formula": _FRONT_BACK_RATIO_FORMULA,
+            "ratio_error_formula": _FRONT_BACK_RATIO_ERROR_FORMULA,
+            "threshold": _VACUUM_MAGNITUDE_ERROR_MAX,
+            "candidate_count": len(valid),
+            "interface_residual_stable": False,
+            "stable_residual_evidence": "insufficient_candidates",
+            "max_ratio_error": max(max_errors) if max_errors else float("inf"),
+            "median_ratio_error": float(np.median(max_errors))
+            if max_errors
+            else float("inf"),
+            "uniform_reference_below_threshold": True,
+        }
+
+    baseline_error = max_errors[0]
+    no_material_reduction = all(
+        _relative_metric_improvement(baseline_error, error) < _PAIRED_IMPROVEMENT_MIN
+        for error in max_errors[1:]
+    )
+    all_above_threshold = all(
+        error > _VACUUM_MAGNITUDE_ERROR_MAX for error in max_errors
+    )
+    sign_consistent = all(
+        bool(candidate["energy_transfer"]["front_back_ratio_sign_consistent"])
+        for candidate in valid
+    )
+    stable = bool(all_above_threshold and no_material_reduction and sign_consistent)
+    return {
+        "front_back_ratio_formula": _FRONT_BACK_RATIO_FORMULA,
+        "ratio_error_formula": _FRONT_BACK_RATIO_ERROR_FORMULA,
+        "threshold": _VACUUM_MAGNITUDE_ERROR_MAX,
+        "candidate_count": len(valid),
+        "candidate_ids": [str(candidate["candidate_id"]) for candidate in valid],
+        "max_ratio_error": float(max(max_errors)),
+        "median_ratio_error": float(np.median(max_errors)),
+        "ratio_error_by_candidate": {
+            str(candidate["candidate_id"]): float(
+                candidate["energy_transfer"]["max_ratio_error"]
+            )
+            for candidate in valid
+        },
+        "all_candidates_above_threshold": bool(all_above_threshold),
+        "no_material_reduction_vs_baseline": bool(no_material_reduction),
+        "front_back_ratio_sign_order_consistent": bool(sign_consistent),
+        "interface_residual_stable": stable,
+        "stable_residual_evidence": "stable_across_predeclared_candidates"
+        if stable
+        else "not_stable",
+        "uniform_reference_self_error": 0.0,
+        "uniform_reference_below_threshold": True,
+    }
+
+
+def _fixture_with_tau(fixture: _FluxFixtureConfig, tau: float) -> _FluxFixtureConfig:
+    tau = float(tau)
+    if np.isclose(tau, fixture.tau):
+        return fixture
+    label = str(tau).replace(".", "p")
+    return replace(
+        fixture,
+        name=f"{fixture.name}_tau_{label}",
+        fixture_key=f"{fixture.fixture_key}_tau_{label}",
+        tau=tau,
+    )
+
+
+def _private_tfsf_quality_snapshot_from_runs(
+    *,
+    fixture: _FluxFixtureConfig,
+    ref_run: _FixtureRun,
+    run: _FixtureRun,
+    source_eta0_consistency: dict[str, object] | None = None,
+) -> dict[str, object]:
+    freq_mask = _claims_bearing_passband(run.complex_flux, run.signed_flux)
+    uniformity = _transverse_uniformity_metadata(
+        run.planes,
+        freq_mask,
+        fixture,
+        component="ex",
+    )
+    vacuum_stability = _vacuum_stability_metadata(
+        ref_run.complex_flux,
+        run.complex_flux,
+        freq_mask,
+    )
+    source_eta0_consistency = (
+        _private_tfsf_source_eta0_metadata(fixture)
+        if source_eta0_consistency is None
+        else source_eta0_consistency
+    )
+    metrics = _reference_quality_metrics(
+        usable_bins=int(np.sum(freq_mask)),
+        uniformity=uniformity,
+        vacuum_stability=vacuum_stability,
+        source_eta0_consistency=source_eta0_consistency,
+    )
+    return {
+        "ref_run": ref_run,
+        "run": run,
+        "freq_mask": freq_mask,
+        "uniformity": uniformity,
+        "vacuum_stability": vacuum_stability,
+        "source_eta0_consistency": source_eta0_consistency,
+        "metrics": metrics,
+        "usable_bins": int(np.sum(freq_mask)),
+    }
+
+
+def _private_tfsf_subgrid_quality_snapshot(
+    *,
+    fixture: _FluxFixtureConfig,
+    ref_run: _FixtureRun,
+    source_eta0_consistency: dict[str, object],
+) -> dict[str, object]:
+    run = _run_flux_fixture(
+        subgrid=True,
+        slab=False,
+        fixture=fixture,
+        source_kind="private_tfsf",
+    )
+    return _private_tfsf_quality_snapshot_from_runs(
+        fixture=fixture,
+        ref_run=ref_run,
+        run=run,
+        source_eta0_consistency=source_eta0_consistency,
+    )
+
+
+def _paired_metric_regressions(
+    *,
+    baseline_metrics: dict[str, float | int],
+    candidate_metrics: dict[str, float | int],
+) -> list[dict[str, object]]:
+    regressions: list[dict[str, object]] = []
+    for metric, before_value in baseline_metrics.items():
+        if metric == "usable_bins" or metric not in candidate_metrics:
+            continue
+        before = float(before_value)
+        after = float(candidate_metrics[metric])
+        if not (np.isfinite(before) and np.isfinite(after)):
+            continue
+        if before <= _NORMALIZATION_FLOOR:
+            continue
+        relative_regression = (after - before) / before
+        if (
+            relative_regression > _NEW_BLOCKER_REGRESSION_MAX
+            and after > _metric_threshold(metric)
+        ):
+            regressions.append(
+                {
+                    "metric": metric,
+                    "baseline": before,
+                    "candidate": after,
+                    "relative_regression": float(relative_regression),
+                    "threshold": _metric_threshold(metric),
+                }
+            )
+    if int(candidate_metrics.get("usable_bins", 0)) < int(
+        baseline_metrics.get("usable_bins", 0)
+    ):
+        regressions.append(
+            {
+                "metric": "usable_bins",
+                "baseline": int(baseline_metrics.get("usable_bins", 0)),
+                "candidate": int(candidate_metrics.get("usable_bins", 0)),
+                "relative_regression": 1.0,
+                "threshold": _MIN_CLAIMS_BEARING_BINS,
+            }
+        )
+    return regressions
+
+
+def _private_repair_candidate_record(
+    *,
+    candidate_id: str,
+    hypothesis: str,
+    fixture: _FluxFixtureConfig,
+    snapshot: dict[str, object],
+    baseline_metrics: dict[str, float | int],
+    baseline_residual: dict[str, object],
+    command_requirement: dict[str, object],
+) -> dict[str, object]:
+    residual = _front_back_ratio_residual(
+        uniform_signed_flux=snapshot["ref_run"].signed_flux,
+        subgrid_signed_flux=snapshot["run"].signed_flux,
+        mask=snapshot["freq_mask"],
+        fixture=fixture,
+    )
+    baseline_error = float(baseline_residual["max_ratio_error"])
+    candidate_error = float(residual["max_ratio_error"])
+    relative_improvement = _relative_metric_improvement(
+        baseline_error,
+        candidate_error,
+    )
+    paired_regressions = _paired_metric_regressions(
+        baseline_metrics=baseline_metrics,
+        candidate_metrics=snapshot["metrics"],
+    )
+    material_passed = bool(
+        residual["valid"]
+        and relative_improvement >= _DOMINANT_IMPROVEMENT_MIN
+        and not paired_regressions
+    )
+    strong_passed = bool(
+        residual["valid"]
+        and candidate_error <= _VACUUM_MAGNITUDE_ERROR_MAX
+        and not paired_regressions
+    )
+    return {
+        "candidate_id": candidate_id,
+        "repair_hypothesis": hypothesis,
+        "status": "scored",
+        "predeclared": True,
+        "fixture_name": fixture.name,
+        "fixture": fixture.fixture_key,
+        "fixture_parameters": fixture.to_metadata(),
+        "candidate_tau": float(fixture.tau),
+        "baseline_max_ratio_error": baseline_error,
+        "candidate_max_ratio_error": candidate_error,
+        "relative_improvement": float(relative_improvement),
+        "paired_metric_regressions": paired_regressions,
+        "material_improvement_passed": material_passed,
+        "strong_private_repair_passed": strong_passed,
+        "energy_transfer": residual,
+        "metrics": snapshot["metrics"],
+        "command_requirement": command_requirement,
+    }
+
+
+def _private_repair_outcome_from_candidates(
+    candidates: list[dict[str, object]],
+) -> dict[str, object]:
+    scored = [candidate for candidate in candidates if candidate["status"] == "scored"]
+    if not scored:
+        return {
+            "private_energy_transfer_repair_status": "no_material_repair",
+            "selected_repair_candidate_id": None,
+            "accepted_private_repair": False,
+            "next_prerequisite": _PRIVATE_REPAIR_NO_MATERIAL_NEXT_PREREQUISITE,
+            "outcome_reason": "no scored private repair candidates",
+        }
+    selected = min(
+        scored,
+        key=lambda candidate: float(candidate["candidate_max_ratio_error"]),
+    )
+    if bool(selected["strong_private_repair_passed"]):
+        status = "repaired_private_floor"
+        next_prerequisite = _PRIVATE_REPAIR_REPAIRED_NEXT_PREREQUISITE
+        reason = "selected private candidate reduced residual below threshold"
+    elif bool(selected["material_improvement_passed"]):
+        status = "accepted_private_candidate"
+        next_prerequisite = _PRIVATE_REPAIR_ACCEPTED_NEXT_PREREQUISITE
+        reason = "selected private candidate passed material-improvement gate"
+    else:
+        status = "no_material_repair"
+        next_prerequisite = _PRIVATE_REPAIR_NO_MATERIAL_NEXT_PREREQUISITE
+        reason = "no predeclared private candidate passed material-improvement gate"
+    return {
+        "private_energy_transfer_repair_status": status,
+        "selected_repair_candidate_id": selected["candidate_id"],
+        "accepted_private_repair": status != "no_material_repair",
+        "next_prerequisite": next_prerequisite,
+        "outcome_reason": reason,
+    }
 
 
 def _floor_relative_error(test: np.ndarray, ref: np.ndarray) -> np.ndarray:
@@ -1613,6 +2651,612 @@ def _boundary_expansion_sweep_metadata() -> dict[str, object]:
     }
 
 
+def _private_tfsf_source_eta0_metadata(
+    fixture: _FluxFixtureConfig,
+) -> dict[str, object]:
+    from rfx.core.yee import EPS_0, MU_0
+
+    (incident,) = _tfsf_specs(
+        _benchmark_tfsf_incident(fixture=fixture), fixture=fixture
+    )
+    return _source_eta0_consistency_metadata(
+        np.asarray(incident.electric_values),
+        np.asarray(incident.magnetic_values),
+        eta0=float(np.sqrt(MU_0 / EPS_0)),
+    )
+
+
+def _private_tfsf_reference_quality_snapshot(
+    *,
+    fixture: _FluxFixtureConfig,
+    plane_shift_cells: int = 0,
+    aperture_size: float | None = None,
+    source_eta0_consistency: dict[str, object] | None = None,
+) -> dict[str, object]:
+    ref_run = _run_flux_fixture(
+        subgrid=False,
+        slab=False,
+        fixture=fixture,
+        plane_shift_cells=plane_shift_cells,
+        aperture_size=aperture_size,
+        source_kind="private_tfsf",
+    )
+    run = _run_flux_fixture(
+        subgrid=True,
+        slab=False,
+        fixture=fixture,
+        plane_shift_cells=plane_shift_cells,
+        aperture_size=aperture_size,
+        source_kind="private_tfsf",
+    )
+    return _private_tfsf_quality_snapshot_from_runs(
+        fixture=fixture,
+        ref_run=ref_run,
+        run=run,
+        source_eta0_consistency=source_eta0_consistency,
+    )
+
+
+def _private_tfsf_causal_ladder_metadata(
+    *,
+    fixture: _FluxFixtureConfig,
+    baseline_metrics: dict[str, float | int],
+    dominant_reference_quality_blocker: str,
+    source_eta0_consistency: dict[str, object],
+) -> dict[str, object]:
+    thresholds_checksum = _reference_quality_thresholds_checksum()
+    baseline_packet_id = (
+        f"{fixture.name}:private_tfsf:full_aperture:{thresholds_checksum[:12]}"
+    )
+    slow_command = _PRIVATE_TRUE_RT_SLOW_COMMAND
+    material_rule = {
+        "version": 1,
+        "dominant_improvement_min": _DOMINANT_IMPROVEMENT_MIN,
+        "paired_improvement_min": _PAIRED_IMPROVEMENT_MIN,
+        "new_blocker_regression_max": _NEW_BLOCKER_REGRESSION_MAX,
+        "source_eta0_relative_error_threshold": _VACUUM_MAGNITUDE_ERROR_MAX,
+        "thresholds_checksum": thresholds_checksum,
+    }
+    baseline_decision = _material_improvement_decision(
+        baseline_metrics=baseline_metrics,
+        candidate_metrics=baseline_metrics,
+        dominant_metric=dominant_reference_quality_blocker,
+    )
+    candidate_records = [
+        _causal_ladder_candidate_record(
+            candidate_id="rung0_baseline_full_aperture",
+            rung="rung0_baseline_freeze",
+            parameters={
+                "fixture_name": fixture.name,
+                "plane_shift_cells": 0,
+                "aperture_size_m": fixture.aperture_size[0],
+                "source_kind": "private_tfsf",
+            },
+            cheap_rationale=(
+                "Freeze the current full-aperture row-2 packet before any "
+                "candidate comparison."
+            ),
+            baseline_packet_id=baseline_packet_id,
+            before_metrics=baseline_metrics,
+            after_metrics=baseline_metrics,
+            classification_decision=baseline_decision
+            | {"classification_decision": "baseline_no_causal_claim"},
+            command_requirement={
+                "slow_command_required": False,
+                "slow_command": None,
+            },
+            full_aperture_metrics=baseline_metrics,
+            candidate_class="baseline",
+        )
+    ]
+
+    plane_shift_snapshot = _private_tfsf_reference_quality_snapshot(
+        fixture=fixture,
+        plane_shift_cells=2,
+        source_eta0_consistency=source_eta0_consistency,
+    )
+    plane_shift_decision = _material_improvement_decision(
+        baseline_metrics=baseline_metrics,
+        candidate_metrics=plane_shift_snapshot["metrics"],
+        dominant_metric=dominant_reference_quality_blocker,
+    )
+    plane_shift_record = _causal_ladder_candidate_record(
+        candidate_id="rung3_plane_shift_plus_2_cells",
+        rung="rung3_plane_placement_phase_center",
+        parameters={
+            "plane_shift_cells": 2,
+            "front_plane_m": fixture.front_plane + 2 * fixture.dx_f,
+            "back_plane_m": fixture.back_plane + 2 * fixture.dx_f,
+            "strict_interior_required": True,
+        },
+        cheap_rationale=(
+            "A bounded strict-interior plane shift checks whether the phase "
+            "spread is caused by near-field or phase-center placement."
+        ),
+        baseline_packet_id=baseline_packet_id,
+        before_metrics=baseline_metrics,
+        after_metrics=plane_shift_snapshot["metrics"],
+        classification_decision=plane_shift_decision,
+        command_requirement={
+            "slow_command_required": True,
+            "slow_command": slow_command,
+        },
+        full_aperture_metrics=baseline_metrics,
+        candidate_class="plane_placement_or_phase_center",
+    )
+    candidate_records.append(plane_shift_record)
+
+    core_aperture = max(fixture.aperture_size[0] - 0.004, fixture.uniform_dx * 4)
+    aperture_snapshot = _private_tfsf_reference_quality_snapshot(
+        fixture=fixture,
+        aperture_size=core_aperture,
+        source_eta0_consistency=source_eta0_consistency,
+    )
+    aperture_decision = _material_improvement_decision(
+        baseline_metrics=baseline_metrics,
+        candidate_metrics=aperture_snapshot["metrics"],
+        dominant_metric=dominant_reference_quality_blocker,
+    )
+    aperture_class = (
+        "finite_aperture_source_edge"
+        if bool(aperture_snapshot["vacuum_stability"]["passed"])
+        else "aperture_edge_plus_interface_or_amplitude"
+    )
+    aperture_record = _causal_ladder_candidate_record(
+        candidate_id="rung4_central_core_aperture",
+        rung="rung4_aperture_source_edge",
+        parameters={
+            "aperture_size_m": core_aperture,
+            "full_aperture_size_m": fixture.aperture_size[0],
+            "source_span_x": list(fixture.sheet_x_span),
+            "source_span_y": list(fixture.sheet_y_span),
+            "full_aperture_metrics_visible": True,
+        },
+        cheap_rationale=(
+            "A central-core aperture checks whether full-aperture edge "
+            "diffraction dominates the transverse phase spread."
+        ),
+        baseline_packet_id=baseline_packet_id,
+        before_metrics=baseline_metrics,
+        after_metrics=aperture_snapshot["metrics"],
+        classification_decision=aperture_decision,
+        command_requirement={
+            "slow_command_required": True,
+            "slow_command": slow_command,
+        },
+        full_aperture_metrics=baseline_metrics,
+        candidate_class=aperture_class,
+    )
+    candidate_records.append(aperture_record)
+
+    source_passed = bool(source_eta0_consistency["passed"])
+    plane_class = _causal_candidate_classification(
+        candidate=plane_shift_record,
+        intended_class="plane_placement_or_phase_center",
+    )
+    aperture_candidate_class = _causal_candidate_classification(
+        candidate=aperture_record,
+        intended_class=aperture_class,
+    )
+    if plane_class != "inconclusive":
+        causal_class = plane_class
+    elif aperture_candidate_class != "inconclusive":
+        causal_class = aperture_candidate_class
+    elif source_passed:
+        causal_class = "sbp_sat_interface_floor"
+    else:
+        causal_class = "unresolved_after_ladder"
+
+    rungs = {
+        "rung0_baseline_freeze": {
+            "status": "complete",
+            "candidate_id": "rung0_baseline_full_aperture",
+            "baseline_packet_id": baseline_packet_id,
+        },
+        "rung1_measurement_dft_scoring_self_oracle": {
+            "status": "guarded_by_existing_private_replay_and_no_public_leak_tests",
+            "classification_decision": "not_measurement_or_reference_helper",
+            "evidence": [
+                "same-contract private reference helper is present",
+                "private Result does not expose public DFT/flux observables",
+                "private H/E slots are locked before CPML",
+            ],
+        },
+        "rung2_source_waveform_stagger": {
+            "status": "cheap_eta0_consistency_passed"
+            if source_passed
+            else "source_eta0_consistency_failed",
+            "source_eta0_consistency": source_eta0_consistency,
+        },
+        "rung3_plane_placement_phase_center": {
+            "status": "material_candidate"
+            if plane_class != "inconclusive"
+            else "no_material_improvement",
+            "candidate_id": plane_shift_record["candidate_id"],
+        },
+        "rung4_aperture_source_edge": {
+            "status": "material_candidate"
+            if aperture_candidate_class != "inconclusive"
+            else "no_material_improvement",
+            "candidate_id": aperture_record["candidate_id"],
+        },
+        "rung5_interface_floor": {
+            "status": "implicated"
+            if causal_class == "sbp_sat_interface_floor"
+            else "not_entered_or_not_implicated",
+            "classification_decision": (
+                "persistent row-2 error after source, plane, and aperture "
+                "controls did not satisfy material-improvement gates"
+                if causal_class == "sbp_sat_interface_floor"
+                else "defer"
+            ),
+        },
+        "rung6_hook_contingency": {
+            "status": "closed_by_default",
+        },
+    }
+    hook_per_rung_status = {
+        "rung1": "negative",
+        "rung2": "negative" if source_passed else "positive",
+        "rung3": "negative" if plane_class == "inconclusive" else "positive",
+        "rung4": "negative"
+        if aperture_candidate_class == "inconclusive"
+        else "positive",
+        "rung5": "positive" if causal_class == "sbp_sat_interface_floor" else "pending",
+    }
+    return {
+        "causal_ladder_status": (
+            "row2_causal_classified"
+            if causal_class != "unresolved_after_ladder"
+            else "row2_unresolved_after_ladder"
+        ),
+        "causal_class": causal_class,
+        "causal_ladder_rungs": rungs,
+        "causal_ladder_candidates": candidate_records,
+        "material_improvement_rule": material_rule,
+        "hook_contingency_justification": _default_hook_contingency_justification(
+            per_rung_status=hook_per_rung_status,
+            fixed_candidate=baseline_packet_id,
+        ),
+        "same_run_repair_allowed": _same_run_repair_allowed(causal_class),
+        "follow_up_recommendation": (
+            "open a solver/interface-floor investigation before low-level hook "
+            "experiments"
+            if causal_class == "sbp_sat_interface_floor"
+            else "use the material candidate class for the next narrow repair plan"
+        ),
+    }
+
+
+def _interface_distance_candidate_record(
+    *,
+    candidate_id: str,
+    role: str,
+    fixture: _FluxFixtureConfig,
+    snapshot: dict[str, object],
+    baseline_metrics: dict[str, float | int],
+    dominant_metric: str,
+    baseline_packet_id: str,
+    command_requirement: dict[str, object],
+) -> dict[str, object]:
+    decision = _material_improvement_decision(
+        baseline_metrics=baseline_metrics,
+        candidate_metrics=snapshot["metrics"],
+        dominant_metric=dominant_metric,
+    )
+    energy_transfer = _front_back_ratio_residual(
+        uniform_signed_flux=snapshot["ref_run"].signed_flux,
+        subgrid_signed_flux=snapshot["run"].signed_flux,
+        mask=snapshot["freq_mask"],
+        fixture=fixture,
+    )
+    return {
+        "candidate_id": candidate_id,
+        "role": role,
+        "status": "scored",
+        "predeclared": True,
+        "fixture_name": fixture.name,
+        "fixture": fixture.fixture_key,
+        "fixture_parameters": fixture.to_metadata(),
+        "interface_distances_m": _interface_distance_margins(fixture),
+        "usable_bins": int(snapshot["usable_bins"]),
+        "metrics": snapshot["metrics"],
+        "classification_decision": decision["classification_decision"],
+        "material_improvement_decision": decision,
+        "baseline_packet_id": baseline_packet_id,
+        "thresholds_checksum": _reference_quality_thresholds_checksum(),
+        "command_requirement": command_requirement,
+        "energy_transfer": energy_transfer,
+    }
+
+
+def _private_direct_invariant_tests() -> list[dict[str, object]]:
+    reference_source = inspect.getsource(run_private_tfsf_reference_flux)
+    h_update = reference_source.index("state = update_h(")
+    h_private = reference_source.index("state = _apply_private_h_all(state, step_idx)")
+    h_cpml = reference_source.index("apply_cpml_h(")
+    e_update = reference_source.index("state = update_e(")
+    e_private = reference_source.index("state = _apply_private_e_all(state, step_idx)")
+    e_cpml = reference_source.index("apply_cpml_e(")
+    slot_order_passed = h_update < h_private < h_cpml < e_update < e_private < e_cpml
+
+    planes = _plane_specs(
+        *_plane_requests(fixture=_BoundaryExpandedFluxFixture),
+        fixture=_BoundaryExpandedFluxFixture,
+    )
+    strict_indices_passed = all(
+        1 <= plane.index <= _BoundaryExpandedFluxFixture.shape_f[2] - 2
+        for plane in planes
+    )
+
+    return [
+        {
+            "name": "private_tfsf_positive_z_poynting",
+            "passed": True,
+            "expected": "+z ex/hy incident fields produce positive Poynting",
+            "actual": "covered by test_private_tfsf_incident_ex_hy_signs_produce_positive_z_poynting",
+            "hypothesis_if_failed": "private_tfsf_sign_or_component_mismatch",
+        },
+        {
+            "name": "private_reference_pre_cpml_slot_order",
+            "passed": bool(slot_order_passed),
+            "expected": "update_h < private_h < cpml_h < update_e < private_e < cpml_e",
+            "actual": "order matched" if slot_order_passed else "order mismatch",
+            "hypothesis_if_failed": "private_reference_hook_order_mismatch",
+        },
+        {
+            "name": "private_plane_normal_indices_strict_interior",
+            "passed": bool(strict_indices_passed),
+            "expected": "all private planes satisfy 1 <= normal index <= n-2",
+            "actual": [int(plane.index) for plane in planes],
+            "hypothesis_if_failed": "private_plane_index_semantics_mismatch",
+        },
+        {
+            "name": "private_accumulators_do_not_populate_public_outputs",
+            "passed": True,
+            "expected": "private helpers return benchmark_flux_planes without public Result DFT/flux",
+            "actual": "covered by private no-public-leak regression tests",
+            "hypothesis_if_failed": "private_reference_helper_public_surface_leak",
+        },
+    ]
+
+
+def _private_interface_floor_investigation_metadata(
+    *,
+    fixture: _FluxFixtureConfig,
+    baseline_snapshot: dict[str, object],
+    baseline_metrics: dict[str, float | int],
+    dominant_reference_quality_blocker: str,
+) -> dict[str, object]:
+    thresholds_checksum = _reference_quality_thresholds_checksum()
+    baseline_packet_id = f"{fixture.name}:interface_floor:{thresholds_checksum[:12]}"
+    slow_command = _PRIVATE_TRUE_RT_SLOW_COMMAND
+    scored_command = {"slow_command_required": True, "slow_command": slow_command}
+    baseline_candidate = _interface_distance_candidate_record(
+        candidate_id="baseline_boundary_expanded",
+        role="current_baseline",
+        fixture=fixture,
+        snapshot=baseline_snapshot,
+        baseline_metrics=baseline_metrics,
+        dominant_metric=dominant_reference_quality_blocker,
+        baseline_packet_id=baseline_packet_id,
+        command_requirement={"slow_command_required": False, "slow_command": None},
+    )
+    nearer_snapshot = _private_tfsf_reference_quality_snapshot(fixture=_FluxFixture)
+    nearer_candidate = _interface_distance_candidate_record(
+        candidate_id="nearer_current_bounded_control",
+        role="nearer_interface_control",
+        fixture=_FluxFixture,
+        snapshot=nearer_snapshot,
+        baseline_metrics=baseline_metrics,
+        dominant_metric=dominant_reference_quality_blocker,
+        baseline_packet_id=baseline_packet_id,
+        command_requirement=scored_command,
+    )
+    skipped_larger_candidate = {
+        "candidate_id": "larger_fine_guard_same_source_planes",
+        "role": "larger_guard_control",
+        "status": "skipped",
+        "predeclared": True,
+        "reason": (
+            "current boundary_expanded fixture already supersedes the nearer "
+            "current_bounded geometry; an even larger slow fixture is deferred "
+            "to the follow-up repair plan to avoid broadening this diagnostic pass"
+        ),
+        "command_requirement": scored_command,
+    }
+    interface_distance_candidates = [
+        baseline_candidate,
+        nearer_candidate,
+        skipped_larger_candidate,
+    ]
+    energy_transfer = _interface_energy_transfer_summary(
+        [
+            candidate
+            for candidate in interface_distance_candidates
+            if candidate.get("status") == "scored"
+        ]
+    )
+    direct_invariant_tests = _private_direct_invariant_tests()
+    failed_invariant = next(
+        (test for test in direct_invariant_tests if test["passed"] is False),
+        None,
+    )
+    hook_justification = _default_hook_contingency_justification(
+        per_rung_status={
+            "rung1": "negative",
+            "rung2": "negative",
+            "rung3": "negative",
+            "rung4": "negative",
+            "rung5": "positive",
+        },
+        direct_invariant_test=failed_invariant,
+        fixed_candidate=baseline_packet_id,
+    )
+
+    if failed_invariant is not None:
+        subclass = "hook_contingency_direct_invariant"
+        next_prerequisite = (
+            "open a private hook-order/sign/index plan with dedicated "
+            "jit_runner.py and sbp_sat_3d.py regressions"
+        )
+    elif bool(energy_transfer["interface_residual_stable"]) and bool(
+        energy_transfer["uniform_reference_below_threshold"]
+    ):
+        subclass = "coarse_fine_energy_transfer_mismatch"
+        next_prerequisite = _INTERFACE_FLOOR_NEXT_PREREQUISITE
+    else:
+        subclass = "unresolved_interface_floor"
+        next_prerequisite = (
+            "add a larger private interface-distance or CPML-proximity control "
+            "before low-level hook experiments"
+        )
+
+    cpml_proximity_controls = [
+        {
+            "candidate_id": "larger_domain_or_absorber_guard_control",
+            "status": "not_entered",
+            "predeclared": True,
+            "reason": (
+                "private front/back energy-transfer residual was already stable "
+                "across the scored boundary-expanded and nearer bounded "
+                "interface candidates"
+            )
+            if subclass == "coarse_fine_energy_transfer_mismatch"
+            else "deferred because current interface-distance evidence did not justify a CPML-specific conclusion",
+        },
+        {
+            "candidate_id": "mixed_periodic_cpml_shortcut",
+            "status": "blocked_by_support_contract",
+            "predeclared": True,
+            "reason": "mixed periodic+CPML remains unsupported in the SBP-SAT lane",
+        },
+    ]
+
+    return {
+        "interface_floor_investigation_status": "complete",
+        "interface_floor_subclass": subclass,
+        "interface_distance_sensitivity": "persistent"
+        if subclass == "coarse_fine_energy_transfer_mismatch"
+        else "unresolved",
+        "interface_distance_candidates": interface_distance_candidates,
+        "interface_energy_transfer_diagnostics": energy_transfer,
+        "cpml_proximity_controls": cpml_proximity_controls,
+        "direct_invariant_tests": direct_invariant_tests,
+        "hook_contingency_justification": hook_justification,
+        "interface_floor_next_prerequisite": next_prerequisite,
+        "follow_up_recommendation": next_prerequisite,
+    }
+
+
+def _private_energy_transfer_repair_metadata(
+    *,
+    fixture: _FluxFixtureConfig,
+    baseline_snapshot: dict[str, object],
+    baseline_metrics: dict[str, float | int],
+) -> dict[str, object]:
+    """Score bounded private repair candidates without public promotion."""
+
+    baseline_residual = _front_back_ratio_residual(
+        uniform_signed_flux=baseline_snapshot["ref_run"].signed_flux,
+        subgrid_signed_flux=baseline_snapshot["run"].signed_flux,
+        mask=baseline_snapshot["freq_mask"],
+        fixture=fixture,
+    )
+    slow_command = _PRIVATE_TRUE_RT_SLOW_COMMAND
+    candidates: list[dict[str, object]] = []
+    for tau in _PRIVATE_REPAIR_TAU_CANDIDATES:
+        candidate_fixture = _fixture_with_tau(fixture, tau)
+        if np.isclose(tau, fixture.tau):
+            snapshot = baseline_snapshot
+            command_requirement = {
+                "slow_command_required": False,
+                "slow_command": None,
+            }
+        else:
+            snapshot = _private_tfsf_subgrid_quality_snapshot(
+                fixture=candidate_fixture,
+                ref_run=baseline_snapshot["ref_run"],
+                source_eta0_consistency=baseline_snapshot["source_eta0_consistency"],
+            )
+            command_requirement = {
+                "slow_command_required": True,
+                "slow_command": slow_command,
+            }
+        tau_label = str(tau).replace(".", "p")
+        candidates.append(
+            _private_repair_candidate_record(
+                candidate_id=f"tau_sensitivity_{tau_label}",
+                hypothesis="tau_sensitivity_private_fixture_only",
+                fixture=candidate_fixture,
+                snapshot=snapshot,
+                baseline_metrics=baseline_metrics,
+                baseline_residual=baseline_residual,
+                command_requirement=command_requirement,
+            )
+        )
+
+    outcome = _private_repair_outcome_from_candidates(candidates)
+    status = outcome["private_energy_transfer_repair_status"]
+    selected = next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate["candidate_id"] == outcome["selected_repair_candidate_id"]
+        ),
+        None,
+    )
+    low_level_status = (
+        "not_entered_no_tau_candidate_met_material_gate"
+        if status == "no_material_repair"
+        else "not_entered_tau_candidate_private_only"
+    )
+    repair_packet = {
+        "status": status,
+        "candidate_policy": (
+            "tau sensitivity uses existing private fixture plumbing only; public "
+            "tau default/API behavior remains unchanged"
+        ),
+        "tau_candidates": [float(tau) for tau in _PRIVATE_REPAIR_TAU_CANDIDATES],
+        "baseline_max_ratio_error": float(baseline_residual["max_ratio_error"]),
+        "baseline_energy_transfer": baseline_residual,
+        "selected_repair_candidate_id": outcome["selected_repair_candidate_id"],
+        "repair_candidate_id": outcome["selected_repair_candidate_id"],
+        "repair_hypothesis": None
+        if selected is None
+        else selected["repair_hypothesis"],
+        "candidate_max_ratio_error": None
+        if selected is None
+        else selected["candidate_max_ratio_error"],
+        "relative_improvement": None
+        if selected is None
+        else selected["relative_improvement"],
+        "paired_metric_regressions": []
+        if selected is None
+        else selected["paired_metric_regressions"],
+        "accepted_private_repair": bool(outcome["accepted_private_repair"]),
+        "candidates": candidates,
+        "public_claim_allowed": False,
+        "promotion_candidate_ready": False,
+        "public_default_tau_changed": False,
+        "public_api_behavior_changed": False,
+        "kernel_edit_applied": False,
+        "low_level_repair_status": low_level_status,
+        "evidence_artifact_template": _PRIVATE_REPAIR_EVIDENCE_ARTIFACT_TEMPLATE,
+        "baseline_artifact_required": True,
+        "pre_post_evidence_required": True,
+        "next_prerequisite": outcome["next_prerequisite"],
+        "outcome_reason": outcome["outcome_reason"],
+    }
+    return {
+        "private_energy_transfer_repair_status": status,
+        "private_energy_transfer_repair": repair_packet,
+        "private_energy_transfer_repair_next_prerequisite": outcome[
+            "next_prerequisite"
+        ],
+    }
+
+
 def _empty_rt_gates() -> dict[str, bool]:
     return {
         "r_magnitude": False,
@@ -1628,13 +3272,35 @@ def _empty_rt_gates() -> dict[str, bool]:
 @lru_cache(maxsize=None)
 def _private_tfsf_incident_metadata() -> dict[str, object]:
     fixture = _BoundaryExpandedFluxFixture
+    ref_run = _run_flux_fixture(
+        subgrid=False,
+        slab=False,
+        fixture=fixture,
+        source_kind="private_tfsf",
+    )
     run = _run_flux_fixture(
         subgrid=True,
         slab=False,
         fixture=fixture,
         source_kind="private_tfsf",
     )
+    if not np.allclose(ref_run.dt, run.dt):
+        return {
+            "classification": "fail",
+            "reason": "private TFSF reference/subgrid timestep mismatch",
+            "source_contract": "private_tfsf_style_incident",
+            "normalization": "same_contract_private_reference_vacuum_gated",
+            "reference_missing": False,
+            "reference_quality_ready": False,
+            "fixture_quality_ready": False,
+            "slab_rt_scored": False,
+            "public_claim_allowed": False,
+        }
     for label, array in {
+        "reference_front_complex": ref_run.complex_flux[0],
+        "reference_back_complex": ref_run.complex_flux[1],
+        "reference_front_signed": ref_run.signed_flux[0],
+        "reference_back_signed": ref_run.signed_flux[1],
         "front_complex": run.complex_flux[0],
         "back_complex": run.complex_flux[1],
         "front_signed": run.signed_flux[0],
@@ -1644,7 +3310,10 @@ def _private_tfsf_incident_metadata() -> dict[str, object]:
         if fail is not None:
             return fail | {
                 "source_contract": "private_tfsf_style_incident",
-                "reference_missing": True,
+                "normalization": "same_contract_private_reference_vacuum_gated",
+                "reference_missing": False,
+                "reference_quality_ready": False,
+                "fixture_quality_ready": False,
                 "slab_rt_scored": False,
                 "public_claim_allowed": False,
             }
@@ -1673,53 +3342,221 @@ def _private_tfsf_incident_metadata() -> dict[str, object]:
         "usable_passband": bool(usable_passband),
         "transverse_uniformity": bool(uniformity["passed"]),
         "analytic_incident_consistency": bool(nonfloor_flux),
-        "same_contract_reference": False,
     }
-    return {
-        "classification": "inconclusive",
-        "reason": (
-            "same-contract private TFSF-style reference is not implemented; "
-            "slab R/T scoring is intentionally skipped"
-        ),
+    vacuum_stability = _vacuum_stability_metadata(
+        ref_run.complex_flux,
+        run.complex_flux,
+        freq_mask,
+    )
+    source_eta0_consistency = _private_tfsf_source_eta0_metadata(fixture)
+    baseline_metrics = _reference_quality_metrics(
+        usable_bins=int(np.sum(freq_mask)),
+        uniformity=uniformity,
+        vacuum_stability=vacuum_stability,
+        source_eta0_consistency=source_eta0_consistency,
+    )
+    baseline_snapshot = {
+        "ref_run": ref_run,
+        "run": run,
+        "freq_mask": freq_mask,
+        "uniformity": uniformity,
+        "vacuum_stability": vacuum_stability,
+        "source_eta0_consistency": source_eta0_consistency,
+        "metrics": baseline_metrics,
+        "usable_bins": int(np.sum(freq_mask)),
+    }
+    reference_quality_blockers = _reference_quality_blocker_ranking(
+        usable_bins=int(np.sum(freq_mask)),
+        nonfloor_flux=nonfloor_flux,
+        uniformity=uniformity,
+        vacuum_stability=vacuum_stability,
+    )
+    dominant_reference_quality_blocker = _dominant_reference_quality_blocker(
+        reference_quality_blockers
+    )
+    reference_quality_ready = bool(
+        incident_quality_gates["usable_passband"]
+        and incident_quality_gates["transverse_uniformity"]
+        and incident_quality_gates["analytic_incident_consistency"]
+        and vacuum_stability["passed"]
+    )
+    fixture_quality_gates = {
+        **incident_quality_gates,
+        "same_contract_reference": True,
+        "vacuum_stability": bool(vacuum_stability["passed"]),
+    }
+    base_metadata: dict[str, object] = {
         "fixture": ("boundary_expanded_private_tfsf_style_incident_flux_plane_vacuum"),
         "fixture_name": fixture.name,
         "fixture_parameters": fixture.to_metadata(),
         "source_contract": "private_tfsf_style_incident",
-        "normalization": "incident_quality_only_same_contract_reference_required",
-        "reference_missing": True,
-        "reference_contract": "missing_same_contract_private_reference",
-        "slab_rt_scored": False,
+        "normalization": "same_contract_private_reference_vacuum_gated",
+        "reference_missing": False,
+        "reference_contract": "private_tfsf_style_uniform_reference",
+        "reference_quality_ready": reference_quality_ready,
         "public_claim_allowed": False,
         "usable_bins": int(np.sum(freq_mask)),
         "scored_freqs_hz": fixture.scored_freqs[freq_mask].tolist(),
-        "fixture_quality_ready": False,
-        "incident_fixture_quality_ready": bool(
-            incident_quality_gates["usable_passband"]
-            and incident_quality_gates["transverse_uniformity"]
-            and incident_quality_gates["analytic_incident_consistency"]
+        "fixture_quality_gates": fixture_quality_gates,
+        "reference_quality_thresholds": _reference_quality_thresholds(),
+        "reference_quality_blockers": reference_quality_blockers,
+        "dominant_reference_quality_blocker": dominant_reference_quality_blocker,
+        "predeclared_candidate_policy": (
+            "baseline full-aperture fixture remains reported; any future "
+            "central-core or source-contract candidate must be predeclared in "
+            "metadata before slow scoring and must keep these same thresholds"
         ),
-        "fixture_quality_gates": incident_quality_gates,
-        "gates": _empty_rt_gates(),
         "positive_z_flux": positive_z_flux,
         "transverse_uniformity": uniformity,
+        "vacuum_stability": vacuum_stability,
+        "source_eta0_consistency": source_eta0_consistency,
+        "reference_vacuum_flux_diagnostics": _flux_diagnostics(
+            ref_run.complex_flux,
+            ref_run.signed_flux,
+            fixture,
+        ),
         "subgrid_vacuum_flux_diagnostics": _flux_diagnostics(
             run.complex_flux,
             run.signed_flux,
             fixture,
         ),
         "no_go_reason": _TFSF_NO_GO_REASON,
-        "blocking_diagnostic": (
-            "private post-H/post-E TFSF-style incident hooks are available, "
-            "but there is no same-contract private reference or normalization "
-            "repair; slab R/T scoring and public promotion stay closed"
-        ),
-        "next_prerequisite": _TFSF_NEXT_PREREQUISITE,
         "diagnostic_basis": (
             "This private fixture injects +z ex/hy incident fields through "
-            "low-level post-H and post-E SBP-SAT hooks and accumulates only "
-            "private fine-owned flux/DFT planes.  It is not public TFSF and "
-            "does not expose public flux, DFT, S-parameter, port, or true R/T "
-            "observables."
+            "private post-H/post-E slots and accumulates only private "
+            "fine-owned flux/DFT planes. A same-contract private uniform "
+            "reference now exists, but it remains benchmark-only, not public "
+            "TFSF, and does not expose public flux, DFT, S-parameter, port, "
+            "or true R/T observables."
+        ),
+    }
+    base_metadata.update(
+        _private_tfsf_causal_ladder_metadata(
+            fixture=fixture,
+            baseline_metrics=baseline_metrics,
+            dominant_reference_quality_blocker=dominant_reference_quality_blocker,
+            source_eta0_consistency=source_eta0_consistency,
+        )
+    )
+    base_metadata.update(
+        _private_interface_floor_investigation_metadata(
+            fixture=fixture,
+            baseline_snapshot=baseline_snapshot,
+            baseline_metrics=baseline_metrics,
+            dominant_reference_quality_blocker=dominant_reference_quality_blocker,
+        )
+    )
+    base_metadata.update(
+        _private_energy_transfer_repair_metadata(
+            fixture=fixture,
+            baseline_snapshot=baseline_snapshot,
+            baseline_metrics=baseline_metrics,
+        )
+    )
+    base_metadata["follow_up_recommendation"] = base_metadata[
+        "private_energy_transfer_repair_next_prerequisite"
+    ]
+    if not reference_quality_ready:
+        return base_metadata | {
+            "classification": "inconclusive",
+            "reason": (
+                "same-contract private TFSF-style reference is implemented, "
+                "but vacuum/reference fixture-quality gates failed; slab R/T "
+                "scoring is intentionally skipped"
+            ),
+            "slab_rt_scored": False,
+            "fixture_quality_ready": False,
+            "incident_fixture_quality_ready": bool(
+                incident_quality_gates["usable_passband"]
+                and incident_quality_gates["transverse_uniformity"]
+                and incident_quality_gates["analytic_incident_consistency"]
+            ),
+            "gates": _empty_rt_gates(),
+            "blocking_diagnostic": (
+                "same-contract private reference helper is present, but "
+                "private uniform/subgrid vacuum parity, transverse uniformity, "
+                "or usable-passband gates remain below threshold; the causal "
+                f"ladder now classifies the row-2 blocker as {base_metadata['causal_class']} "
+                "because source, plane-shift, and central-core aperture "
+                "controls did not satisfy the paired material-improvement "
+                "rule; the interface-floor investigation now records "
+                f"{base_metadata['interface_floor_subclass']}; slab R/T scoring "
+                "and public promotion stay closed; the private energy-transfer "
+                "repair stage records "
+                f"{base_metadata['private_energy_transfer_repair_status']}"
+            ),
+            "next_prerequisite": base_metadata[
+                "private_energy_transfer_repair_next_prerequisite"
+            ],
+        }
+
+    slab_run = _run_flux_fixture(
+        subgrid=True,
+        slab=True,
+        fixture=fixture,
+        source_kind="private_tfsf",
+    )
+    for label, array in {
+        "slab_front_complex": slab_run.complex_flux[0],
+        "slab_back_complex": slab_run.complex_flux[1],
+        "slab_front_signed": slab_run.signed_flux[0],
+        "slab_back_signed": slab_run.signed_flux[1],
+    }.items():
+        fail = _finite_or_fail(label, array)
+        if fail is not None:
+            return (
+                base_metadata
+                | fail
+                | {
+                    "slab_rt_scored": True,
+                    "fixture_quality_ready": True,
+                    "gates": _empty_rt_gates(),
+                    "blocking_diagnostic": (
+                        "slab scoring was attempted after reference gates passed, "
+                        "but slab flux output was non-finite"
+                    ),
+                    "next_prerequisite": (
+                        "repair private slab normalization/scorer before public "
+                        "promotion is reconsidered"
+                    ),
+                }
+            )
+    energy_balance = _energy_residual(
+        slab_run.signed_flux,
+        ref_run.signed_flux,
+        freq_mask,
+    )
+    rt_gates = {
+        **_empty_rt_gates(),
+        "energy": bool(float(np.max(energy_balance)) <= 0.05),
+    }
+    classification = "pass" if all(rt_gates.values()) else "inconclusive"
+    return {
+        **base_metadata,
+        "classification": classification,
+        "reason": (
+            "same-contract private reference passed, but private slab R/T gates "
+            "remain below threshold"
+            if classification == "inconclusive"
+            else "same-contract private reference and slab gates passed internally"
+        ),
+        "slab_rt_scored": True,
+        "fixture_quality_ready": True,
+        "incident_fixture_quality_ready": True,
+        "gates": rt_gates,
+        "energy_balance_residual": float(np.max(energy_balance)),
+        "subgrid_slab_flux_diagnostics": _flux_diagnostics(
+            slab_run.complex_flux,
+            slab_run.signed_flux,
+            fixture,
+        ),
+        "blocking_diagnostic": (
+            "slab scoring was attempted after reference gates passed, but one "
+            "or more private slab gates remains below threshold"
+        ),
+        "next_prerequisite": (
+            "repair private slab normalization/scorer before public promotion "
+            "is reconsidered"
         ),
     }
 
@@ -2064,6 +3901,479 @@ def _fail_or_xfail_inconclusive(metadata: dict[str, object], reason: str) -> Non
         pytest.xfail(reason)
 
 
+def _synthetic_reference_metrics(**overrides: float | int) -> dict[str, float | int]:
+    metrics: dict[str, float | int] = {
+        "transverse_phase_spread_deg": 10.0,
+        "transverse_magnitude_cv": 0.10,
+        "vacuum_relative_magnitude_error": 0.20,
+        "vacuum_phase_error_deg": 20.0,
+        "source_eta0_relative_error": 0.0,
+        "usable_bins": 3,
+    }
+    metrics.update(overrides)
+    return metrics
+
+
+def test_causal_class_truth_table_requires_positive_and_guard_evidence():
+    truth_table = _causal_truth_table()
+
+    assert set(_DISALLOWED_SAME_RUN_REPAIR_CAUSAL_CLASSES) <= set(truth_table)
+    for causal_class, contract in truth_table.items():
+        assert contract["positive_evidence"]
+        assert contract["guard_evidence"]
+        assert bool(contract["same_run_repair_allowed"]) == _same_run_repair_allowed(
+            causal_class
+        )
+        if causal_class != "unresolved_after_ladder":
+            assert (
+                "baseline_metrics" in contract["guard_evidence"]
+                or causal_class == "measurement_or_reference_helper"
+            )
+
+
+def test_single_metric_improvement_is_inconclusive_not_causal():
+    baseline = _synthetic_reference_metrics()
+    candidate = _synthetic_reference_metrics(transverse_phase_spread_deg=4.0)
+
+    decision = _material_improvement_decision(
+        baseline_metrics=baseline,
+        candidate_metrics=candidate,
+        dominant_metric="transverse_phase_spread_deg",
+    )
+
+    assert decision["dominant"]["passed"] is True
+    assert decision["paired_passed"] is False
+    assert decision["passed"] is False
+    assert decision["classification_decision"] == "inconclusive"
+
+
+def test_non_predeclared_slow_candidate_cannot_set_causal_class_or_reference_ready():
+    baseline = _synthetic_reference_metrics()
+    candidate = _synthetic_reference_metrics(
+        transverse_phase_spread_deg=0.5,
+        transverse_magnitude_cv=0.005,
+    )
+    decision = _material_improvement_decision(
+        baseline_metrics=baseline,
+        candidate_metrics=candidate,
+        dominant_metric="transverse_phase_spread_deg",
+    )
+    record = _causal_ladder_candidate_record(
+        candidate_id="unregistered_best_case",
+        rung="rung3_plane_placement_phase_center",
+        parameters={"plane_shift_cells": 99},
+        cheap_rationale="synthetic unregistered candidate",
+        baseline_packet_id="synthetic-baseline",
+        before_metrics=baseline,
+        after_metrics=candidate,
+        classification_decision=decision,
+        predeclared=False,
+    )
+
+    assert decision["passed"] is True
+    assert (
+        _causal_candidate_classification(
+            candidate=record,
+            intended_class="plane_placement_or_phase_center",
+        )
+        == "inconclusive"
+    )
+    no_claim = _row2_no_claim_for_causal_class("unresolved_after_ladder")
+    assert no_claim["reference_quality_ready"] is False
+    assert no_claim["fixture_quality_ready"] is False
+
+
+def test_reduced_or_core_aperture_candidate_keeps_full_aperture_metrics_visible():
+    baseline = _synthetic_reference_metrics()
+    candidate = _synthetic_reference_metrics(
+        transverse_phase_spread_deg=0.5,
+        transverse_magnitude_cv=0.005,
+    )
+    record = _causal_ladder_candidate_record(
+        candidate_id="rung4_central_core_aperture",
+        rung="rung4_aperture_source_edge",
+        parameters={"aperture_size_m": 0.016, "full_aperture_metrics_visible": True},
+        cheap_rationale="synthetic central-core diagnostic",
+        baseline_packet_id="synthetic-baseline",
+        before_metrics=baseline,
+        after_metrics=candidate,
+        classification_decision=_material_improvement_decision(
+            baseline_metrics=baseline,
+            candidate_metrics=candidate,
+            dominant_metric="transverse_phase_spread_deg",
+        ),
+        full_aperture_metrics=baseline,
+        candidate_class="finite_aperture_source_edge",
+    )
+
+    assert record["full_aperture_metrics"] == baseline
+    assert record["parameters"]["full_aperture_metrics_visible"] is True
+
+
+def test_material_improvement_rule_requires_dominant_blocker_or_threshold_crossing():
+    baseline = _synthetic_reference_metrics()
+    weak_candidate = _synthetic_reference_metrics(
+        transverse_phase_spread_deg=6.0,
+        transverse_magnitude_cv=0.005,
+    )
+    threshold_candidate = _synthetic_reference_metrics(
+        transverse_phase_spread_deg=1.0,
+        transverse_magnitude_cv=0.005,
+    )
+
+    weak = _material_improvement_decision(
+        baseline_metrics=baseline,
+        candidate_metrics=weak_candidate,
+        dominant_metric="transverse_phase_spread_deg",
+    )
+    crossed = _material_improvement_decision(
+        baseline_metrics=baseline,
+        candidate_metrics=threshold_candidate,
+        dominant_metric="transverse_phase_spread_deg",
+    )
+
+    assert weak["dominant"]["passed"] is False
+    assert weak["passed"] is False
+    assert crossed["dominant"]["threshold_crossed"] is True
+    assert crossed["passed"] is True
+
+
+def test_material_improvement_rule_requires_paired_metric_improvement():
+    baseline = _synthetic_reference_metrics()
+    candidate = _synthetic_reference_metrics(
+        transverse_phase_spread_deg=1.0,
+        transverse_magnitude_cv=0.11,
+        vacuum_phase_error_deg=21.0,
+    )
+
+    decision = _material_improvement_decision(
+        baseline_metrics=baseline,
+        candidate_metrics=candidate,
+        dominant_metric="transverse_phase_spread_deg",
+    )
+
+    assert decision["dominant"]["passed"] is True
+    assert decision["paired_passed"] is False
+    assert decision["passed"] is False
+
+
+def test_material_improvement_rule_rejects_usable_bin_regression():
+    baseline = _synthetic_reference_metrics()
+    candidate = _synthetic_reference_metrics(
+        transverse_phase_spread_deg=0.5,
+        transverse_magnitude_cv=0.005,
+        usable_bins=1,
+    )
+
+    decision = _material_improvement_decision(
+        baseline_metrics=baseline,
+        candidate_metrics=candidate,
+        dominant_metric="transverse_phase_spread_deg",
+    )
+
+    assert decision["usable_bins_passed"] is False
+    assert decision["passed"] is False
+
+
+def test_material_improvement_rule_marks_new_blocker_regression_as_tradeoff():
+    baseline = _synthetic_reference_metrics(vacuum_relative_magnitude_error=0.03)
+    candidate = _synthetic_reference_metrics(
+        transverse_phase_spread_deg=0.5,
+        transverse_magnitude_cv=0.005,
+        vacuum_relative_magnitude_error=0.05,
+    )
+
+    decision = _material_improvement_decision(
+        baseline_metrics=baseline,
+        candidate_metrics=candidate,
+        dominant_metric="transverse_phase_spread_deg",
+    )
+
+    assert decision["new_blocker_regressions"]
+    assert decision["classification_decision"] == "tradeoff_inconclusive"
+    assert decision["passed"] is False
+
+
+def test_source_eta0_consistency_uses_existing_vacuum_magnitude_tolerance():
+    electric = np.asarray([0.0, 2.0, 4.0], dtype=np.float64)
+    eta0 = 400.0
+    magnetic_ok = electric / eta0 * 1.01
+    magnetic_bad = electric / eta0 * 1.03
+
+    assert _source_eta0_consistency_metadata(
+        electric,
+        magnetic_ok,
+        eta0=eta0,
+    ) == {
+        "metric": "source_eta0_relative_error",
+        "relative_error": pytest.approx(0.01),
+        "threshold": _VACUUM_MAGNITUDE_ERROR_MAX,
+        "passed": True,
+        "formula": "max(abs(abs(H)-abs(E/eta0))/max(abs(E/eta0), floor))",
+    }
+    assert (
+        _source_eta0_consistency_metadata(electric, magnetic_bad, eta0=eta0)["passed"]
+        is False
+    )
+
+
+def test_causal_ladder_candidate_records_have_minimal_schema():
+    baseline = _synthetic_reference_metrics()
+    record = _causal_ladder_candidate_record(
+        candidate_id="rung3_plane_shift_plus_2_cells",
+        rung="rung3_plane_placement_phase_center",
+        parameters={"plane_shift_cells": 2},
+        cheap_rationale="synthetic candidate",
+        baseline_packet_id="synthetic-baseline",
+        before_metrics=baseline,
+        after_metrics=baseline,
+        classification_decision=_material_improvement_decision(
+            baseline_metrics=baseline,
+            candidate_metrics=baseline,
+            dominant_metric="transverse_phase_spread_deg",
+        ),
+    )
+
+    for key in (
+        "candidate_id",
+        "rung",
+        "parameters",
+        "cheap_rationale",
+        "baseline_packet_id",
+        "thresholds_checksum",
+        "command_requirement",
+        "before_metrics",
+        "after_metrics",
+        "classification_decision",
+    ):
+        assert key in record
+
+
+def test_threshold_checksum_change_blocks_reference_quality_ready():
+    baseline = _synthetic_reference_metrics()
+    candidate = _synthetic_reference_metrics(
+        transverse_phase_spread_deg=0.5,
+        transverse_magnitude_cv=0.005,
+    )
+    changed_thresholds = _reference_quality_thresholds()
+    changed_thresholds["transverse_uniformity"] = {
+        **changed_thresholds["transverse_uniformity"],
+        "phase_spread_deg_max": 5.0,
+    }
+
+    decision = _material_improvement_decision(
+        baseline_metrics=baseline,
+        candidate_metrics=candidate,
+        dominant_metric="transverse_phase_spread_deg",
+        thresholds_checksum=_reference_quality_thresholds_checksum(changed_thresholds),
+    )
+
+    assert decision["thresholds_checksum_matches"] is False
+    assert decision["classification_decision"] == "threshold_mismatch_inconclusive"
+    assert decision["passed"] is False
+
+
+def test_hook_contingency_gate_defaults_ineligible_until_rungs_one_to_five_negative():
+    default = _default_hook_contingency_justification(
+        per_rung_status={
+            "rung1": "negative",
+            "rung2": "negative",
+            "rung3": "negative",
+            "rung4": "negative",
+            "rung5": "positive",
+        }
+    )
+    eligible = _default_hook_contingency_justification(
+        per_rung_status={f"rung{i}": "negative" for i in range(1, 6)}
+    )
+
+    assert default["eligible"] is False
+    assert eligible["eligible"] is True
+
+
+def test_hook_contingency_justification_records_required_fields_when_eligible():
+    hook = _default_hook_contingency_justification(
+        direct_invariant_test={
+            "name": "synthetic_index_semantics",
+            "passed": False,
+            "expected": "H samples index-1",
+            "actual": "H samples index",
+        }
+    )
+
+    assert hook["eligible"] is True
+    for key in (
+        "per_rung_status",
+        "direct_invariant_test",
+        "expected",
+        "actual",
+        "fixed_candidate",
+        "hypothesis",
+        "why_hook_scope_is_allowed",
+        "rollback_policy",
+    ):
+        assert key in hook
+
+
+def test_same_run_repair_policy_allows_only_fixture_level_causal_classes():
+    for causal_class in _ALLOWED_SAME_RUN_REPAIR_CAUSAL_CLASSES:
+        assert _same_run_repair_allowed(causal_class) is True
+    for causal_class in _DISALLOWED_SAME_RUN_REPAIR_CAUSAL_CLASSES:
+        assert _same_run_repair_allowed(causal_class) is False
+
+
+def test_disallowed_same_run_repair_classes_preserve_row2_no_claim_status():
+    for causal_class in _DISALLOWED_SAME_RUN_REPAIR_CAUSAL_CLASSES:
+        no_claim = _row2_no_claim_for_causal_class(causal_class)
+        assert no_claim["reference_quality_ready"] is False
+        assert no_claim["fixture_quality_ready"] is False
+        assert no_claim["slab_rt_scored"] is False
+        assert no_claim["public_claim_allowed"] is False
+        assert no_claim["follow_up_recommendation"]
+
+
+def test_interface_energy_transfer_residual_uses_front_back_ratio_formula():
+    residual = _front_back_ratio_residual(
+        uniform_signed_flux=(
+            np.asarray([2.0, 4.0], dtype=np.float64),
+            np.asarray([1.0, 2.0], dtype=np.float64),
+        ),
+        subgrid_signed_flux=(
+            np.asarray([2.0, 4.0], dtype=np.float64),
+            np.asarray([1.5, 3.0], dtype=np.float64),
+        ),
+        mask=np.asarray([True, True]),
+        fixture=_FluxFixtureConfig(
+            name="synthetic_ratio",
+            fixture_key="synthetic_ratio",
+            scored_freqs_tuple=(1.0, 2.0),
+        ),
+    )
+
+    assert residual["front_back_ratio_formula"] == _FRONT_BACK_RATIO_FORMULA
+    assert residual["ratio_error_formula"] == _FRONT_BACK_RATIO_ERROR_FORMULA
+    assert residual["uniform_front_back_ratio"] == [0.5, 0.5]
+    assert residual["subgrid_front_back_ratio"] == [0.75, 0.75]
+    assert residual["ratio_error_by_freq"] == pytest.approx([0.5, 0.5])
+    assert residual["max_ratio_error"] == pytest.approx(0.5)
+    assert residual["front_back_ratio_sign_consistent"] is True
+
+
+def test_interface_energy_transfer_summary_requires_stable_predeclared_residuals():
+    candidates = [
+        {
+            "candidate_id": "baseline_boundary_expanded",
+            "status": "scored",
+            "energy_transfer": {
+                "valid": True,
+                "max_ratio_error": 0.10,
+                "front_back_ratio_sign_consistent": True,
+            },
+        },
+        {
+            "candidate_id": "nearer_current_bounded_control",
+            "status": "scored",
+            "energy_transfer": {
+                "valid": True,
+                "max_ratio_error": 0.12,
+                "front_back_ratio_sign_consistent": True,
+            },
+        },
+    ]
+
+    summary = _interface_energy_transfer_summary(candidates)
+
+    assert summary["interface_residual_stable"] is True
+    assert summary["stable_residual_evidence"] == (
+        "stable_across_predeclared_candidates"
+    )
+    assert summary["uniform_reference_self_error"] == 0.0
+    assert summary["uniform_reference_below_threshold"] is True
+
+
+def test_private_tau_fixture_uses_existing_refinement_plumbing_only():
+    candidate = _fixture_with_tau(_BoundaryExpandedFluxFixture, 0.75)
+
+    assert _BoundaryExpandedFluxFixture.tau == 0.5
+    assert _BoundaryExpandedFluxFixture.refinement["tau"] == 0.5
+    assert candidate.tau == 0.75
+    assert candidate.refinement["tau"] == 0.75
+    assert candidate.name.endswith("tau_0p75")
+    assert candidate.fixture_key.endswith("tau_0p75")
+
+
+def test_private_repair_outcome_keeps_public_claim_handoff_closed():
+    no_material = _private_repair_outcome_from_candidates(
+        [
+            {
+                "status": "scored",
+                "candidate_id": "tau_sensitivity_0p5",
+                "candidate_max_ratio_error": 0.90,
+                "material_improvement_passed": False,
+                "strong_private_repair_passed": False,
+            }
+        ]
+    )
+    accepted = _private_repair_outcome_from_candidates(
+        [
+            {
+                "status": "scored",
+                "candidate_id": "tau_sensitivity_0p75",
+                "candidate_max_ratio_error": 0.30,
+                "material_improvement_passed": True,
+                "strong_private_repair_passed": False,
+            }
+        ]
+    )
+    repaired = _private_repair_outcome_from_candidates(
+        [
+            {
+                "status": "scored",
+                "candidate_id": "tau_sensitivity_1p0",
+                "candidate_max_ratio_error": 0.01,
+                "material_improvement_passed": True,
+                "strong_private_repair_passed": True,
+            }
+        ]
+    )
+
+    assert no_material["private_energy_transfer_repair_status"] == (
+        "no_material_repair"
+    )
+    assert no_material["accepted_private_repair"] is False
+    assert no_material["next_prerequisite"] == (
+        _PRIVATE_REPAIR_NO_MATERIAL_NEXT_PREREQUISITE
+    )
+    assert accepted["private_energy_transfer_repair_status"] == (
+        "accepted_private_candidate"
+    )
+    assert accepted["accepted_private_repair"] is True
+    assert accepted["next_prerequisite"] == (_PRIVATE_REPAIR_ACCEPTED_NEXT_PREREQUISITE)
+    assert repaired["private_energy_transfer_repair_status"] == (
+        "repaired_private_floor"
+    )
+    assert repaired["accepted_private_repair"] is True
+    assert repaired["next_prerequisite"] == (_PRIVATE_REPAIR_REPAIRED_NEXT_PREREQUISITE)
+
+
+def test_interface_floor_direct_invariant_tests_keep_hook_closed_by_default():
+    invariants = _private_direct_invariant_tests()
+
+    assert invariants
+    assert all(test["passed"] for test in invariants)
+    hook = _default_hook_contingency_justification(
+        per_rung_status={
+            "rung1": "negative",
+            "rung2": "negative",
+            "rung3": "negative",
+            "rung4": "negative",
+            "rung5": "positive",
+        },
+        direct_invariant_test=None,
+    )
+    assert hook["eligible"] is False
+
+
 @pytest.mark.gpu
 @pytest.mark.slow
 def test_private_plane_flux_matches_uniform_reference_in_homogeneous_cpml_fixture():
@@ -2084,9 +4394,9 @@ def test_private_plane_true_rt_benchmark_vs_uniform_fine():
     _print_metadata("SBP-SAT private TFSF-style fixture metadata", metadata)
     _fail_or_xfail_inconclusive(
         metadata,
-        "Private TFSF-style incident fixture is missing a same-contract "
-        "reference, so slab true R/T scoring and public promotion remain "
-        "deferred.",
+        "Private TFSF-style incident fixture has a same-contract reference, "
+        "but vacuum/reference gates are still inconclusive, so slab true R/T "
+        "scoring and public promotion remain deferred.",
     )
 
 
@@ -2097,8 +4407,9 @@ def test_private_plane_true_rt_plane_shift_stability():
     _print_metadata("SBP-SAT private TFSF-style no-shift metadata", metadata)
     _fail_or_xfail_inconclusive(
         metadata,
-        "Private TFSF-style incident fixture has no same-contract reference; "
-        "do not run plane-shift slab R/T scoring or promote true R/T.",
+        "Private TFSF-style incident fixture has a same-contract reference, "
+        "but fixture-quality gates remain inconclusive; do not run plane-shift "
+        "slab R/T scoring or promote true R/T.",
     )
 
 
@@ -2110,21 +4421,117 @@ def test_private_plane_true_rt_no_go_metadata_is_explicit():
     assert metadata["classification"] == "inconclusive"
     assert metadata["public_claim_allowed"] is False
     assert metadata["source_contract"] == "private_tfsf_style_incident"
-    assert metadata["normalization"] == (
-        "incident_quality_only_same_contract_reference_required"
-    )
-    assert metadata["reference_missing"] is True
-    assert metadata["reference_contract"] == "missing_same_contract_private_reference"
+    assert metadata["normalization"] == "same_contract_private_reference_vacuum_gated"
+    assert metadata["reference_missing"] is False
+    assert metadata["reference_quality_ready"] is False
+    assert metadata["reference_contract"] == "private_tfsf_style_uniform_reference"
     assert metadata["slab_rt_scored"] is False
     assert metadata["fixture_quality_ready"] is False
     assert metadata["fixture_name"] == _BoundaryExpandedFluxFixture.name
     assert metadata["fixture"] == (
         "boundary_expanded_private_tfsf_style_incident_flux_plane_vacuum"
     )
-    assert metadata["fixture_quality_gates"]["same_contract_reference"] is False
+    assert metadata["fixture_quality_gates"]["same_contract_reference"] is True
+    assert metadata["fixture_quality_gates"]["vacuum_stability"] is False
     assert not all(metadata["fixture_quality_gates"].values())
+    assert (
+        metadata["dominant_reference_quality_blocker"] == "transverse_phase_spread_deg"
+    )
+    blockers = metadata["reference_quality_blockers"]
+    assert blockers[0]["name"] == metadata["dominant_reference_quality_blocker"]
+    assert blockers[0]["passed"] is False
+    assert blockers[0]["severity_vs_threshold"] > 1.0
+    assert metadata["reference_quality_thresholds"]["transverse_uniformity"] == {
+        "magnitude_cv_max": _TRANSVERSE_MAGNITUDE_CV_MAX,
+        "phase_spread_deg_max": _TRANSVERSE_PHASE_SPREAD_DEG_MAX,
+    }
+    assert "predeclared" in metadata["predeclared_candidate_policy"]
+    assert metadata["causal_ladder_status"] in {
+        "row2_causal_classified",
+        "row2_unresolved_after_ladder",
+    }
+    assert metadata["causal_class"] in _causal_truth_table()
+    assert metadata["material_improvement_rule"]["thresholds_checksum"] == (
+        _reference_quality_thresholds_checksum()
+    )
+    assert metadata["hook_contingency_justification"]["eligible"] is False
+    assert metadata["interface_floor_investigation_status"] == "complete"
+    assert metadata["interface_floor_subclass"] in _INTERFACE_FLOOR_SUBCLASSES
+    assert metadata["interface_floor_subclass"] == (
+        "coarse_fine_energy_transfer_mismatch"
+    )
+    assert metadata["interface_distance_sensitivity"] == "persistent"
+    assert len(metadata["interface_distance_candidates"]) >= 2
+    assert {
+        candidate["candidate_id"]
+        for candidate in metadata["interface_distance_candidates"]
+    } >= {"baseline_boundary_expanded", "nearer_current_bounded_control"}
+    energy = metadata["interface_energy_transfer_diagnostics"]
+    assert energy["front_back_ratio_formula"] == _FRONT_BACK_RATIO_FORMULA
+    assert energy["interface_residual_stable"] is True
+    assert energy["uniform_reference_below_threshold"] is True
+    assert metadata["cpml_proximity_controls"]
+    assert metadata["direct_invariant_tests"]
+    assert all(test["passed"] for test in metadata["direct_invariant_tests"])
+    repair = metadata["private_energy_transfer_repair"]
+    assert metadata["private_energy_transfer_repair_status"] in _PRIVATE_REPAIR_STATUSES
+    assert repair["status"] == metadata["private_energy_transfer_repair_status"]
+    assert repair["public_claim_allowed"] is False
+    assert repair["promotion_candidate_ready"] is False
+    assert repair["public_default_tau_changed"] is False
+    assert repair["public_api_behavior_changed"] is False
+    assert repair["kernel_edit_applied"] is False
+    assert repair["baseline_artifact_required"] is True
+    assert repair["pre_post_evidence_required"] is True
+    assert (
+        repair["evidence_artifact_template"]
+        == _PRIVATE_REPAIR_EVIDENCE_ARTIFACT_TEMPLATE
+    )
+    assert repair["candidate_policy"].startswith("tau sensitivity")
+    assert repair["tau_candidates"] == list(_PRIVATE_REPAIR_TAU_CANDIDATES)
+    assert len(repair["candidates"]) == len(_PRIVATE_REPAIR_TAU_CANDIDATES)
+    assert repair["selected_repair_candidate_id"] in {
+        candidate["candidate_id"] for candidate in repair["candidates"]
+    }
+    assert (
+        repair["next_prerequisite"]
+        == (metadata["private_energy_transfer_repair_next_prerequisite"])
+    )
+    assert (
+        metadata["follow_up_recommendation"]
+        == metadata["private_energy_transfer_repair_next_prerequisite"]
+    )
+    assert metadata["causal_ladder_rungs"]["rung0_baseline_freeze"]["status"] == (
+        "complete"
+    )
+    assert metadata["causal_ladder_candidates"]
+    for candidate in metadata["causal_ladder_candidates"]:
+        for key in (
+            "candidate_id",
+            "rung",
+            "parameters",
+            "cheap_rationale",
+            "baseline_packet_id",
+            "thresholds_checksum",
+            "command_requirement",
+            "before_metrics",
+            "after_metrics",
+            "classification_decision",
+        ):
+            assert key in candidate
     assert not any(metadata["gates"].values())
     assert metadata["no_go_reason"] == _TFSF_NO_GO_REASON
-    assert metadata["next_prerequisite"] == _TFSF_NEXT_PREREQUISITE
-    assert "post-H/post-E" in metadata["blocking_diagnostic"]
+    assert (
+        metadata["next_prerequisite"]
+        == (metadata["private_energy_transfer_repair_next_prerequisite"])
+    )
+    assert (
+        "same-contract private reference helper is present"
+        in metadata["blocking_diagnostic"]
+    )
+    assert "coarse_fine_energy_transfer_mismatch" in metadata["blocking_diagnostic"]
+    assert (
+        metadata["private_energy_transfer_repair_status"]
+        in metadata["blocking_diagnostic"]
+    )
     assert "not public TFSF" in metadata["diagnostic_basis"]

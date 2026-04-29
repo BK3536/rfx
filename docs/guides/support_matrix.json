@@ -130,9 +130,9 @@
             "claim_level": "internal_benchmark_only_not_public_rt_or_sparameters",
             "public_claim_allowed": false,
             "source_contract": "private_tfsf_style_incident",
-            "normalization": "incident_quality_only_same_contract_reference_required",
-            "reference_missing": true,
-            "reference_contract": "missing_same_contract_private_reference",
+            "normalization": "same_contract_private_reference_vacuum_gated",
+            "reference_missing": false,
+            "reference_contract": "private_tfsf_style_uniform_reference",
             "slab_rt_scored": false,
             "fixture_quality_ready": false,
             "transverse_uniformity_threshold": {
@@ -148,19 +148,673 @@
               "usable_passband": true,
               "transverse_uniformity": false,
               "analytic_incident_consistency": true,
-              "same_contract_reference": false
+              "same_contract_reference": true,
+              "vacuum_stability": false
             },
-            "reason": "private post-H/post-E TFSF-style incident hooks and private fine-owned flux/DFT accumulators are implemented, while public DFT/flux/TFSF hard-fails remain locked; the gate is inconclusive because no same-contract private reference or normalization repair exists and slab R/T scoring is intentionally skipped",
-            "no_go_reason": "private TFSF-style incident fixture lacks a same-contract reference; slab R/T scoring is intentionally skipped",
-            "blocking_diagnostic": "private post-H/post-E TFSF-style incident hooks are available, but there is no same-contract private reference or normalization repair; slab R/T scoring and public promotion stay closed",
-            "next_prerequisite": "build a same-contract private reference/normalization repair before reopening slab R/T scoring or any public true R/T, DFT, flux, TFSF, port, or S-parameter promotion",
-            "diagnostic_basis": "private +z ex/hy incident fields are injected through low-level post-H and post-E SBP-SAT hooks and accumulated only through private fine-owned flux/DFT planes; this remains not public TFSF and does not expose public flux, DFT, S-parameter, port, or true R/T observables",
+            "dominant_reference_quality_blocker": "transverse_phase_spread_deg",
+            "reference_quality_blockers": [
+              "transverse_phase_spread_deg",
+              "transverse_magnitude_cv",
+              "vacuum_relative_magnitude_error",
+              "vacuum_phase_error_deg"
+            ],
+            "predeclared_candidate_policy": "baseline full-aperture fixture remains reported; any future central-core or source-contract candidate must be predeclared in metadata before slow scoring and must keep the same thresholds",
+            "reason": "same-contract private TFSF-style uniform reference is implemented, but private uniform/subgrid vacuum parity and transverse-uniformity gates remain inconclusive; the private tau-sensitivity energy-transfer repair sweep found no material repair, so slab R/T scoring is intentionally skipped and public DFT/flux/TFSF/true-R/T promotion remains closed. The private SAT face-coupling theory/redesign stage now records paired_face_coupling_design_ready: a test-local same-step paired E/H candidate closes the manufactured face ledger with normalized residual 0.000577728, preserves matched-trace/zero-work gates, keeps coupling strength near the current kernel, and requires paired E/H face context. Production sbp_sat_3d.py, runner, hook, API, SimResult, Result, default tau, and public observable surfaces remain closed. That planned implementation lane has now been attempted by the private paired-face helper gate. The private paired-face helper implementation gate now records production_context_mismatch_detected: both CPML and non-CPML step paths apply H SAT before E update and E SAT after E update, so the selected same-step paired E/H candidate lacks a single co-temporal pre/post current-SAT ledger state without time-centered staging. Production sbp_sat_3d.py, runner, hook, API, SimResult, Result, default tau, and public observable surfaces remain closed. The next safe lane is private time-centered SAT staging redesign ralplan.",
+            "no_go_reason": "private TFSF-style incident fixture has a same-contract reference, but vacuum/reference fixture-quality gates remain inconclusive; slab R/T scoring is intentionally skipped. The private SAT face-coupling theory/redesign stage now records paired_face_coupling_design_ready: a test-local same-step paired E/H candidate closes the manufactured face ledger with normalized residual 0.000577728, preserves matched-trace/zero-work gates, keeps coupling strength near the current kernel, and requires paired E/H face context. Production sbp_sat_3d.py, runner, hook, API, SimResult, Result, default tau, and public observable surfaces remain closed. That planned implementation lane has now been attempted by the private paired-face helper gate. The private paired-face helper implementation gate now records production_context_mismatch_detected: both CPML and non-CPML step paths apply H SAT before E update and E SAT after E update, so the selected same-step paired E/H candidate lacks a single co-temporal pre/post current-SAT ledger state without time-centered staging. Production sbp_sat_3d.py, runner, hook, API, SimResult, Result, default tau, and public observable surfaces remain closed. The next safe lane is private time-centered SAT staging redesign ralplan.",
+            "blocking_diagnostic": "same-contract private reference helper is present, but private uniform/subgrid vacuum parity, transverse uniformity, or usable-passband gates remain below threshold; the causal ladder classifies the row-2 blocker as sbp_sat_interface_floor, and the private interface-floor investigation subclasses the floor as coarse_fine_energy_transfer_mismatch because the front/back signed-flux residual persists across predeclared boundary-expanded and nearer bounded interface candidates. The private energy-transfer repair stage records no_material_repair: tau=1.0 was the best predeclared candidate but improved max ratio error by only 18.17% and introduced a vacuum_phase_error_deg paired regression. The private energy-transfer theory/design review selected discrete_eh_work_ledger_mismatch. The private manufactured-interface energy-ledger diagnostic now records ledger_mismatch_detected: matched/zero-work probes stay private and CI-green, but the nonzero E/H face-work probe has normalized_balance_residual=0.16561960778570511 above the unchanged 0.02 threshold. The next prerequisite is a bounded private sbp_sat_3d.py kernel-repair ralplan targeted at the manufactured face energy-ledger mismatch; hook experiments, slab R/T scoring, and public promotion stay closed. The bounded private face-kernel feasibility stage now records no_signature_compatible_bounded_repair: bounded current/minimum/reciprocal face-jump candidates all fail the manufactured ledger threshold, while a ledger-passing low-scale control is rejected as under-coupling. Production sbp_sat_3d.py, hook, API, SimResult, and public observable surfaces remain closed. The private SAT face-coupling theory/redesign stage now records paired_face_coupling_design_ready: a test-local same-step paired E/H candidate closes the manufactured face ledger with normalized residual 0.000577728, preserves matched-trace/zero-work gates, keeps coupling strength near the current kernel, and requires paired E/H face context. Production sbp_sat_3d.py, runner, hook, API, SimResult, Result, default tau, and public observable surfaces remain closed. That planned implementation lane has now been attempted by the private paired-face helper gate. The private paired-face helper implementation gate now records production_context_mismatch_detected: both CPML and non-CPML step paths apply H SAT before E update and E SAT after E update, so the selected same-step paired E/H candidate lacks a single co-temporal pre/post current-SAT ledger state without time-centered staging. Production sbp_sat_3d.py, runner, hook, API, SimResult, Result, default tau, and public observable surfaces remain closed. The next safe lane is private time-centered SAT staging redesign ralplan.",
+            "next_prerequisite": "private time-centered SAT staging redesign ralplan",
+            "diagnostic_basis": "private +z ex/hy incident fields are injected through private post-H/post-E slots and accumulated only through private fine-owned flux/DFT planes; the same-contract uniform reference helper is benchmark-only, remains not public TFSF, and does not expose public flux, DFT, S-parameter, port, or true R/T observables",
             "previous_gate_context": {
               "source_contract": "private_analytic_sheet_source",
               "fixture": "boundary_expanded_private_analytic_sheet_flux_plane_vacuum_slab",
               "status": "inconclusive",
               "policy": "the prior boundary-expanded analytic-sheet sweep remains retained as history, not as current slab R/T evidence"
-            }
+            },
+            "reference_quality_ready": false,
+            "vacuum_stability_threshold": {
+              "relative_magnitude_error_max": 0.02,
+              "phase_error_deg_max": 2.0
+            },
+            "causal_ladder_status": "row2_causal_classified",
+            "causal_class": "sbp_sat_interface_floor",
+            "material_improvement_rule": {
+              "dominant_improvement_min": 0.5,
+              "paired_improvement_min": 0.25,
+              "new_blocker_regression_max": 0.25,
+              "source_eta0_relative_error_threshold": 0.02,
+              "thresholds_checksum": "d288ae050423c6c2078c3b696da1cbcc05e5095a0ce727b4665b9ecfdb881f9a"
+            },
+            "causal_ladder_rungs": {
+              "rung0_baseline_freeze": "complete",
+              "rung1_measurement_dft_scoring_self_oracle": "guarded_by_private_replay_and_no_public_leak_tests",
+              "rung2_source_waveform_stagger": "cheap_eta0_consistency_passed",
+              "rung3_plane_placement_phase_center": "no_material_improvement",
+              "rung4_aperture_source_edge": "dominant_improved_but_paired_metric_rule_failed",
+              "rung5_interface_floor": "implicated",
+              "rung6_hook_contingency": "closed_by_default"
+            },
+            "causal_ladder_candidates": [
+              {
+                "candidate_id": "rung0_baseline_full_aperture",
+                "rung": "rung0_baseline_freeze",
+                "classification_decision": "baseline_no_causal_claim",
+                "predeclared": true
+              },
+              {
+                "candidate_id": "rung3_plane_shift_plus_2_cells",
+                "rung": "rung3_plane_placement_phase_center",
+                "classification_decision": "inconclusive",
+                "predeclared": true
+              },
+              {
+                "candidate_id": "rung4_central_core_aperture",
+                "rung": "rung4_aperture_source_edge",
+                "classification_decision": "inconclusive",
+                "predeclared": true,
+                "diagnostic": "dominant transverse phase spread improved but paired-metric rule did not pass"
+              }
+            ],
+            "hook_contingency_justification": {
+              "eligible": false,
+              "negative_evidence_required": [
+                "rung1",
+                "rung2",
+                "rung3",
+                "rung4",
+                "rung5"
+              ],
+              "per_rung_status": {
+                "rung1": "negative",
+                "rung2": "negative",
+                "rung3": "negative",
+                "rung4": "negative",
+                "rung5": "positive"
+              },
+              "direct_invariant_test": null,
+              "fixed_candidate": "baseline_full_aperture",
+              "hypothesis": null,
+              "why_hook_scope_is_allowed": null,
+              "rollback_policy": "remove diagnostic if not materially improving"
+            },
+            "same_run_repair_allowed": false,
+            "follow_up_recommendation": "private time-centered SAT staging redesign ralplan",
+            "interface_floor_investigation_status": "complete",
+            "interface_floor_subclass": "coarse_fine_energy_transfer_mismatch",
+            "interface_distance_sensitivity": "persistent",
+            "interface_distance_candidates": [
+              {
+                "candidate_id": "baseline_boundary_expanded",
+                "role": "current_baseline",
+                "status": "scored",
+                "predeclared": true,
+                "fixture_name": "boundary_expanded"
+              },
+              {
+                "candidate_id": "nearer_current_bounded_control",
+                "role": "nearer_interface_control",
+                "status": "scored",
+                "predeclared": true,
+                "fixture_name": "current_bounded"
+              },
+              {
+                "candidate_id": "larger_fine_guard_same_source_planes",
+                "role": "larger_guard_control",
+                "status": "skipped",
+                "predeclared": true,
+                "reason": "deferred to the follow-up repair plan to avoid broadening this diagnostic pass"
+              }
+            ],
+            "interface_energy_transfer_diagnostics": {
+              "front_back_ratio_formula": "signed_back / max(abs(signed_front), floor)",
+              "ratio_error_formula": "abs(subgrid_ratio - uniform_ratio) / max(abs(uniform_ratio), floor)",
+              "threshold": 0.02,
+              "candidate_count": 2,
+              "interface_residual_stable": true,
+              "stable_residual_evidence": "stable_across_predeclared_candidates",
+              "uniform_reference_self_error": 0.0,
+              "uniform_reference_below_threshold": true
+            },
+            "cpml_proximity_controls": [
+              {
+                "candidate_id": "larger_domain_or_absorber_guard_control",
+                "status": "not_entered",
+                "predeclared": true,
+                "reason": "private front/back energy-transfer residual was already stable across scored interface candidates"
+              },
+              {
+                "candidate_id": "mixed_periodic_cpml_shortcut",
+                "status": "blocked_by_support_contract",
+                "predeclared": true,
+                "reason": "mixed periodic+CPML remains unsupported in the SBP-SAT lane"
+              }
+            ],
+            "direct_invariant_tests": [
+              {
+                "name": "private_tfsf_positive_z_poynting",
+                "passed": true
+              },
+              {
+                "name": "private_reference_pre_cpml_slot_order",
+                "passed": true
+              },
+              {
+                "name": "private_plane_normal_indices_strict_interior",
+                "passed": true
+              },
+              {
+                "name": "private_accumulators_do_not_populate_public_outputs",
+                "passed": true
+              }
+            ],
+            "private_energy_transfer_repair_status": "no_material_repair",
+            "private_energy_transfer_repair": {
+              "status": "no_material_repair",
+              "candidate_policy": "tau sensitivity uses existing private fixture plumbing only; public tau default/API behavior remains unchanged",
+              "tau_candidates": [
+                0.25,
+                0.5,
+                0.75,
+                1.0
+              ],
+              "baseline_max_ratio_error": 0.8812518057243568,
+              "selected_repair_candidate_id": "tau_sensitivity_1p0",
+              "repair_candidate_id": "tau_sensitivity_1p0",
+              "repair_hypothesis": "tau_sensitivity_private_fixture_only",
+              "candidate_max_ratio_error": 0.7211224415510737,
+              "relative_improvement": 0.18170670758701318,
+              "paired_metric_regressions": [
+                {
+                  "metric": "vacuum_phase_error_deg",
+                  "baseline": 19.55135407661004,
+                  "candidate": 27.12313340399038,
+                  "relative_regression": 0.3872764667711032,
+                  "threshold": 2.0
+                }
+              ],
+              "accepted_private_repair": false,
+              "candidates": [
+                {
+                  "candidate_id": "tau_sensitivity_0p25",
+                  "candidate_tau": 0.25,
+                  "candidate_max_ratio_error": 0.9075517460620383,
+                  "relative_improvement": -0.029843842777790248,
+                  "material_improvement_passed": false,
+                  "strong_private_repair_passed": false,
+                  "paired_metric_regressions": []
+                },
+                {
+                  "candidate_id": "tau_sensitivity_0p5",
+                  "candidate_tau": 0.5,
+                  "candidate_max_ratio_error": 0.8812518057243568,
+                  "relative_improvement": 0.0,
+                  "material_improvement_passed": false,
+                  "strong_private_repair_passed": false,
+                  "paired_metric_regressions": []
+                },
+                {
+                  "candidate_id": "tau_sensitivity_0p75",
+                  "candidate_tau": 0.75,
+                  "candidate_max_ratio_error": 0.8454728062035753,
+                  "relative_improvement": 0.040600199952353484,
+                  "material_improvement_passed": false,
+                  "strong_private_repair_passed": false,
+                  "paired_metric_regressions": []
+                },
+                {
+                  "candidate_id": "tau_sensitivity_1p0",
+                  "candidate_tau": 1.0,
+                  "candidate_max_ratio_error": 0.7211224415510737,
+                  "relative_improvement": 0.18170670758701318,
+                  "material_improvement_passed": false,
+                  "strong_private_repair_passed": false,
+                  "paired_metric_regressions": [
+                    {
+                      "metric": "vacuum_phase_error_deg",
+                      "baseline": 19.55135407661004,
+                      "candidate": 27.12313340399038,
+                      "relative_regression": 0.3872764667711032,
+                      "threshold": 2.0
+                    }
+                  ]
+                }
+              ],
+              "public_claim_allowed": false,
+              "promotion_candidate_ready": false,
+              "public_default_tau_changed": false,
+              "public_api_behavior_changed": false,
+              "kernel_edit_applied": false,
+              "low_level_repair_status": "not_entered_no_tau_candidate_met_material_gate",
+              "evidence_artifact_template": ".omx/reports/sbp-sat-private-interface-energy-transfer-repair-{timestamp}.md",
+              "baseline_artifact_required": true,
+              "pre_post_evidence_required": true,
+              "next_prerequisite": "open a private SBP-SAT energy-transfer theory/design review before low-level hook experiments or any public true R/T, DFT, flux, TFSF, port, or S-parameter promotion",
+              "outcome_reason": "no predeclared private candidate passed material-improvement gate"
+            },
+            "private_energy_transfer_repair_next_prerequisite": "open a private SBP-SAT energy-transfer theory/design review before low-level hook experiments or any public true R/T, DFT, flux, TFSF, port, or S-parameter promotion",
+            "private_energy_transfer_theory_review_status": "complete",
+            "private_energy_transfer_theory_review": {
+              "status": "complete",
+              "report": ".omx/reports/sbp-sat-private-energy-transfer-theory-design-review-20260428T074751Z.md",
+              "selected_next_plan_direction": "kernel_repair_candidate",
+              "selected_hypothesis": "discrete_eh_work_ledger_mismatch",
+              "candidate_hypotheses": [
+                {
+                  "hypothesis": "discrete_eh_work_ledger_mismatch",
+                  "classification": "kernel_repair_candidate",
+                  "rank": 1,
+                  "verdict": "selected_next_plan_direction",
+                  "future_diagnostic_gate": "manufactured one-face E/H trace ledger comparing SAT-induced Delta_EH_pair against discrete interface Poynting/work residual"
+                },
+                {
+                  "hypothesis": "face_edge_corner_work_accounting_mismatch",
+                  "classification": "kernel_repair_candidate",
+                  "rank": 2,
+                  "verdict": "secondary_diagnostic_in_future_ledger_plan",
+                  "future_diagnostic_gate": "manufactured interior-box ledger with matched constant traces and isolated edge/corner perturbations"
+                },
+                {
+                  "hypothesis": "fixture_observable_normalization_mismatch",
+                  "classification": "fixture_observable_candidate",
+                  "rank": 3,
+                  "verdict": "deferred_until_low_level_ledgers_pass",
+                  "future_diagnostic_gate": "compare local interface ledger against private front/back signed-flux residual"
+                },
+                {
+                  "hypothesis": "norm_coefficient_time_centering_mismatch",
+                  "classification": "kernel_repair_candidate",
+                  "rank": 4,
+                  "verdict": "subcase_of_selected_hypothesis",
+                  "future_diagnostic_gate": "tau/ratio sweep inside manufactured ledger diagnostic without changing public default"
+                },
+                {
+                  "hypothesis": "private_hook_or_stagger_mismatch",
+                  "classification": "hook_candidate",
+                  "rank": 5,
+                  "verdict": "rejected_for_next_plan_direct_hook_invariants_pass",
+                  "future_diagnostic_gate": "separate hook ralplan only if a direct hook invariant fails"
+                }
+              ],
+              "executable_diagnostics_added": false,
+              "solver_behavior_changed": false,
+              "sbp_sat_3d_diff_allowed": false,
+              "hook_experiment_allowed": false,
+              "jit_runner_changed": false,
+              "public_claim_allowed": false,
+              "public_api_behavior_changed": false,
+              "public_default_tau_changed": false,
+              "next_prerequisite": "open a private manufactured-interface energy-ledger diagnostic ralplan before any sbp_sat_3d.py repair, hook experiment, or public promotion",
+              "evidence_basis": {
+                "prior_repair_status": "no_material_repair",
+                "selected_tau_candidate": "tau_sensitivity_1p0",
+                "baseline_max_ratio_error": 0.8812518057243568,
+                "candidate_max_ratio_error": 0.7211224415510737,
+                "relative_improvement": 0.18170670758701318,
+                "material_improvement_required": 0.5,
+                "paired_regression_metric": "vacuum_phase_error_deg",
+                "direct_hook_invariants_passed": true
+              }
+            },
+            "private_energy_transfer_theory_review_next_prerequisite": "open a private manufactured-interface energy-ledger diagnostic ralplan before any sbp_sat_3d.py repair, hook experiment, or public promotion",
+            "private_manufactured_energy_ledger_diagnostic_status": "ledger_mismatch_detected",
+            "private_manufactured_energy_ledger_diagnostic": {
+              "status": "ledger_mismatch_detected",
+              "report": ".omx/reports/sbp-sat-private-manufactured-interface-energy-ledger-diagnostic-20260429T045000Z.md",
+              "selected_hypothesis": "discrete_eh_work_ledger_mismatch",
+              "selected_next_plan_direction": "bounded_kernel_repair_candidate",
+              "diagnostic_scope": "private_manufactured_interface_only",
+              "executable_diagnostics_added": true,
+              "solver_behavior_changed": false,
+              "sbp_sat_3d_repair_applied": false,
+              "hook_experiment_allowed": false,
+              "jit_runner_changed": false,
+              "public_claim_allowed": false,
+              "public_api_behavior_changed": false,
+              "public_default_tau_changed": false,
+              "public_observable_promoted": false,
+              "face_ledger_status": "ledger_mismatch_detected",
+              "zero_work_face_status": "zero_work_dissipative_gate_passed",
+              "interior_box_ledger_status": "edge_corner_accounting_probe_recorded_inconclusive",
+              "trace_energy_before": 2.9205021630829943e-22,
+              "trace_energy_after": 2.4351194559796163e-22,
+              "net_delta_eh": -4.85382707103378e-23,
+              "interface_work_residual": 1.6902843162690786e-25,
+              "normalized_balance_residual": 0.16561960778570511,
+              "threshold": 0.02,
+              "zero_work_probe": {
+                "status": "zero_work_dissipative_gate_passed",
+                "trace_energy_before": 5.803922941128552e-23,
+                "trace_energy_after": 2.7077846209215725e-23,
+                "net_delta_eh": -3.09613832020698e-23,
+                "interface_work_residual": 0.0,
+                "normalized_energy_change": -0.5334561384794931
+              },
+              "interior_box_probe": {
+                "status": "edge_corner_accounting_probe_recorded_inconclusive",
+                "active_faces": 6,
+                "active_edges": 12,
+                "active_corners": 8,
+                "matched_edge_noop_passed": true,
+                "corner_perturbation_delta": -0.08333337306976318
+              },
+              "classification_policy": {
+                "ledger_mismatch_detected": "bounded private sbp_sat_3d.py repair ralplan may be opened after this diagnostic stage",
+                "ledger_gate_passed": "reroute to private fixture-observable bridge diagnostic",
+                "inconclusive": "revise the private diagnostic before repair or public promotion"
+              },
+              "next_prerequisite": "open a bounded private sbp_sat_3d.py kernel-repair ralplan targeted at the manufactured face energy-ledger mismatch; keep hook experiments and public promotion closed"
+            },
+            "private_manufactured_energy_ledger_diagnostic_next_prerequisite": "open a bounded private sbp_sat_3d.py kernel-repair ralplan targeted at the manufactured face energy-ledger mismatch; keep hook experiments and public promotion closed",
+            "private_bounded_kernel_repair_status": "no_signature_compatible_bounded_repair",
+            "private_bounded_kernel_repair": {
+              "private_bounded_kernel_repair_status": "no_signature_compatible_bounded_repair",
+              "status": "no_signature_compatible_bounded_repair",
+              "diagnostic_scope": "private_manufactured_interface_only",
+              "candidate_policy": "test-local bounded face-jump coefficient candidates only; production solver edits remain closed because no signature-compatible bounded candidate passed all gates",
+              "selected_repair_candidate_id": null,
+              "candidate_count": 5,
+              "candidates": [
+                {
+                  "candidate_id": "current_kernel_reference",
+                  "candidate_family": "current_kernel",
+                  "coarse_scale": 1.0,
+                  "fine_scale": 1.0,
+                  "ledger_normalized_balance_residual": 0.16561960778570511,
+                  "ledger_threshold": 0.02,
+                  "ledger_gate_passed": false,
+                  "zero_work_gate_passed": true,
+                  "matched_projected_traces_noop": true,
+                  "weighted_mismatch_before": 1.1770079728304459e-11,
+                  "weighted_mismatch_after_current": 4.630617811826953e-12,
+                  "weighted_mismatch_after_candidate": 4.630617811826953e-12,
+                  "current_relative_mismatch_reduction": 0.6065771924474451,
+                  "candidate_relative_mismatch_reduction": 0.6065771924474451,
+                  "coupling_strength_ratio": 1.0,
+                  "coupling_strength_passed": true,
+                  "current_update_norm": 1.3215136165575014e-06,
+                  "candidate_update_norm": 1.3215136165575014e-06,
+                  "candidate_update_norm_ratio": 1.0,
+                  "scalar_bounds_passed": true,
+                  "update_bounds_passed": true,
+                  "family_bounds_passed": true,
+                  "accepted_candidate": false,
+                  "rejection_subreason": "candidate_failed_ledger_gate",
+                  "rejection_reasons": [
+                    "candidate_failed_ledger_gate"
+                  ]
+                },
+                {
+                  "candidate_id": "bounded_minimum_symmetric",
+                  "candidate_family": "bounded_symmetric_scaling",
+                  "coarse_scale": 0.5,
+                  "fine_scale": 0.5,
+                  "ledger_normalized_balance_residual": 0.09289585377498313,
+                  "ledger_threshold": 0.02,
+                  "ledger_gate_passed": false,
+                  "zero_work_gate_passed": true,
+                  "matched_projected_traces_noop": true,
+                  "weighted_mismatch_before": 1.1770079728304459e-11,
+                  "weighted_mismatch_after_current": 4.630617811826953e-12,
+                  "weighted_mismatch_after_candidate": 7.78586963203867e-12,
+                  "current_relative_mismatch_reduction": 0.6065771924474451,
+                  "candidate_relative_mismatch_reduction": 0.33850323772103585,
+                  "coupling_strength_ratio": 0.5580546745505344,
+                  "coupling_strength_passed": true,
+                  "current_update_norm": 1.3215136165575014e-06,
+                  "candidate_update_norm": 6.607567057256193e-07,
+                  "candidate_update_norm_ratio": 0.4999999223972193,
+                  "scalar_bounds_passed": true,
+                  "update_bounds_passed": true,
+                  "family_bounds_passed": true,
+                  "accepted_candidate": false,
+                  "rejection_subreason": "candidate_failed_ledger_gate",
+                  "rejection_reasons": [
+                    "candidate_failed_ledger_gate"
+                  ]
+                },
+                {
+                  "candidate_id": "norm_reciprocal_coarse_emphasis",
+                  "candidate_family": "bounded_reciprocal_scaling",
+                  "coarse_scale": 2.0,
+                  "fine_scale": 0.5,
+                  "ledger_normalized_balance_residual": 0.067076748541227,
+                  "ledger_threshold": 0.02,
+                  "ledger_gate_passed": false,
+                  "zero_work_gate_passed": true,
+                  "matched_projected_traces_noop": true,
+                  "weighted_mismatch_before": 1.1770079728304459e-11,
+                  "weighted_mismatch_after_current": 4.630617811826953e-12,
+                  "weighted_mismatch_after_candidate": 4.949378862387393e-12,
+                  "current_relative_mismatch_reduction": 0.6065771924474451,
+                  "candidate_relative_mismatch_reduction": 0.5794948737275566,
+                  "coupling_strength_ratio": 0.9553522304216293,
+                  "coupling_strength_passed": true,
+                  "current_update_norm": 1.3215136165575014e-06,
+                  "candidate_update_norm": 1.2341265605713247e-06,
+                  "candidate_update_norm_ratio": 0.933873510729449,
+                  "scalar_bounds_passed": true,
+                  "update_bounds_passed": true,
+                  "family_bounds_passed": true,
+                  "accepted_candidate": false,
+                  "rejection_subreason": "candidate_failed_ledger_gate",
+                  "rejection_reasons": [
+                    "candidate_failed_ledger_gate"
+                  ]
+                },
+                {
+                  "candidate_id": "norm_reciprocal_fine_emphasis",
+                  "candidate_family": "bounded_reciprocal_scaling",
+                  "coarse_scale": 0.5,
+                  "fine_scale": 2.0,
+                  "ledger_normalized_balance_residual": 0.2746334107803718,
+                  "ledger_threshold": 0.02,
+                  "ledger_gate_passed": false,
+                  "zero_work_gate_passed": true,
+                  "matched_projected_traces_noop": true,
+                  "weighted_mismatch_before": 1.1770079728304459e-11,
+                  "weighted_mismatch_after_current": 4.630617811826953e-12,
+                  "weighted_mismatch_after_candidate": 2.2989772322138498e-12,
+                  "current_relative_mismatch_reduction": 0.6065771924474451,
+                  "candidate_relative_mismatch_reduction": 0.8046761546835308,
+                  "coupling_strength_ratio": 1.3265849173075352,
+                  "coupling_strength_passed": true,
+                  "current_update_norm": 1.3215136165575014e-06,
+                  "candidate_update_norm": 2.4288112830785897e-06,
+                  "candidate_update_norm_ratio": 1.8379010648452958,
+                  "scalar_bounds_passed": true,
+                  "update_bounds_passed": true,
+                  "family_bounds_passed": true,
+                  "accepted_candidate": false,
+                  "rejection_subreason": "candidate_failed_ledger_gate",
+                  "rejection_reasons": [
+                    "candidate_failed_ledger_gate"
+                  ]
+                },
+                {
+                  "candidate_id": "under_coupled_ledger_control",
+                  "candidate_family": "rejected_under_coupling_control",
+                  "coarse_scale": 0.1,
+                  "fine_scale": 0.1,
+                  "ledger_normalized_balance_residual": 0.019776224507838985,
+                  "ledger_threshold": 0.02,
+                  "ledger_gate_passed": true,
+                  "zero_work_gate_passed": true,
+                  "matched_projected_traces_noop": true,
+                  "weighted_mismatch_before": 1.1770079728304459e-11,
+                  "weighted_mismatch_after_current": 4.630617811826953e-12,
+                  "weighted_mismatch_after_candidate": 1.090692015792351e-11,
+                  "current_relative_mismatch_reduction": 0.6065771924474451,
+                  "candidate_relative_mismatch_reduction": 0.07333506571796958,
+                  "coupling_strength_ratio": 0.12089980736346834,
+                  "coupling_strength_passed": false,
+                  "current_update_norm": 1.3215136165575014e-06,
+                  "candidate_update_norm": 1.3215137351283158e-07,
+                  "candidate_update_norm_ratio": 0.10000000897234905,
+                  "scalar_bounds_passed": false,
+                  "update_bounds_passed": false,
+                  "family_bounds_passed": false,
+                  "accepted_candidate": false,
+                  "rejection_subreason": "candidate_under_couples",
+                  "rejection_reasons": [
+                    "candidate_under_couples",
+                    "candidate_failed_coupling_strength_gate"
+                  ]
+                }
+              ],
+              "accepted_private_repair": false,
+              "solver_behavior_changed": false,
+              "sbp_sat_3d_repair_applied": false,
+              "hook_experiment_allowed": false,
+              "jit_runner_changed": false,
+              "public_claim_allowed": false,
+              "public_api_behavior_changed": false,
+              "public_default_tau_changed": false,
+              "public_observable_promoted": false,
+              "simresult_changed": false,
+              "phase0_forbidden_diff_required": true,
+              "final_forbidden_diff_matches_phase0": true,
+              "rejection_subreason": "no_bounded_candidate_passed_ledger_gate",
+              "next_prerequisite": "open a deliberate private SAT face-coupling theory/redesign ralplan after bounded face-kernel feasibility failed; keep hook experiments and public promotion closed",
+              "report": ".omx/reports/sbp-sat-private-bounded-kernel-repair-manufactured-face-energy-ledger-mismatch-20260429T065927Z.md",
+              "plan": ".omx/plans/ralplan-sbp-sat-private-bounded-kernel-repair-manufactured-face-energy-ledger-mismatch.md",
+              "baseline_report": "see .omx/reports/sbp-sat-private-bounded-kernel-repair-manufactured-face-energy-ledger-mismatch-baseline-*.md",
+              "phase0_forbidden_diff": ".omx/reports/baselines/sbp-sat-private-bounded-kernel-repair-forbidden-phase0.diff",
+              "final_forbidden_diff": ".omx/reports/baselines/sbp-sat-private-bounded-kernel-repair-forbidden-final.diff"
+            },
+            "private_bounded_kernel_repair_next_prerequisite": "open a deliberate private SAT face-coupling theory/redesign ralplan after bounded face-kernel feasibility failed; keep hook experiments and public promotion closed",
+            "private_face_coupling_theory_status": "paired_face_coupling_design_ready",
+            "private_face_coupling_theory": {
+              "private_face_coupling_theory_status": "paired_face_coupling_design_ready",
+              "status": "paired_face_coupling_design_ready",
+              "diagnostic_scope": "private_manufactured_interface_only",
+              "selected_candidate_id": "matched_hy_common_mode_energy_closure",
+              "selected_next_safe_implementation_lane": "private paired-face helper implementation ralplan",
+              "terminal_outcome": "paired_face_coupling_design_ready",
+              "candidate_count": 1,
+              "candidates": [
+                {
+                  "candidate_id": "matched_hy_common_mode_energy_closure",
+                  "candidate_family": "same_step_paired_eh_matched_magnetic_common_mode",
+                  "formula": "apply current face SAT, then solve E(after + a*d_hy) - E(before) + W_interface(before) = 0 using the minimum-norm matched Hy mode",
+                  "amplitude": 3.3936600027993655e-07,
+                  "ledger_normalized_balance_residual": 0.0005777277317993488,
+                  "ledger_threshold": 0.02,
+                  "ledger_gate_passed": true,
+                  "zero_work_gate_passed": true,
+                  "zero_work_net_delta_eh": 6.310887241768095e-30,
+                  "matched_projected_traces_noop": true,
+                  "weighted_mismatch_before": 1.1770079728304459e-11,
+                  "weighted_mismatch_after_current": 4.630617811826953e-12,
+                  "weighted_mismatch_after_candidate": 4.630618258221588e-12,
+                  "current_relative_mismatch_reduction": 0.6065771924474451,
+                  "candidate_relative_mismatch_reduction": 0.606577154521225,
+                  "coupling_strength_ratio": 0.999999937475031,
+                  "coupling_strength_passed": true,
+                  "current_update_norm": 1.3215136165575014e-06,
+                  "candidate_update_norm": 1.3215156237175322e-06,
+                  "candidate_update_norm_ratio": 1.0000015188341653,
+                  "update_bounds_passed": true,
+                  "branches_on_measured_residual_or_test_name": false,
+                  "requires_paired_eh_face_context": true,
+                  "requires_time_centered_staging": false,
+                  "accepted_candidate": true
+                }
+              ],
+              "orientation_sign_convention": {
+                "normal": "+z",
+                "poynting_trace": "S_n = Ex * Hy - Ey * Hx",
+                "comparison": "coarse S_n is compared with restrict_face(fine S_n) under the coarse face norm"
+              },
+              "equations": {
+                "ledger": "Delta E_trace + dt * sum_c(Wc * (S_c - R S_f)) = 0",
+                "candidate": "a is the minimum-norm root of E(after_current + a*d_hy) - E(before) + W_interface(before) = 0"
+              },
+              "solver_behavior_changed": false,
+              "sbp_sat_3d_repair_applied": false,
+              "hook_experiment_allowed": false,
+              "jit_runner_changed": false,
+              "runner_changed": false,
+              "public_claim_allowed": false,
+              "public_api_behavior_changed": false,
+              "public_default_tau_changed": false,
+              "public_observable_promoted": false,
+              "promotion_candidate_ready": false,
+              "simresult_changed": false,
+              "result_surface_changed": false,
+              "report": ".omx/reports/sbp-sat-private-face-coupling-theory-redesign-20260429T090845Z.md",
+              "next_prerequisite": "private paired-face helper implementation ralplan"
+            },
+            "private_face_coupling_theory_next_prerequisite": "private paired-face helper implementation ralplan",
+            "private_paired_face_helper_implementation_status": "production_context_mismatch_detected",
+            "private_paired_face_helper_implementation": {
+              "private_paired_face_helper_implementation_status": "production_context_mismatch_detected",
+              "status": "production_context_mismatch_detected",
+              "terminal_outcome": "production_context_mismatch_detected",
+              "diagnostic_scope": "private_production_shaped_step_order_only",
+              "report": ".omx/reports/sbp-sat-private-paired-face-helper-implementation-20260429T120413Z.md",
+              "upstream_theory_status": "paired_face_coupling_design_ready",
+              "selected_theory_candidate_id": "matched_hy_common_mode_energy_closure",
+              "production_shaped_gate_attempted": true,
+              "production_context_gate_passed": false,
+              "phase1_failure_reason": "step_order_exposes_h_sat_and_e_sat_in_different_temporal_slots",
+              "source_order_gates": {
+                "non_cpml": {
+                  "function": "step_subgrid_3d",
+                  "h_sat_before_e_update": true,
+                  "e_sat_after_all_e_updates": true,
+                  "single_cotemporal_pre_current_sat_eh_state_available": false,
+                  "single_cotemporal_post_current_sat_eh_state_available": false,
+                  "same_discrete_work_ledger_available_without_staging": false
+                },
+                "cpml": {
+                  "function": "step_subgrid_3d_with_cpml",
+                  "h_sat_before_e_update": true,
+                  "e_sat_after_all_e_updates": true,
+                  "single_cotemporal_pre_current_sat_eh_state_available": false,
+                  "single_cotemporal_post_current_sat_eh_state_available": false,
+                  "same_discrete_work_ledger_available_without_staging": false
+                }
+              },
+              "cpml_non_cpml_face_work_equivalence": {
+                "same_sat_order_mismatch_in_both_paths": true,
+                "cpml_auxiliary_updates_are_not_the_blocker": true,
+                "distinct_cpml_formula_required": false
+              },
+              "orientation_generalization": {
+                "uses_face_orientations_only": true,
+                "blocked_by_orientation": false,
+                "status": "not_reached_due_to_production_context_mismatch",
+                "faces_considered": [
+                  "x_lo",
+                  "x_hi",
+                  "y_lo",
+                  "y_hi",
+                  "z_lo",
+                  "z_hi"
+                ]
+              },
+              "rejected_path": "after-E-SAT helper changes H only after the current E update consumed it; before-E-SAT helper lacks post-current-SAT E traces",
+              "requires_time_centered_staging": true,
+              "production_patch_allowed": false,
+              "production_patch_applied": false,
+              "accepted_private_helper": false,
+              "solver_behavior_changed": false,
+              "sbp_sat_3d_paired_face_helper_applied": false,
+              "sbp_sat_3d_diff_allowed": false,
+              "helper_specific_switch_added": false,
+              "hook_experiment_allowed": false,
+              "jit_runner_changed": false,
+              "runner_changed": false,
+              "public_claim_allowed": false,
+              "public_api_behavior_changed": false,
+              "public_default_tau_changed": false,
+              "public_observable_promoted": false,
+              "promotion_candidate_ready": false,
+              "simresult_changed": false,
+              "result_surface_changed": false,
+              "final_sbp_sat_3d_diff_matches_phase0": true,
+              "next_prerequisite": "private time-centered SAT staging redesign ralplan"
+            },
+            "private_paired_face_helper_implementation_next_prerequisite": "private time-centered SAT staging redesign ralplan"
           }
         },
         "box_proxy_crossval": {

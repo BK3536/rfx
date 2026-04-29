@@ -48,10 +48,20 @@ Current policy:
   inconclusive and remains internal evidence only
 - a private fine-owned flux/DFT benchmark gate now exists for internal true
   R/T diagnostics; the current recorded fixture uses private TFSF-style
-  incident-field hooks at the low-level post-H/post-E timing slots, remains
-  inconclusive because no same-contract private reference/normalization repair
-  exists, intentionally skips slab R/T scoring, and does not enable public DFT
-  planes, flux monitors, TFSF, S-parameters, or true R/T claims
+  incident-field hooks plus a benchmark-only same-contract uniform reference,
+  remains inconclusive because vacuum/reference parity and transverse-uniformity
+  gates do not pass, now records `transverse_phase_spread_deg` as the dominant
+  row-2 blocker, and now carries a private causal ladder classification of
+  `sbp_sat_interface_floor` after source, plane-shift, and central-core aperture
+  controls failed the paired material-improvement rule; the follow-up private
+  solver/interface-floor investigation now subclasses the blocker as
+  `coarse_fine_energy_transfer_mismatch` because a front/back signed-flux
+  residual persists across predeclared boundary-expanded and nearer bounded
+  interface candidates; the private tau-sensitivity repair sweep did not find
+  a material repair (`tau=1.0` improved the residual by only 18.17% and
+  regressed the paired vacuum-phase metric); slab R/T scoring is still
+  intentionally skipped, and the gate does not enable public DFT planes, flux
+  monitors, TFSF, S-parameters, or true R/T claims
 
 ### Benchmark evidence
 
@@ -75,14 +85,51 @@ separation, energy balance, or calibrated S-parameters.
 The private flux/DFT gate strengthens the internal accumulator regression by
 checking multi-step, all-axis, windowed DFT semantics, retaining the prior
 private analytic sheet/source history, and now adding a private TFSF-style
-incident field injected through low-level post-H/post-E hooks.  The current
-recorded status is still **inconclusive**: slab R/T scoring is intentionally
-skipped because there is no same-contract private reference or normalization
-repair for the private TFSF-style incident fixture.  Public promotion remains
-blocked until a same-contract reference exists and fixture-quality plus R/T
-gates pass.  Periodic+CPML and public TFSF remain rejected for this lane; the
-next prerequisite is a same-contract private reference/normalization repair,
-not a reinterpretation of thresholds or a public TFSF promotion.
+incident field plus a benchmark-only same-contract uniform reference.  The
+current recorded status is still **inconclusive**: slab R/T scoring is
+intentionally skipped because the same-contract private reference is present but
+uniform/subgrid vacuum parity and transverse-uniformity gates remain below
+threshold.  The row-2 metadata ranks the current full-aperture fixture blockers
+instead of relaxing thresholds; the dominant blocker is
+`transverse_phase_spread_deg`, followed by transverse magnitude spread and
+vacuum magnitude parity.  The private solver/interface-floor investigation
+now records `coarse_fine_energy_transfer_mismatch`: the signed front/back flux
+ratio residual stays above the unchanged `0.02` parity threshold across the
+predeclared boundary-expanded baseline and nearer bounded interface control,
+while same-contract uniform self-error remains below threshold and direct
+hook invariants still pass.  The bounded private repair stage then scored the
+existing `tau` plumbing at `0.25`, `0.5`, `0.75`, and `1.0` without changing
+the public default/API.  It records `no_material_repair`: the best candidate
+(`tau=1.0`) reduced max front/back ratio error from `0.8813` to `0.7211`, below
+the required 50% material-improvement gate, and introduced a paired
+`vacuum_phase_error_deg` regression.  The private energy-transfer theory/design
+review is now complete: it selects `discrete_eh_work_ledger_mismatch` as the
+next kernel-repair candidate and records that no executable synthetic
+diagnostics, solver edits, hook experiments, public API changes, or public
+claims were added.  The follow-up private manufactured-interface energy-ledger
+diagnostic is now executable and records `ledger_mismatch_detected`: matched
+and zero-work probes stay private/CI-green, while the nonzero E/H face-work
+probe reports normalized balance residual `0.1656` above the unchanged `0.02`
+threshold.  The bounded private face-kernel feasibility stage then records
+`no_signature_compatible_bounded_repair`: bounded current/minimum/reciprocal
+face-jump candidates still fail the manufactured ledger threshold, while a
+ledger-passing low-scale control is rejected as under-coupling.  The private
+SAT face-coupling theory/redesign stage now records
+`paired_face_coupling_design_ready`: a test-local same-step paired E/H
+candidate closes the manufactured face ledger with normalized residual
+`0.000578`, preserves matched-trace and zero-work gates, keeps coupling
+strength near the current kernel, and requires paired E/H face context.
+The private paired-face helper implementation gate now records
+`production_context_mismatch_detected`: both non-CPML and CPML step paths apply
+H SAT before the E update and E SAT after the E update, so the selected
+same-step paired E/H candidate cannot access one co-temporal pre/post
+current-SAT ledger state without time-centered staging.
+Production `sbp_sat_3d.py`, runner, hook, API, `SimResult`, public Result,
+default `tau`, and public observable surfaces remain closed.  Public promotion
+remains blocked until fixture-quality plus R/T gates pass.  Periodic+CPML and
+public TFSF remain rejected for this lane; the next safe lane is
+`private time-centered SAT staging redesign ralplan`, not a hook experiment,
+threshold reinterpretation, helper-specific switch, or public TFSF promotion.
 
 ### Explicit unsupported combinations in the SBP-SAT lane
 

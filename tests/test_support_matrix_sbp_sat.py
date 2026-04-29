@@ -106,26 +106,350 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
     )
     assert benchmark_gate["fixture_name"] == "boundary_expanded"
     assert benchmark_gate["source_contract"] == "private_tfsf_style_incident"
-    assert benchmark_gate["normalization"] == (
-        "incident_quality_only_same_contract_reference_required"
+    assert (
+        benchmark_gate["normalization"]
+        == "same_contract_private_reference_vacuum_gated"
     )
-    assert benchmark_gate["reference_missing"] is True
-    assert benchmark_gate["reference_contract"] == (
-        "missing_same_contract_private_reference"
+    assert benchmark_gate["reference_missing"] is False
+    assert benchmark_gate["reference_quality_ready"] is False
+    assert (
+        benchmark_gate["reference_contract"] == "private_tfsf_style_uniform_reference"
     )
     assert benchmark_gate["slab_rt_scored"] is False
     assert benchmark_gate["fixture_quality_ready"] is False
-    assert benchmark_gate["fixture_quality_gates"]["same_contract_reference"] is False
+    assert benchmark_gate["fixture_quality_gates"]["same_contract_reference"] is True
+    assert benchmark_gate["fixture_quality_gates"]["vacuum_stability"] is False
+    assert (
+        benchmark_gate["dominant_reference_quality_blocker"]
+        == "transverse_phase_spread_deg"
+    )
+    assert benchmark_gate["reference_quality_blockers"][:2] == [
+        "transverse_phase_spread_deg",
+        "transverse_magnitude_cv",
+    ]
+    assert "predeclared" in benchmark_gate["predeclared_candidate_policy"]
+    assert benchmark_gate["causal_ladder_status"] == "row2_causal_classified"
+    assert benchmark_gate["causal_class"] == "sbp_sat_interface_floor"
+    assert benchmark_gate["causal_class"] != "public_claim_ready"
+    assert benchmark_gate["material_improvement_rule"] == {
+        "dominant_improvement_min": 0.5,
+        "paired_improvement_min": 0.25,
+        "new_blocker_regression_max": 0.25,
+        "source_eta0_relative_error_threshold": 0.02,
+        "thresholds_checksum": (
+            "d288ae050423c6c2078c3b696da1cbcc05e5095a0ce727b4665b9ecfdb881f9a"
+        ),
+    }
+    assert benchmark_gate["causal_ladder_rungs"]["rung5_interface_floor"] == (
+        "implicated"
+    )
+    assert (
+        benchmark_gate["causal_ladder_candidates"][2]["candidate_id"]
+        == "rung4_central_core_aperture"
+    )
+    assert (
+        benchmark_gate["causal_ladder_candidates"][2]["classification_decision"]
+        == "inconclusive"
+    )
+    assert benchmark_gate["interface_floor_investigation_status"] == "complete"
+    assert (
+        benchmark_gate["interface_floor_subclass"]
+        == "coarse_fine_energy_transfer_mismatch"
+    )
+    assert benchmark_gate["interface_distance_sensitivity"] == "persistent"
+    assert {
+        candidate["candidate_id"]
+        for candidate in benchmark_gate["interface_distance_candidates"]
+    } >= {"baseline_boundary_expanded", "nearer_current_bounded_control"}
+    assert (
+        benchmark_gate["interface_energy_transfer_diagnostics"][
+            "front_back_ratio_formula"
+        ]
+        == "signed_back / max(abs(signed_front), floor)"
+    )
+    assert (
+        benchmark_gate["interface_energy_transfer_diagnostics"][
+            "interface_residual_stable"
+        ]
+        is True
+    )
+    assert (
+        benchmark_gate["interface_energy_transfer_diagnostics"][
+            "uniform_reference_below_threshold"
+        ]
+        is True
+    )
+    assert benchmark_gate["cpml_proximity_controls"]
+    assert all(test["passed"] for test in benchmark_gate["direct_invariant_tests"])
+    repair = benchmark_gate["private_energy_transfer_repair"]
+    assert benchmark_gate["private_energy_transfer_repair_status"] == (
+        "no_material_repair"
+    )
+    assert repair["status"] == "no_material_repair"
+    assert repair["candidate_policy"].startswith("tau sensitivity")
+    assert repair["tau_candidates"] == [0.25, 0.5, 0.75, 1.0]
+    assert repair["baseline_max_ratio_error"] > repair["candidate_max_ratio_error"]
+    assert repair["selected_repair_candidate_id"] == "tau_sensitivity_1p0"
+    assert repair["accepted_private_repair"] is False
+    assert repair["public_claim_allowed"] is False
+    assert repair["promotion_candidate_ready"] is False
+    assert repair["public_default_tau_changed"] is False
+    assert repair["public_api_behavior_changed"] is False
+    assert repair["kernel_edit_applied"] is False
+    assert repair["baseline_artifact_required"] is True
+    assert repair["pre_post_evidence_required"] is True
+    assert repair["paired_metric_regressions"][0]["metric"] == (
+        "vacuum_phase_error_deg"
+    )
+    assert all(
+        candidate["material_improvement_passed"] is False
+        for candidate in repair["candidates"]
+    )
+    theory = benchmark_gate["private_energy_transfer_theory_review"]
+    assert benchmark_gate["private_energy_transfer_theory_review_status"] == "complete"
+    assert theory["status"] == "complete"
+    assert theory["selected_next_plan_direction"] == "kernel_repair_candidate"
+    assert theory["selected_hypothesis"] == "discrete_eh_work_ledger_mismatch"
+    assert theory["executable_diagnostics_added"] is False
+    assert theory["solver_behavior_changed"] is False
+    assert theory["sbp_sat_3d_diff_allowed"] is False
+    assert theory["hook_experiment_allowed"] is False
+    assert theory["jit_runner_changed"] is False
+    assert theory["public_claim_allowed"] is False
+    assert theory["public_api_behavior_changed"] is False
+    assert theory["public_default_tau_changed"] is False
+    assert theory["evidence_basis"]["prior_repair_status"] == "no_material_repair"
+    assert (
+        theory["evidence_basis"]["relative_improvement"]
+        < (theory["evidence_basis"]["material_improvement_required"])
+    )
+    theory_hypotheses = {
+        candidate["hypothesis"] for candidate in theory["candidate_hypotheses"]
+    }
+    assert theory_hypotheses >= {
+        "discrete_eh_work_ledger_mismatch",
+        "private_hook_or_stagger_mismatch",
+    }
+    ledger = benchmark_gate["private_manufactured_energy_ledger_diagnostic"]
+    assert (
+        benchmark_gate["private_manufactured_energy_ledger_diagnostic_status"]
+        == "ledger_mismatch_detected"
+    )
+    assert ledger["status"] == "ledger_mismatch_detected"
+    assert ledger["selected_hypothesis"] == "discrete_eh_work_ledger_mismatch"
+    assert ledger["selected_next_plan_direction"] == "bounded_kernel_repair_candidate"
+    assert ledger["diagnostic_scope"] == "private_manufactured_interface_only"
+    assert ledger["executable_diagnostics_added"] is True
+    assert ledger["face_ledger_status"] == "ledger_mismatch_detected"
+    assert ledger["zero_work_face_status"] == "zero_work_dissipative_gate_passed"
+    assert (
+        ledger["interior_box_ledger_status"]
+        == "edge_corner_accounting_probe_recorded_inconclusive"
+    )
+    assert ledger["normalized_balance_residual"] > ledger["threshold"]
+    assert ledger["threshold"] == 0.02
+    assert ledger["solver_behavior_changed"] is False
+    assert ledger["sbp_sat_3d_repair_applied"] is False
+    assert ledger["hook_experiment_allowed"] is False
+    assert ledger["jit_runner_changed"] is False
+    assert ledger["public_claim_allowed"] is False
+    assert ledger["public_api_behavior_changed"] is False
+    assert ledger["public_default_tau_changed"] is False
+    assert ledger["public_observable_promoted"] is False
+    bounded_repair = benchmark_gate["private_bounded_kernel_repair"]
+    assert benchmark_gate["private_bounded_kernel_repair_status"] == (
+        "no_signature_compatible_bounded_repair"
+    )
+    assert bounded_repair["status"] == "no_signature_compatible_bounded_repair"
+    assert bounded_repair["selected_repair_candidate_id"] is None
+    assert bounded_repair["accepted_private_repair"] is False
+    assert bounded_repair["solver_behavior_changed"] is False
+    assert bounded_repair["sbp_sat_3d_repair_applied"] is False
+    assert bounded_repair["hook_experiment_allowed"] is False
+    assert bounded_repair["jit_runner_changed"] is False
+    assert bounded_repair["public_claim_allowed"] is False
+    assert bounded_repair["public_api_behavior_changed"] is False
+    assert bounded_repair["public_default_tau_changed"] is False
+    assert bounded_repair["public_observable_promoted"] is False
+    assert bounded_repair["simresult_changed"] is False
+    assert bounded_repair["phase0_forbidden_diff_required"] is True
+    assert bounded_repair["final_forbidden_diff_matches_phase0"] is True
+    assert bounded_repair["rejection_subreason"] == (
+        "no_bounded_candidate_passed_ledger_gate"
+    )
+    assert bounded_repair["candidate_count"] == len(bounded_repair["candidates"])
+    assert not any(
+        candidate["accepted_candidate"] for candidate in bounded_repair["candidates"]
+    )
+    assert any(
+        candidate["candidate_id"] == "norm_reciprocal_coarse_emphasis"
+        and candidate["ledger_normalized_balance_residual"]
+        > candidate["ledger_threshold"]
+        for candidate in bounded_repair["candidates"]
+    )
+    assert any(
+        candidate["candidate_id"] == "under_coupled_ledger_control"
+        and candidate["ledger_gate_passed"] is True
+        and candidate["rejection_subreason"] == "candidate_under_couples"
+        for candidate in bounded_repair["candidates"]
+    )
+    assert (
+        benchmark_gate["private_bounded_kernel_repair_next_prerequisite"]
+        == (bounded_repair["next_prerequisite"])
+    )
+    assert benchmark_gate["hook_contingency_justification"]["eligible"] is False
+    assert benchmark_gate["same_run_repair_allowed"] is False
     assert benchmark_gate["usable_passband_threshold"]["min_bins"] == 2
     assert benchmark_gate["transverse_uniformity_threshold"] == {
         "magnitude_cv_max": 0.01,
         "phase_spread_deg_max": 1.0,
     }
+    assert benchmark_gate["vacuum_stability_threshold"] == {
+        "relative_magnitude_error_max": 0.02,
+        "phase_error_deg_max": 2.0,
+    }
     assert benchmark_gate["no_go_reason"].startswith(
-        "private TFSF-style incident fixture lacks a same-contract reference"
+        "private TFSF-style incident fixture has a same-contract reference"
     )
-    assert "post-H/post-E" in benchmark_gate["blocking_diagnostic"]
-    assert "same-contract private reference" in benchmark_gate["next_prerequisite"]
+    assert (
+        "same-contract private reference helper is present"
+        in benchmark_gate["blocking_diagnostic"]
+    )
+    assert (
+        "coarse_fine_energy_transfer_mismatch" in benchmark_gate["blocking_diagnostic"]
+    )
+    assert "causal ladder" in benchmark_gate["blocking_diagnostic"]
+    assert "discrete_eh_work_ledger_mismatch" in benchmark_gate["blocking_diagnostic"]
+    assert "ledger_mismatch_detected" in benchmark_gate["blocking_diagnostic"]
+    assert (
+        "private SAT face-coupling theory/redesign"
+        in benchmark_gate["private_bounded_kernel_repair_next_prerequisite"]
+    )
+    assert (
+        "no_signature_compatible_bounded_repair"
+        in benchmark_gate["blocking_diagnostic"]
+    )
+    face_coupling = benchmark_gate["private_face_coupling_theory"]
+    assert benchmark_gate["private_face_coupling_theory_status"] == (
+        "paired_face_coupling_design_ready"
+    )
+    assert face_coupling["status"] == "paired_face_coupling_design_ready"
+    assert face_coupling["terminal_outcome"] == "paired_face_coupling_design_ready"
+    assert face_coupling["selected_candidate_id"] == (
+        "matched_hy_common_mode_energy_closure"
+    )
+    assert face_coupling["selected_next_safe_implementation_lane"] == (
+        "private paired-face helper implementation ralplan"
+    )
+    assert face_coupling["next_prerequisite"] == (
+        "private paired-face helper implementation ralplan"
+    )
+    assert (
+        benchmark_gate["private_face_coupling_theory_next_prerequisite"]
+        == (face_coupling["next_prerequisite"])
+    )
+    assert face_coupling["solver_behavior_changed"] is False
+    assert face_coupling["sbp_sat_3d_repair_applied"] is False
+    assert face_coupling["hook_experiment_allowed"] is False
+    assert face_coupling["jit_runner_changed"] is False
+    assert face_coupling["runner_changed"] is False
+    assert face_coupling["public_claim_allowed"] is False
+    assert face_coupling["public_api_behavior_changed"] is False
+    assert face_coupling["public_default_tau_changed"] is False
+    assert face_coupling["public_observable_promoted"] is False
+    assert face_coupling["promotion_candidate_ready"] is False
+    assert face_coupling["simresult_changed"] is False
+    assert face_coupling["result_surface_changed"] is False
+    assert (
+        face_coupling["orientation_sign_convention"]["poynting_trace"]
+        == "S_n = Ex * Hy - Ey * Hx"
+    )
+    assert "minimum-norm root" in face_coupling["equations"]["candidate"]
+    face_candidate = face_coupling["candidates"][0]
+    assert face_candidate["accepted_candidate"] is True
+    assert face_candidate["candidate_family"] == (
+        "same_step_paired_eh_matched_magnetic_common_mode"
+    )
+    assert face_candidate["ledger_gate_passed"] is True
+    assert (
+        face_candidate["ledger_normalized_balance_residual"]
+        <= face_candidate["ledger_threshold"]
+    )
+    assert face_candidate["zero_work_gate_passed"] is True
+    assert face_candidate["matched_projected_traces_noop"] is True
+    assert face_candidate["coupling_strength_passed"] is True
+    assert face_candidate["coupling_strength_ratio"] >= 0.5
+    assert face_candidate["update_bounds_passed"] is True
+    assert face_candidate["branches_on_measured_residual_or_test_name"] is False
+    assert face_candidate["requires_paired_eh_face_context"] is True
+    assert face_candidate["requires_time_centered_staging"] is False
+    paired_helper = benchmark_gate["private_paired_face_helper_implementation"]
+    assert benchmark_gate["private_paired_face_helper_implementation_status"] == (
+        "production_context_mismatch_detected"
+    )
+    assert paired_helper["status"] == "production_context_mismatch_detected"
+    assert paired_helper["terminal_outcome"] == "production_context_mismatch_detected"
+    assert paired_helper["upstream_theory_status"] == (
+        "paired_face_coupling_design_ready"
+    )
+    assert paired_helper["selected_theory_candidate_id"] == (
+        "matched_hy_common_mode_energy_closure"
+    )
+    assert paired_helper["production_shaped_gate_attempted"] is True
+    assert paired_helper["production_context_gate_passed"] is False
+    assert paired_helper["phase1_failure_reason"] == (
+        "step_order_exposes_h_sat_and_e_sat_in_different_temporal_slots"
+    )
+    for path_name in ("non_cpml", "cpml"):
+        order_gate = paired_helper["source_order_gates"][path_name]
+        assert order_gate["h_sat_before_e_update"] is True
+        assert order_gate["e_sat_after_all_e_updates"] is True
+        assert (
+            order_gate["same_discrete_work_ledger_available_without_staging"] is False
+        )
+    assert (
+        paired_helper["cpml_non_cpml_face_work_equivalence"][
+            "same_sat_order_mismatch_in_both_paths"
+        ]
+        is True
+    )
+    assert paired_helper["orientation_generalization"]["blocked_by_orientation"] is (
+        False
+    )
+    assert paired_helper["requires_time_centered_staging"] is True
+    assert paired_helper["production_patch_allowed"] is False
+    assert paired_helper["production_patch_applied"] is False
+    assert paired_helper["accepted_private_helper"] is False
+    assert paired_helper["solver_behavior_changed"] is False
+    assert paired_helper["sbp_sat_3d_paired_face_helper_applied"] is False
+    assert paired_helper["sbp_sat_3d_diff_allowed"] is False
+    assert paired_helper["helper_specific_switch_added"] is False
+    assert paired_helper["hook_experiment_allowed"] is False
+    assert paired_helper["jit_runner_changed"] is False
+    assert paired_helper["runner_changed"] is False
+    assert paired_helper["public_claim_allowed"] is False
+    assert paired_helper["public_api_behavior_changed"] is False
+    assert paired_helper["public_default_tau_changed"] is False
+    assert paired_helper["public_observable_promoted"] is False
+    assert paired_helper["promotion_candidate_ready"] is False
+    assert paired_helper["simresult_changed"] is False
+    assert paired_helper["result_surface_changed"] is False
+    assert paired_helper["final_sbp_sat_3d_diff_matches_phase0"] is True
+    assert (
+        benchmark_gate["private_paired_face_helper_implementation_next_prerequisite"]
+        == (paired_helper["next_prerequisite"])
+    )
+    assert benchmark_gate["next_prerequisite"] == (
+        "private time-centered SAT staging redesign ralplan"
+    )
+    assert benchmark_gate["follow_up_recommendation"] == (
+        "private time-centered SAT staging redesign ralplan"
+    )
+    assert "paired_face_coupling_design_ready" in benchmark_gate["blocking_diagnostic"]
+    assert (
+        "production_context_mismatch_detected" in benchmark_gate["blocking_diagnostic"]
+    )
+    assert "no_material_repair" in benchmark_gate["blocking_diagnostic"]
     assert "not public TFSF" in benchmark_gate["diagnostic_basis"]
     assert _sbp_lane()["supported_subset"]["observables"] == ["point_probe"]
     assert TRUE_RT_SPEC.exists()
@@ -140,6 +464,10 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
     assert "private TFSF-style incident field" in spec_text
     assert "same-contract private reference" in spec_text
     assert "support matrix continues to mark true R/T as deferred" in spec_text
+    assert "no_signature_compatible_bounded_repair" in spec_text
+    assert "paired_face_coupling_design_ready" in spec_text
+    assert "production_context_mismatch_detected" in spec_text
+    assert "private time-centered SAT staging redesign ralplan" in spec_text
     assert "## Deferred issue record" in spec_text
 
 

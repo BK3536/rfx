@@ -3,17 +3,83 @@
 import inspect
 import numpy as np
 import jax.numpy as jnp
-import pytest
 
+from rfx.subgridding.face_ops import build_face_ops, prolong_face, restrict_face
 from rfx.subgridding import jit_runner
 from rfx.subgridding.sbp_sat_3d import (
+    _apply_sat_pair_face,
     _active_corners,
     _active_edges,
     _active_faces,
+    _face_interior_masks,
     compute_energy_3d,
     init_subgrid_3d,
+    sat_penalty_coefficients,
     step_subgrid_3d,
 )
+
+
+def _face_mismatch_energy(coarse, fine, ops, coarse_mask, fine_mask) -> float:
+    coarse_mismatch = restrict_face(fine, ops) - coarse
+    fine_mismatch = prolong_face(coarse, ops) - fine
+    return float(
+        jnp.sum((coarse_mismatch**2) * ops.coarse_norm * coarse_mask)
+        + jnp.sum((fine_mismatch**2) * ops.fine_norm * fine_mask)
+    )
+
+
+def test_sat_face_pair_reduces_weighted_mismatch_energy():
+    ops = build_face_ops((4, 3), ratio=2, dx_c=0.004)
+    coarse = jnp.arange(12, dtype=jnp.float32).reshape(4, 3) * 1.0e-3
+    fine = prolong_face(coarse, ops) + jnp.linspace(
+        -2.0e-3,
+        2.0e-3,
+        48,
+        dtype=jnp.float32,
+    ).reshape(8, 6)
+    coarse_mask, fine_mask = _face_interior_masks(coarse.shape, ops.ratio)
+    alpha_c, alpha_f = sat_penalty_coefficients(ops.ratio, 0.5)
+
+    before = _face_mismatch_energy(coarse, fine, ops, coarse_mask, fine_mask)
+    coarse_after, fine_after = _apply_sat_pair_face(
+        coarse,
+        fine,
+        ops,
+        alpha_c,
+        alpha_f,
+        coarse_mask,
+        fine_mask,
+    )
+    after = _face_mismatch_energy(
+        coarse_after,
+        fine_after,
+        ops,
+        coarse_mask,
+        fine_mask,
+    )
+
+    assert after < before
+
+
+def test_sat_face_pair_preserves_matched_constant_trace():
+    ops = build_face_ops((3, 2), ratio=2, dx_c=0.004)
+    coarse = jnp.ones((3, 2), dtype=jnp.float32) * 1.25
+    fine = prolong_face(coarse, ops)
+    coarse_mask, fine_mask = _face_interior_masks(coarse.shape, ops.ratio)
+    alpha_c, alpha_f = sat_penalty_coefficients(ops.ratio, 0.5)
+
+    coarse_after, fine_after = _apply_sat_pair_face(
+        coarse,
+        fine,
+        ops,
+        alpha_c,
+        alpha_f,
+        coarse_mask,
+        fine_mask,
+    )
+
+    np.testing.assert_allclose(np.asarray(coarse_after), np.asarray(coarse), atol=1e-7)
+    np.testing.assert_allclose(np.asarray(fine_after), np.asarray(fine), atol=1e-7)
 
 
 def test_zslab_energy_pec_1000_steps():
@@ -33,8 +99,8 @@ def test_zslab_energy_pec_1000_steps():
         if (i + 1) % 100 == 0:
             energy = compute_energy_3d(state, config)
             assert energy <= initial_energy * 1.02, (
-                f"Energy exceeded transient bound at step {i+1}: "
-                f"{energy/initial_energy:.4f}"
+                f"Energy exceeded transient bound at step {i + 1}: "
+                f"{energy / initial_energy:.4f}"
             )
             max_energy = max(max_energy, energy)
 
@@ -111,8 +177,8 @@ def test_box_energy_pec_1000_steps():
         if (i + 1) % 100 == 0:
             energy = compute_energy_3d(state, config)
             assert energy <= initial_energy * 1.05, (
-                f"Box energy exceeded transient bound at step {i+1}: "
-                f"{energy/initial_energy:.4f}"
+                f"Box energy exceeded transient bound at step {i + 1}: "
+                f"{energy / initial_energy:.4f}"
             )
             max_energy = max(max_energy, energy)
 
@@ -180,6 +246,13 @@ def test_active_interfaces_for_interior_box():
         fine_region=(2, 6, 2, 6, 3, 7),
         ratio=2,
     )
-    assert set(_active_faces(config)) == {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"}
+    assert set(_active_faces(config)) == {
+        "x_lo",
+        "x_hi",
+        "y_lo",
+        "y_hi",
+        "z_lo",
+        "z_hi",
+    }
     assert len(_active_edges(config)) == 12
     assert len(_active_corners(config)) == 8

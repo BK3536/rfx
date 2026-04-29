@@ -49,7 +49,7 @@ def test_release_and_migration_caveats_lock_current_surface():
         "one axis-aligned refinement box only",
         "soft point source + point probe only",
         "proxy numerical-equivalence benchmark only",
-        "boundary=\"pec\"",
+        'boundary="pec"',
         "selected reflector/periodic subset",
         "bounded CPML subset",
         "DFT planes",

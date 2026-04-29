@@ -72,10 +72,18 @@ def test_zface_restriction_is_pt_over_ratio():
 def test_generic_face_ops_match_zface_ops():
     z_ops = build_zface_ops((3, 4), ratio=2, dx_c=0.006)
     g_ops = build_face_ops((3, 4), ratio=2, dx_c=0.006)
-    np.testing.assert_allclose(np.array(g_ops.prolong_i), np.array(z_ops.prolong_i), atol=1e-6)
-    np.testing.assert_allclose(np.array(g_ops.prolong_j), np.array(z_ops.prolong_j), atol=1e-6)
-    np.testing.assert_allclose(np.array(g_ops.restrict_i), np.array(z_ops.restrict_i), atol=1e-6)
-    np.testing.assert_allclose(np.array(g_ops.restrict_j), np.array(z_ops.restrict_j), atol=1e-6)
+    np.testing.assert_allclose(
+        np.array(g_ops.prolong_i), np.array(z_ops.prolong_i), atol=1e-6
+    )
+    np.testing.assert_allclose(
+        np.array(g_ops.prolong_j), np.array(z_ops.prolong_j), atol=1e-6
+    )
+    np.testing.assert_allclose(
+        np.array(g_ops.restrict_i), np.array(z_ops.restrict_i), atol=1e-6
+    )
+    np.testing.assert_allclose(
+        np.array(g_ops.restrict_j), np.array(z_ops.restrict_j), atol=1e-6
+    )
 
 
 def test_face_ops_aliases_match_zface_helpers():
@@ -183,11 +191,15 @@ def test_scatter_roundtrip_zface_preserves_nonface_entries():
         fine_region=(0, 6, 0, 5, 2, 5),
         ratio=2,
     )
-    ex = jnp.arange(np.prod(state.ex_c.shape), dtype=jnp.float32).reshape(state.ex_c.shape)
+    ex = jnp.arange(np.prod(state.ex_c.shape), dtype=jnp.float32).reshape(
+        state.ex_c.shape
+    )
     ey = ex + 1000.0
     ez = ex + 2000.0
 
-    ex_face, ey_face = extract_tangential_e_face((ex, ey, ez), config, "z_lo", grid="coarse")
+    ex_face, ey_face = extract_tangential_e_face(
+        (ex, ey, ez), config, "z_lo", grid="coarse"
+    )
     ex_new = ex_face + 1.0
     ey_new = ey_face + 2.0
     ex_out, ey_out, ez_out = scatter_tangential_e_face(

@@ -104,6 +104,12 @@ class _BenchmarkFluxRun(NamedTuple):
     benchmark_flux_planes: tuple
 
 
+_PRIVATE_REFERENCE_PUBLIC_SURFACE_MESSAGE = (
+    "private SBP-SAT same-contract reference flux rejects public observables "
+    "and sources"
+)
+
+
 def _axis_index(axis: str | int) -> int:
     if isinstance(axis, str):
         try:
@@ -511,6 +517,330 @@ def _build_private_analytic_sheet_source_specs(
             )
         )
     return tuple(specs)
+
+
+def _uniform_private_offsets(grid: Grid) -> tuple[float, float, float]:
+    """Map user-domain coordinates to full-grid indices for private fixtures."""
+
+    return (
+        -float(grid.pad_x_lo) * float(grid.dx),
+        -float(grid.pad_y_lo) * float(grid.dx),
+        -float(grid.pad_z_lo) * float(grid.dx),
+    )
+
+
+def _validate_private_reference_surface(sim) -> None:
+    """Fail closed before running the private uniform/reference harness."""
+
+    public_fields = (
+        ("DFT plane probes", getattr(sim, "_dft_planes", None)),
+        ("flux monitors", getattr(sim, "_flux_monitors", None)),
+        ("public TFSF sources", getattr(sim, "_tfsf", None)),
+        ("NTFF boxes", getattr(sim, "_ntff", None)),
+        ("waveguide ports", getattr(sim, "_waveguide_ports", None)),
+        ("coaxial ports", getattr(sim, "_coaxial_ports", None)),
+        ("Floquet ports", getattr(sim, "_floquet_ports", None)),
+        ("lumped RLC", getattr(sim, "_lumped_rlc", None)),
+        ("soft point sources or ports", getattr(sim, "_ports", None)),
+    )
+    for label, value in public_fields:
+        if value:
+            raise ValueError(f"{_PRIVATE_REFERENCE_PUBLIC_SURFACE_MESSAGE}: {label}")
+
+    if getattr(sim, "_refinement", None) is not None:
+        raise ValueError(
+            "private SBP-SAT same-contract reference flux requires a uniform "
+            "simulation with no refinement"
+        )
+
+    if getattr(sim, "_boundary", None) not in ("pec", "cpml"):
+        raise ValueError(
+            "private SBP-SAT same-contract reference flux supports only "
+            "boundary='pec' or boundary='cpml'"
+        )
+    if getattr(sim, "_periodic_axes", None):
+        raise ValueError(
+            "private SBP-SAT same-contract reference flux does not support "
+            "periodic axes"
+        )
+    boundary_spec = getattr(sim, "_boundary_spec", None)
+    if boundary_spec is not None:
+        if boundary_spec.absorber_type == "upml":
+            raise ValueError(
+                "private SBP-SAT same-contract reference flux does not support UPML"
+            )
+        if boundary_spec.periodic_axes():
+            raise ValueError(
+                "private SBP-SAT same-contract reference flux does not support "
+                "periodic BoundarySpec faces"
+            )
+        if boundary_spec.pmc_faces():
+            raise ValueError(
+                "private SBP-SAT same-contract reference flux does not support "
+                "PMC BoundarySpec faces"
+            )
+
+
+def _state_to_private_subgrid(state):
+    """Wrap a uniform FDTD state so private SBP-SAT accumulators can sample it."""
+
+    from rfx.subgridding.sbp_sat_3d import SubgridState3D
+
+    zeros = jnp.zeros_like(state.ex)
+    return SubgridState3D(
+        ex_c=zeros,
+        ey_c=zeros,
+        ez_c=zeros,
+        hx_c=zeros,
+        hy_c=zeros,
+        hz_c=zeros,
+        ex_f=state.ex,
+        ey_f=state.ey,
+        ez_f=state.ez,
+        hx_f=state.hx,
+        hy_f=state.hy,
+        hz_f=state.hz,
+        step=state.step,
+    )
+
+
+def _state_from_private_subgrid(state, private_state):
+    """Copy private wrapper fine arrays back into a uniform FDTD state."""
+
+    return state._replace(
+        ex=private_state.ex_f,
+        ey=private_state.ey_f,
+        ez=private_state.ez_f,
+        hx=private_state.hx_f,
+        hy=private_state.hy_f,
+        hz=private_state.hz_f,
+    )
+
+
+def run_private_tfsf_reference_flux(
+    sim,
+    *,
+    n_steps: int,
+    planes: tuple[_BenchmarkFluxPlaneRequest, ...] | list[_BenchmarkFluxPlaneRequest],
+    private_tfsf_incidents: (
+        tuple[_PrivateTFSFIncidentRequest, ...] | list[_PrivateTFSFIncidentRequest]
+    ),
+) -> _BenchmarkFluxRun:
+    """Run a private same-contract uniform reference for SBP-SAT TFSF evidence.
+
+    This is a benchmark-only sibling to ``run_subgridded_benchmark_flux``.
+    It intentionally does not route through ``Simulation.run()``,
+    ``rfx.runners.uniform``, public TFSF, public DFT plane probes, or public
+    flux monitors.  The step ordering mirrors the public uniform TFSF slots:
+    ``update_h`` -> private H -> CPML-H, then ``update_e`` -> private E ->
+    CPML-E.
+    """
+
+    import warnings
+
+    from rfx.api import Result
+    from rfx.boundaries.cpml import apply_cpml_e, apply_cpml_h, init_cpml
+    from rfx.boundaries.pec import apply_pec, apply_pec_faces, apply_pec_mask
+    from rfx.boundaries.pmc import apply_pmc_faces
+    from rfx.core.yee import FDTDState, init_state, update_e, update_h
+    from rfx.subgridding.jit_runner import (
+        _BenchmarkFluxPlaneResult,
+        _accumulate_benchmark_flux_plane,
+        _apply_private_tfsf_incident_e,
+        _apply_private_tfsf_incident_h,
+        _empty_benchmark_flux_accumulator,
+    )
+
+    _validate_private_reference_surface(sim)
+    if sim._dx is None and sim._geometry:
+        sim._auto_configure_mesh()
+    sim._validate_mesh_quality()
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="No sources, ports, TFSF, or waveguide/Floquet ports configured.*",
+            category=UserWarning,
+        )
+        sim._validate_simulation_config()
+
+    grid = sim._build_grid()
+    materials, debye_spec, lorentz_spec, pec_mask, _, kerr_chi3 = (
+        sim._assemble_materials(grid)
+    )
+    if debye_spec is not None or lorentz_spec is not None:
+        raise ValueError(
+            "private SBP-SAT same-contract reference flux does not support "
+            "dispersive materials"
+        )
+    if kerr_chi3 is not None and bool(jnp.any(kerr_chi3)):
+        raise ValueError(
+            "private SBP-SAT same-contract reference flux does not support "
+            "nonlinear materials"
+        )
+    if pec_mask is not None and bool(jnp.any(pec_mask)):
+        raise ValueError(
+            "private SBP-SAT same-contract reference flux does not support "
+            "PEC geometry masks"
+        )
+
+    n_steps = int(n_steps)
+    shape = tuple(int(v) for v in grid.shape)
+    offsets = _uniform_private_offsets(grid)
+    benchmark_flux_specs = _build_benchmark_flux_plane_specs(
+        tuple(planes),
+        shape_f=shape,
+        offsets=offsets,
+        dx_f=float(grid.dx),
+        n_steps=n_steps,
+    )
+    private_tfsf_specs = _build_private_tfsf_incident_specs(
+        tuple(private_tfsf_incidents),
+        shape_f=shape,
+        offsets=offsets,
+        dx_f=float(grid.dx),
+        dt=float(grid.dt),
+        n_steps=n_steps,
+    )
+
+    use_cpml = (
+        sim._boundary == "cpml"
+        and grid.cpml_layers > 0
+        and bool(getattr(grid, "cpml_axes", ""))
+    )
+    cpml_params = cpml_state_init = None
+    if use_cpml:
+        cpml_params, cpml_state_init = init_cpml(grid)
+
+    pec_axes = "xyz" if sim._boundary == "pec" else ""
+    pec_faces = frozenset(getattr(sim, "_pec_faces", set()) or set())
+    pmc_faces = frozenset(sim._boundary_spec.pmc_faces())
+    periodic = tuple(axis in (sim._periodic_axes or "") for axis in "xyz")
+    probe_meta = [
+        (grid.position_to_index(pe.position), pe.component)
+        for pe in getattr(sim, "_probes", ())
+    ]
+    flux_acc_init = tuple(
+        _empty_benchmark_flux_accumulator(plane, shape)
+        for plane in benchmark_flux_specs
+    )
+
+    def _apply_private_h_all(state: FDTDState, step_idx):
+        private_state = _state_to_private_subgrid(state)
+        for incident in private_tfsf_specs:
+            private_state = _apply_private_tfsf_incident_h(
+                private_state,
+                incident,
+                incident.magnetic_values[step_idx],
+            )
+        return _state_from_private_subgrid(state, private_state)
+
+    def _apply_private_e_all(state: FDTDState, step_idx):
+        private_state = _state_to_private_subgrid(state)
+        for incident in private_tfsf_specs:
+            private_state = _apply_private_tfsf_incident_e(
+                private_state,
+                incident,
+                incident.electric_values[step_idx],
+            )
+        return _state_from_private_subgrid(state, private_state)
+
+    def _sample_probes(state: FDTDState) -> jnp.ndarray:
+        if not probe_meta:
+            return jnp.zeros(0, dtype=jnp.float32)
+        samples = []
+        for (i, j, k), component in probe_meta:
+            samples.append(getattr(state, component)[i, j, k])
+        return jnp.stack(samples)
+
+    def _accumulate_flux(accs, state: FDTDState):
+        private_state = _state_to_private_subgrid(state)
+        return tuple(
+            _accumulate_benchmark_flux_plane(acc, private_state, plane, grid.dt)
+            for acc, plane in zip(accs, benchmark_flux_specs)
+        )
+
+    def step_fn(carry, step_idx):
+        state, cpml_state, flux_accs = carry
+        state = update_h(state, materials, grid.dt, grid.dx, periodic=periodic)
+        # Same pre-CPML slot used by public TFSF in ``Simulation.run``.
+        state = _apply_private_h_all(state, step_idx)
+        if use_cpml:
+            state, cpml_new = apply_cpml_h(
+                state,
+                cpml_params,
+                cpml_state,
+                grid,
+                grid.cpml_axes,
+                materials=materials,
+            )
+        else:
+            cpml_new = cpml_state
+        if pmc_faces:
+            state = apply_pmc_faces(state, pmc_faces)
+
+        state = update_e(state, materials, grid.dt, grid.dx, periodic=periodic)
+        # Same pre-CPML slot used by public TFSF in ``Simulation.run``.
+        state = _apply_private_e_all(state, step_idx)
+        if use_cpml:
+            state, cpml_new = apply_cpml_e(
+                state,
+                cpml_params,
+                cpml_new,
+                grid,
+                grid.cpml_axes,
+                materials=materials,
+            )
+        if pec_axes:
+            state = apply_pec(state, axes=pec_axes)
+        if pec_faces:
+            state = apply_pec_faces(state, set(pec_faces))
+        if pec_mask is not None:
+            state = apply_pec_mask(state, pec_mask)
+
+        flux_accs = _accumulate_flux(flux_accs, state)
+        return (state, cpml_new, flux_accs), _sample_probes(state)
+
+    state_init = init_state(shape)
+    initial_carry = (state_init, cpml_state_init, flux_acc_init)
+    final_carry, time_series = jax.lax.scan(
+        step_fn,
+        initial_carry,
+        jnp.arange(n_steps, dtype=jnp.int32),
+    )
+    final_state, _, final_flux_accs = final_carry
+    final_state = final_state._replace(step=jnp.array(n_steps, dtype=jnp.int32))
+    benchmark_flux_results = tuple(
+        _BenchmarkFluxPlaneResult(
+            name=plane.name,
+            axis=plane.axis,
+            index=plane.index,
+            freqs=plane.freqs,
+            dx=plane.dx,
+            e1_dft=accs[0],
+            e2_dft=accs[1],
+            h1_dft=accs[2],
+            h2_dft=accs[3],
+            lo1=plane.lo1,
+            hi1=plane.hi1 if plane.hi1 >= 0 else accs[0].shape[1],
+            lo2=plane.lo2,
+            hi2=plane.hi2 if plane.hi2 >= 0 else accs[0].shape[2],
+        )
+        for plane, accs in zip(benchmark_flux_specs, final_flux_accs)
+    )
+
+    public_result = Result(
+        state=final_state,
+        time_series=time_series,
+        s_params=None,
+        freqs=None,
+        grid=grid,
+        dt=float(grid.dt),
+        freq_range=(sim._freq_max / 10, sim._freq_max, sim._boundary),
+    )
+    return _BenchmarkFluxRun(
+        result=public_result,
+        benchmark_flux_planes=benchmark_flux_results,
+    )
 
 
 def run_subgridded_path(

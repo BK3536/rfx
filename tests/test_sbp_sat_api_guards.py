@@ -153,8 +153,6 @@ def test_subgrid_rejects_mixed_pmc_periodic_boundaryspec():
         sim.add_refinement(z_range=(0.01, 0.03), ratio=2)
 
 
-
-
 def test_subgrid_rejects_mixed_periodic_cpml_boundaryspec():
     sim = Simulation(
         freq_max=5e9,
@@ -275,7 +273,9 @@ def test_source_outside_zslab_fails():
     )
     sim.add_source(position=(0.02, 0.02, 0.032), component="ez")
     sim.add_probe(position=(0.02, 0.02, 0.032), component="ez")
-    with pytest.raises(ValueError, match="outside .*fine grid|Adjust x_range/y_range/z_range"):
+    with pytest.raises(
+        ValueError, match="outside .*fine grid|Adjust x_range/y_range/z_range"
+    ):
         sim.run(n_steps=10)
 
 
@@ -287,7 +287,9 @@ def test_source_outside_zslab_fails():
             "does not support NTFF",
         ),
         (
-            lambda sim: sim.add_dft_plane_probe(axis="z", coordinate=0.018, component="ez"),
+            lambda sim: sim.add_dft_plane_probe(
+                axis="z", coordinate=0.018, component="ez"
+            ),
             "does not support DFT plane probes",
         ),
         (
