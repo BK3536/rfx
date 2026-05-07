@@ -330,7 +330,7 @@ def main() -> int:
     print("\n" + "=" * 70)
     print("Cross-solver gate: imperative compute_msl_s_matrix at L_opt")
     print("=" * 70)
-    sim_imp, _, trace_y_hi_imp, _, _ = build_sim()
+    sim_imp, _, trace_y_hi_imp, _, _ = build_sim(f_target_arr)
     # add a HARD-PEC stub Box of length L_opt to sim_imp
     stub_x_centre = LX / 2.0
     stub_x_lo = stub_x_centre - W_TRACE / 2.0
