@@ -19421,11 +19421,74 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
     assert benchmark_gate[
         signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_compile_stability_status_key
     ] in benchmark_gate["blocking_diagnostic"]
+    signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_key = (
+        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_compile_stability_key.replace(
+            "_compile_stability", "_implementation"
+        )
+    )
+    signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_status_key = f"{signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_key}_status"
+    signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_next_key = f"{signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_key}_next_prerequisite"
+    signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation = benchmark_gate[
+        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_key
+    ]
+    assert benchmark_gate[
+        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_status_key
+    ].endswith(
+        "_phase_amplitude_transport_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_balanced_energy_flux_folded_implementation_no_retain_compile_crash"
+    )
+    assert signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation[
+        "upstream_work_conjugate_impedance_balanced_energy_flux_compile_stability_status"
+    ] == benchmark_gate[
+        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_compile_stability_status_key
+    ]
+    assert signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation[
+        "selected_candidate_id"
+    ] == "ALM2_folded_implementation_no_retain_compile_crash"
+    assert signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation[
+        "folded_into_existing_work_conjugate_phase_transport_helper"
+    ] is True
+    assert signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation[
+        "new_jax_helper_stage_added"
+    ] is False
+    assert signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation[
+        "new_solver_hunk_retained"
+    ] is False
+    assert signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation[
+        "fixture_quality_ready"
+    ] is False
+    implementation_candidates = {
+        candidate["candidate_id"]: candidate
+        for candidate in signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation[
+            "candidate_ladder"
+        ]
+    }
+    assert implementation_candidates[
+        "ALM1_folded_private_work_conjugate_impedance_balanced_energy_flux_hunk_crashed"
+    ]["accepted_candidate"] is False
+    assert implementation_candidates[
+        "ALM2_folded_implementation_no_retain_compile_crash"
+    ]["accepted_candidate"] is True
+    assert any(
+        key.startswith("next_lane_requires_")
+        and key.endswith(
+            "work_conjugate_phase_transport_impedance_balanced_energy_flux_compile_surface_root_cause_redesign"
+        )
+        and value is True
+        for key, value in signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation.items()
+    )
+    assert signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation[
+        "next_prerequisite"
+    ] == benchmark_gate[
+        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_next_key
+    ]
+    assert benchmark_gate[
+        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_status_key
+    ] in benchmark_gate["blocking_diagnostic"]
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_compile_stability_next_key
+        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_next_key
     ]
     assert benchmark_gate["follow_up_recommendation"] == benchmark_gate[
-        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_compile_stability_next_key
+        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_next_key
     ]
     assert benchmark_gate[
         source_interface_residual_phase_rotation_phase_energy_closure_residual_distribution_gradient_balance_curvature_parity_status_key
@@ -20524,7 +20587,7 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         == redesign["next_prerequisite"]
     )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_compile_stability_next_key
+        signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_failure_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_flux_implementation_next_key
     ]
     assert (
         "time_centered_staging_contract_ready"
