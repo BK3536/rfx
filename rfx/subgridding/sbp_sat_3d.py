@@ -5433,9 +5433,6 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
     limited_work_conjugate_phase_transport = (
         jnp.clip(centered_work_conjugate_phase_transport, -half, half) * packet_mask
     )
-    work_conjugate_phase_transport_balance = (
-        jnp.abs(limited_work_conjugate_phase_transport) * packet_mask
-    )
     visibility_scale_gate = (
         one - half * jnp.clip(jnp.abs(scalar_packet_residual_blend), zero, one)
     ) * packet_mask
@@ -5447,6 +5444,18 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
             one,
         )
         * packet_mask
+    )
+    residual_projection_visible_signed_limiter = (
+        jnp.clip(
+            limited_work_conjugate_phase_transport
+            + (half * half) * visibility_scale_signed_direction,
+            -half,
+            half,
+        )
+        * packet_mask
+    )
+    work_conjugate_phase_transport_balance = (
+        jnp.abs(residual_projection_visible_signed_limiter) * packet_mask
     )
     visibility_scale_signed_gate = (
         jnp.clip(
@@ -5503,10 +5512,10 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
         jnp.zeros_like(work_conjugate_phase_transport_scale),
     )
     transported_real = (
-        delta_real - delta_imag * limited_work_conjugate_phase_transport
+        delta_real - delta_imag * residual_projection_visible_signed_limiter
     )
     transported_imag = (
-        delta_imag + delta_real * limited_work_conjugate_phase_transport
+        delta_imag + delta_real * residual_projection_visible_signed_limiter
     )
     balanced_real = jnp.where(
         work_conjugate_phase_transport_ready,
