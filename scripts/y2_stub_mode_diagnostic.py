@@ -84,7 +84,7 @@ def build_thru_sim(freqs, *, with_hard_stub_L=None):
 
 def build_sigmoid_occ(grid, trace_y_hi, L_stub):
     LX = L_LINE + 2 * PORT_MARGIN
-    SIGMOID_BETA = DX * 0.7
+    SIGMOID_BETA = max(DX * 0.7, 0.3 * H_SUB)  # see msl_stub_notch_tuning.py
     nx, ny, nz = grid.shape
     pad_x, pad_y, pad_z = grid.axis_pads
     stub_xc = LX / 2

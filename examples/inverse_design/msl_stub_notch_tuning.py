@@ -129,7 +129,18 @@ F_MAX = 9e9
 L_STUB_MAX = 14.0e-3
 L_MIN, L_MAX = 4.0e-3, 12.0e-3
 L_INIT = 6.0e-3                        # off-target on the short side
-SIGMOID_BETA = DX * 0.7
+SIGMOID_BETA = max(DX * 0.7, 0.3 * H_SUB)
+# Sigmoid PEC mask sharpness for the differentiable stub-length
+# parameterisation.  Pure dx-anchored ``DX * 0.7`` produces a softer
+# transition at finer meshes, which excites a dx-dependent
+# mode-source / sigmoid-mask interaction in the plane-lane S-extractor:
+# Phase 4 hypothesis F test (commit 7db1b31, 2026-05-07) showed
+# |S21|² ≈ 1.20 across all L_stub at dx = 80 µm with the dx-anchored
+# β, while a hard-PEC Box at the same dx gave physical |S21|² ≤ 1
+# with a clean -13 dB notch at L = 7 mm.  Adding a substrate-anchored
+# floor (β ≥ 0.3·h_sub ≈ 76 µm) keeps the transition mesh-independent
+# at fine dx without changing the dx ≥ ~110 µm behaviour the demo
+# already tested clean.
 
 u = W_TRACE / H_SUB
 EPS_EFF = (EPS_R + 1) / 2 + (EPS_R - 1) / 2 * (1 + 12 / u) ** -0.5
