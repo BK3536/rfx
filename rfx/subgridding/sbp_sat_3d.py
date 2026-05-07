@@ -5305,6 +5305,14 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
     flux_transport_weight = jnp.abs(signed_flux - expected_signed_flux) / (
         jnp.abs(signed_flux) + jnp.abs(expected_signed_flux) + local_energy
     )
+    impedance_balance = jnp.clip(
+        (jnp.asarray(2.0, dtype=dtype) * characteristic_phase_norm) / local_energy,
+        zero,
+        one,
+    )
+    flux_transport_weight = flux_transport_weight * (
+        one - half * impedance_balance
+    )
     work_conjugate_phase = (
         (source_real * interface_imag - source_imag * interface_real)
         * packet_mask

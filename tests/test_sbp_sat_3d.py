@@ -4482,6 +4482,8 @@ def test_private_characteristic_work_conjugate_phase_transport_is_bounded_and_fa
     flux_weight = np.abs(signed_flux - expected_signed_flux) / (
         np.abs(signed_flux) + np.abs(expected_signed_flux) + local_energy
     )
+    impedance_balance = np.clip((2.0 * phase_norm) / local_energy, 0.0, 1.0)
+    flux_weight = flux_weight * (1.0 - 0.5 * impedance_balance)
     work_phase = (
         (np.asarray(source_real) * np.asarray(interface_imag) - np.asarray(source_imag) * np.asarray(interface_real))
         * packet_mask_np
