@@ -5374,6 +5374,7 @@ class Simulation:
             from rfx.sources.msl_port import (
                 MSLPort,
                 _msl_yz_cells,
+                compute_msl_mode_profile,
                 make_msl_port_sources,
                 setup_msl_port,
             )
@@ -5389,9 +5390,48 @@ class Simulation:
                     impedance=pe.impedance,
                     excitation=pe.waveform,
                 )
-                materials = setup_msl_port(grid, mp, materials)
+                # Honour `pe.mode` so the source distribution matches
+                # the imperative `run_uniform_path` (Phase 3 of gap #2/#4
+                # closure, 2026-05-07).  ``laplace`` is the default for
+                # ``add_msl_port`` and gives a structured Ez source from
+                # the static-Laplace quasi-TEM mode shape.  ``eigenmode``
+                # mode requires the J+M Schelkunoff source pair which the
+                # legacy uniform forward path does not yet wire — refuse
+                # explicitly so users do not silently get a wrong source.
+                port_mode = getattr(pe, "mode", "uniform")
+                mode_profile = None
+                if port_mode == "laplace":
+                    cells = _msl_yz_cells(grid, mp)
+                    j_set = sorted({c[1] for c in cells})
+                    k_set = sorted({c[2] for c in cells})
+                    j_centre = (j_set[0] + j_set[-1]) // 2
+                    k_mid = (k_set[0] + k_set[-1]) // 2
+                    i_feed = cells[0][0]
+                    if pe.eps_r_sub is not None:
+                        eps_r_sub = float(pe.eps_r_sub)
+                    else:
+                        eps_r_sub = float(np.asarray(
+                            materials.eps_r[i_feed, j_centre, k_mid]
+                        ))
+                    mode_profile = compute_msl_mode_profile(grid, mp, eps_r_sub)
+                elif port_mode == "eigenmode":
+                    raise NotImplementedError(
+                        "MSL port mode='eigenmode' is supported on the "
+                        "imperative Simulation.run() path "
+                        "(`runners/uniform.py::run_uniform_path`) but not "
+                        "yet on the differentiable Simulation.forward() "
+                        "path — the J+M Schelkunoff source pair needs a "
+                        "magnetic-source channel that `_forward_from_materials` "
+                        "does not currently expose.  Use mode='laplace' "
+                        "(the default) on the differentiable path."
+                    )
+                materials = setup_msl_port(grid, mp, materials,
+                                           mode_profile=mode_profile)
                 if pe.excite and pe.waveform is not None:
-                    sources.extend(make_msl_port_sources(grid, mp, materials, n_steps))
+                    sources.extend(make_msl_port_sources(
+                        grid, mp, materials, n_steps,
+                        mode_profile=mode_profile,
+                    ))
                 # Clear PEC mask over the cross-section so the source/σ cells
                 # are not zeroed by the PEC update.
                 for cell in _msl_yz_cells(grid, mp):
