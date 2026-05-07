@@ -128,7 +128,18 @@ F_MAX = 9e9
 
 L_STUB_MAX = 14.0e-3
 L_MIN, L_MAX = 4.0e-3, 12.0e-3
-L_INIT = 6.0e-3                        # off-target on the short side
+L_INIT = 9.5e-3                        # off-notch on the long side
+                                        # (FDTD-actual notch sits at
+                                        # L ≈ 6 mm at dx = h_sub/2 due
+                                        # to ε_eff staircase; analytic
+                                        # closed-form puts it at 7.37
+                                        # mm).  Starting at 9.5 mm
+                                        # gives Adam ≥ 1 mm of clean
+                                        # descent before approaching
+                                        # the deep-notch region where
+                                        # the 3-probe quadratic
+                                        # recurrence's gradient is
+                                        # ill-conditioned.
 SIGMOID_BETA = max(DX * 0.25, 0.05 * H_SUB)
 # Sigmoid PEC mask sharpness for the differentiable stub-length
 # parameterisation.  After Phase 4 σ-loading fix landed
