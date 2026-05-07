@@ -5274,12 +5274,12 @@ def _private_compile_budgeted_time_centered_work_ledger_microkernel(
         packet_mask,
     )
     half = jnp.asarray(0.5, dtype=dtype)
-    quarter = jnp.asarray(0.25, dtype=dtype)
+    gain = half
     packet_mask = jnp.asarray(packet_mask, dtype=dtype)
     return (
         jnp.clip(
             face_resolved_ledger_transport
-            + quarter * phase_work_conjugacy_ledger_coupling,
+            + gain * phase_work_conjugacy_ledger_coupling,
             -half,
             half,
         )

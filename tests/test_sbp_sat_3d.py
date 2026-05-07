@@ -4423,7 +4423,7 @@ def test_private_compile_budgeted_time_centered_work_ledger_microkernel_is_bound
     )
 
     expected = np.clip(
-        np.asarray(face_transport) + 0.25 * np.asarray(ledger_coupling),
+        np.asarray(face_transport) + 0.5 * np.asarray(ledger_coupling),
         -0.5,
         0.5,
     ) * np.asarray(packet_mask)
