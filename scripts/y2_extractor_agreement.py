@@ -138,6 +138,12 @@ def run_L_sweep(label, build_fn, freqs, L_scan):
                                     jnp.asarray(L, dtype=jnp.float32))
             fr = sim.forward(pec_occupancy_override=occ, n_steps=n_steps,
                              checkpoint_segments=K, skip_preflight=True)
+        elif label.startswith("binary"):
+            occ_smooth = build_sigmoid_occ(
+                grid, trace_y_hi, jnp.asarray(L, dtype=jnp.float32))
+            occ = jnp.where(occ_smooth > 0.5, 1.0, 0.0).astype(jnp.float32)
+            fr = sim.forward(pec_occupancy_override=occ, n_steps=n_steps,
+                             checkpoint_segments=K, skip_preflight=True)
         else:
             fr = sim.forward(n_steps=n_steps, checkpoint_segments=K,
                              skip_preflight=True)
@@ -204,29 +210,48 @@ def main():
         freqs, L_scan,
     )
 
+    # Path γ: binary-occupancy override (sigmoid > 0.5) + JAX extractor
+    # Tests whether the 1mm shift comes from the sigmoid edge (half-PEC at
+    # occ=0.5) or from the override mechanism itself (σ-loading + H-damp).
+    c = run_L_sweep(
+        "binary-occ override + JAX extractor",
+        lambda fr, L: build_sim(fr, with_hard_stub_L=None),
+        freqs, L_scan,
+    )
+
     # Summary table
     print("\n" + "=" * 80)
-    print("  L sweep — Box (α) vs sigmoid+σ (β), same JAX extractor")
+    print("  L sweep — Box (α) vs sigmoid+σ (β) vs binary-occ (γ), "
+          "same JAX extractor")
     print("=" * 80)
     print(f"  {'L (mm)':>7}  {'|S21|²_α':>9}  {'α dB':>7}  "
-          f"{'|S21|²_β':>9}  {'β dB':>7}  {'ratio β/α':>10}")
-    for (L, _, _, sa_sq, sa_db), (_, _, _, sb_sq, sb_db) in zip(a, b):
-        ratio = sb_sq / max(sa_sq, 1e-12)
+          f"{'|S21|²_β':>9}  {'β dB':>7}  "
+          f"{'|S21|²_γ':>9}  {'γ dB':>7}")
+    for (L, _, _, sa_sq, sa_db), (_, _, _, sb_sq, sb_db), \
+            (_, _, _, sc_sq, sc_db) in zip(a, b, c):
         print(f"  {L*1e3:7.2f}  {sa_sq:9.4f}  {sa_db:+7.1f}  "
-              f"{sb_sq:9.4f}  {sb_db:+7.1f}  {ratio:10.3f}")
+              f"{sb_sq:9.4f}  {sb_db:+7.1f}  "
+              f"{sc_sq:9.4f}  {sc_db:+7.1f}")
 
     # Find argmin in each
     a_min_i = int(np.argmin([row[3] for row in a]))
     b_min_i = int(np.argmin([row[3] for row in b]))
-    print(f"\n  argmin α (Box):     L = {a[a_min_i][0]*1e3:.2f} mm  "
+    c_min_i = int(np.argmin([row[3] for row in c]))
+    print(f"\n  argmin α (Box):       L = {a[a_min_i][0]*1e3:.2f} mm  "
           f"|S21|² = {a[a_min_i][3]:.4f}")
-    print(f"  argmin β (sigmoid): L = {b[b_min_i][0]*1e3:.2f} mm  "
+    print(f"  argmin β (sigmoid):   L = {b[b_min_i][0]*1e3:.2f} mm  "
           f"|S21|² = {b[b_min_i][3]:.4f}")
-    if a[a_min_i][0] == b[b_min_i][0]:
-        print("  → Box and sigmoid agree on argmin(L)")
-    else:
-        print(f"  → DISAGREE.  Δ argmin = "
-              f"{(a[a_min_i][0] - b[b_min_i][0])*1e3:+.2f} mm")
+    print(f"  argmin γ (binary):    L = {c[c_min_i][0]*1e3:.2f} mm  "
+          f"|S21|² = {c[c_min_i][3]:.4f}")
+    print(f"\n  Δ argmin (β − α) = "
+          f"{(b[b_min_i][0] - a[a_min_i][0])*1e3:+.2f} mm  "
+          "(sigmoid vs Box)")
+    print(f"  Δ argmin (γ − α) = "
+          f"{(c[c_min_i][0] - a[a_min_i][0])*1e3:+.2f} mm  "
+          "(binary vs Box)")
+    print(f"  Δ argmin (γ − β) = "
+          f"{(c[c_min_i][0] - b[b_min_i][0])*1e3:+.2f} mm  "
+          "(binary vs sigmoid → sigmoid-edge contribution)")
 
     # Freq sweep at L=6mm and L=10mm with Box PEC
     print("\n" + "=" * 80)
