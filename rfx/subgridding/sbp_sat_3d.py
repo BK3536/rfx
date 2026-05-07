@@ -5338,11 +5338,26 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
         )
         * packet_mask
     )
+    source_interface_energy_ledger = (
+        jnp.clip((source_energy - interface_energy) / local_energy, -one, one)
+        * packet_mask
+    )
+    phase_work_conjugacy_ledger_coupling = (
+        jnp.clip(
+            signed_admittance_phase_work_conjugacy
+            * source_interface_energy_ledger
+            / (one + jnp.abs(source_interface_energy_ledger)),
+            -half,
+            half,
+        )
+        * packet_mask
+    )
     work_conjugate_phase_transport = (
         (
             work_conjugate_phase
             + signed_characteristic_admittance_residual
             + signed_admittance_phase_work_conjugacy
+            + phase_work_conjugacy_ledger_coupling
         )
         * flux_transport_weight
         * packet_mask
@@ -5394,6 +5409,7 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
         & jnp.any(jnp.abs(work_conjugate_phase) > floor)
         & jnp.any(jnp.abs(signed_characteristic_admittance_residual) > floor)
         & jnp.any(jnp.abs(signed_admittance_phase_work_conjugacy) > floor)
+        & jnp.any(jnp.abs(phase_work_conjugacy_ledger_coupling) > floor)
         & jnp.any((work_conjugate_phase_transport_balance * packet_mask) > floor)
     )
     gate = jnp.where(work_conjugate_phase_transport_ready, one, zero)
