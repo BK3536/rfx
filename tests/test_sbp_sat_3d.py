@@ -4401,7 +4401,9 @@ def test_private_characteristic_energy_pairing_is_bounded_and_fail_closed():
         _private_score_path_visibility_field_update_solver_observed_delta_packet_normalized_residual_residual_weighted_delta_coupling_target_packet_residual_projection_source_interface_residual_phase_rotation_phase_energy_closure_residual_distribution_gradient_balance_curvature_cross_modal_laplacian_normal_poynting_flux_signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_characteristic_energy_pairing_work_conjugate_phase_transport
     )
     assert "scalar_packet_residual_blend" in transport_source
+    assert "visibility_scale_gate" in transport_source
     assert "jnp.sum(scalar_packet_residual_blend" not in transport_source
+    assert "jnp.sum(visibility_scale_gate" not in transport_source
     assert source.index(
         "pre_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_delta_real"
     ) < source.index(
@@ -4559,6 +4561,12 @@ def test_private_characteristic_work_conjugate_phase_transport_is_bounded_and_fa
         -0.5,
         0.5,
     ) * packet_mask_np
+    scalar_packet_residual_blend = np.clip(
+        time_centered_face_work_ledger_transport
+        * np.clip(source_interface_energy_ledger, -1.0, 1.0),
+        -0.5,
+        0.5,
+    ) * packet_mask_np
     transport = (
         work_phase
         + signed_admittance_residual
@@ -4566,10 +4574,18 @@ def test_private_characteristic_work_conjugate_phase_transport_is_bounded_and_fa
         + ledger_coupling
         + face_resolved_transport
         + time_centered_face_work_ledger_transport
+        + scalar_packet_residual_blend
     ) * flux_weight * packet_mask_np
     centered_transport = transport - (np.sum(transport) / (np.sum(packet_mask_np) + 1.0e-12)) * packet_mask_np
     limited_transport = np.clip(centered_transport, -0.5, 0.5) * packet_mask_np
-    expected_scale = np.asarray(characteristic_scale) / (1.0 + np.abs(limited_transport))
+    visibility_scale_gate = (
+        1.0 - 0.5 * np.clip(np.abs(scalar_packet_residual_blend), 0.0, 1.0)
+    ) * packet_mask_np
+    expected_scale = (
+        np.asarray(characteristic_scale)
+        * visibility_scale_gate
+        / (1.0 + np.abs(limited_transport))
+    )
     expected_real = (
         np.asarray(characteristic_real) - np.asarray(characteristic_imag) * limited_transport
     ) * expected_scale
@@ -4583,6 +4599,8 @@ def test_private_characteristic_work_conjugate_phase_transport_is_bounded_and_fa
     assert np.max(np.abs(ledger_coupling)) > 0.0
     assert np.max(np.abs(face_resolved_transport)) > 0.0
     assert np.max(np.abs(time_centered_face_work_ledger_transport)) > 0.0
+    assert np.max(np.abs(scalar_packet_residual_blend)) > 0.0
+    assert np.max(np.abs(visibility_scale_gate)) > 0.0
     assert np.max(np.abs(limited_transport)) > 0.0
     np.testing.assert_allclose(np.asarray(scale), expected_scale, rtol=1e-6, atol=1e-8)
     np.testing.assert_allclose(np.asarray(balanced_real), expected_real, rtol=1e-6, atol=1e-8)

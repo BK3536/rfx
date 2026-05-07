@@ -5436,7 +5436,10 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
     work_conjugate_phase_transport_balance = (
         jnp.abs(limited_work_conjugate_phase_transport) * packet_mask
     )
-    work_conjugate_phase_transport_scale = one / (
+    visibility_scale_gate = (
+        one - half * jnp.clip(jnp.abs(scalar_packet_residual_blend), zero, one)
+    ) * packet_mask
+    work_conjugate_phase_transport_scale = visibility_scale_gate / (
         one + work_conjugate_phase_transport_balance
     )
     active_scale = jnp.clip(
