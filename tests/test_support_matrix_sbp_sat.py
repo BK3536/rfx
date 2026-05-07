@@ -20691,11 +20691,85 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         benchmark_gate[face_resolved_transport_implementation_status_key]
         in benchmark_gate["blocking_diagnostic"]
     )
+    face_resolved_transport_parity_scoring_key = (
+        face_resolved_transport_implementation_key.replace(
+            "_implementation", "_parity_scoring"
+        )
+    )
+    face_resolved_transport_parity_scoring_status_key = (
+        f"{face_resolved_transport_parity_scoring_key}_status"
+    )
+    face_resolved_transport_parity_scoring_next_key = (
+        f"{face_resolved_transport_parity_scoring_key}_next_prerequisite"
+    )
+    face_resolved_transport_parity_scoring = benchmark_gate[
+        face_resolved_transport_parity_scoring_key
+    ]
+    assert benchmark_gate[face_resolved_transport_parity_scoring_status_key].endswith(
+        "_phase_amplitude_transport_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_hunk_insufficient_fixture_quality_pending"
+    )
+    assert face_resolved_transport_parity_scoring[
+        "upstream_work_conjugate_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_implementation_status"
+    ] == benchmark_gate[face_resolved_transport_implementation_status_key]
+    assert (
+        face_resolved_transport_parity_scoring["selected_candidate_id"]
+        == "ALQ1_finite_face_resolved_transport_private_parity_score"
+    )
+    assert face_resolved_transport_parity_scoring[
+        "face_resolved_transport_implementation_consumed"
+    ] is True
+    assert face_resolved_transport_parity_scoring[
+        "face_resolved_ledger_transport_hunk_retained"
+    ] is True
+    assert face_resolved_transport_parity_scoring[
+        "finite_reproducible_score"
+    ] is True
+    assert face_resolved_transport_parity_scoring["score_delta_zero"] is True
+    assert face_resolved_transport_parity_scoring[
+        "metrics_remained_baseline_identical"
+    ] is True
+    assert face_resolved_transport_parity_scoring[
+        "material_improvement_demonstrated"
+    ] is False
+    assert face_resolved_transport_parity_scoring[
+        "fixture_quality_ready"
+    ] is False
+    assert face_resolved_transport_parity_scoring[
+        "true_rt_readiness_unlocked"
+    ] is False
+    assert face_resolved_transport_parity_scoring[
+        "dft_flux_tfsf_port_sparameter_promoted"
+    ] is False
+    parity_candidates = {
+        candidate["candidate_id"]: candidate
+        for candidate in face_resolved_transport_parity_scoring["candidate_ladder"]
+    }
+    assert parity_candidates[
+        "ALQ1_finite_face_resolved_transport_private_parity_score"
+    ]["accepted_candidate"] is True
+    assert parity_candidates[
+        "ALQ3_public_observable_or_threshold_escape_rejected"
+    ]["accepted_candidate"] is False
+    assert any(
+        key.startswith("next_lane_requires_")
+        and key.endswith(
+            "work_conjugate_phase_transport_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_failure_theory_redesign"
+        )
+        and value is True
+        for key, value in face_resolved_transport_parity_scoring.items()
+    )
+    assert face_resolved_transport_parity_scoring["next_prerequisite"] == benchmark_gate[
+        face_resolved_transport_parity_scoring_next_key
+    ]
+    assert (
+        benchmark_gate[face_resolved_transport_parity_scoring_status_key]
+        in benchmark_gate["blocking_diagnostic"]
+    )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        face_resolved_transport_implementation_next_key
+        face_resolved_transport_parity_scoring_next_key
     ]
     assert benchmark_gate["follow_up_recommendation"] == benchmark_gate[
-        face_resolved_transport_implementation_next_key
+        face_resolved_transport_parity_scoring_next_key
     ]
     assert benchmark_gate[
         source_interface_residual_phase_rotation_phase_energy_closure_residual_distribution_gradient_balance_curvature_parity_status_key
@@ -21794,7 +21868,7 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         == redesign["next_prerequisite"]
     )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        face_resolved_transport_implementation_next_key
+        face_resolved_transport_parity_scoring_next_key
     ]
     assert (
         "time_centered_staging_contract_ready"
