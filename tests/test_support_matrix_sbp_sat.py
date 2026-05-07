@@ -22302,11 +22302,111 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         ]
         in benchmark_gate["blocking_diagnostic"]
     )
+    face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_key = (
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_floor_failure_key.replace(
+            "_scalar_blend_score_path_visibility_compile_floor_failure",
+            "_scalar_blend_score_path_visibility_compile_surface_redesign",
+        )
+    )
+    face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_status_key = (
+        f"{face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_key}_status"
+    )
+    face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_next_key = (
+        f"{face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_key}_next_prerequisite"
+    )
+    face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_metadata = benchmark_gate[
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_key
+    ]
+    assert benchmark_gate[
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_status_key
+    ].endswith(
+        "_phase_amplitude_transport_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_visibility_scale_theory_ready"
+    )
+    assert face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_metadata[
+        "upstream_work_conjugate_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_floor_failure_status"
+    ] == benchmark_gate[
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_floor_failure_status_key
+    ]
+    assert (
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_metadata["selected_candidate_id"]
+        == "AMI1_visibility_scale_gate_microkernel"
+    )
+    assert face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_metadata[
+        "selected_next_private_design_target"
+    ] == "compile_surface_reduced_visibility_scale_gate_microkernel"
+    for flag in (
+        "score_path_visibility_compile_floor_consumed",
+        "slow_no_go_failure_evidence_consumed",
+        "score_path_visibility_failure_theory_consumed",
+        "scalar_blend_parity_scoring_consumed",
+        "scalar_blend_implementation_consumed",
+        "failed_transport_vector_shape_rejected",
+        "jax_backend_compile_segfault_observed",
+        "solver_hunk_reverted_after_slow_no_go",
+        "visibility_scale_gate_theory_ready",
+        "compile_surface_reduced",
+        "reduces_live_vector_intermediates",
+        "bounded_follow_up_implementation_surface",
+        "no_extra_packet_reductions_required",
+        "no_new_helper_nesting_required",
+        "private_benchmark_evidence_only",
+    ):
+        assert face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_metadata[flag] is True
+    for flag in (
+        "fixture_quality_ready",
+        "true_rt_readiness_unlocked",
+        "slab_rt_scored",
+        "production_patch_applied",
+        "solver_behavior_changed",
+        "field_update_behavior_changed",
+        "runner_behavior_changed",
+        "new_solver_hunk_retained",
+        "api_preflight_changes_allowed",
+        "rfx_api_changes_allowed",
+        "package_export_changed",
+        "readme_changed",
+        "docs_public_changed",
+        "examples_changed",
+        "hook_surface_changed",
+        "true_rt_public_observable_promoted",
+        "dft_flux_tfsf_port_sparameter_promoted",
+    ):
+        assert face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_metadata[flag] is False
+    redesign_candidates = {
+        candidate["candidate_id"]: candidate
+        for candidate in face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_metadata["candidate_ladder"]
+    }
+    assert redesign_candidates[
+        "AMI1_visibility_scale_gate_microkernel"
+    ]["accepted_candidate"] is True
+    assert redesign_candidates[
+        "AMI2_failed_transport_vector_shape_rejected"
+    ]["accepted_candidate"] is False
+    assert redesign_candidates[
+        "AMI3_public_observable_or_threshold_escape_rejected"
+    ]["accepted_candidate"] is False
+    assert any(
+        key.startswith("next_lane_requires_")
+        and key.endswith(
+            "work_conjugate_phase_transport_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_visibility_scale_implementation"
+        )
+        and value is True
+        for key, value in face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_metadata.items()
+    )
+    assert face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_metadata["next_prerequisite"] == benchmark_gate[
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_next_key
+    ]
+    assert (
+        benchmark_gate[
+            face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_status_key
+        ]
+        in benchmark_gate["blocking_diagnostic"]
+    )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_floor_failure_next_key
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_next_key
     ]
     assert benchmark_gate["follow_up_recommendation"] == benchmark_gate[
-        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_floor_failure_next_key
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_next_key
     ]
     assert benchmark_gate[
         source_interface_residual_phase_rotation_phase_energy_closure_residual_distribution_gradient_balance_curvature_parity_status_key
@@ -23405,7 +23505,7 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         == redesign["next_prerequisite"]
     )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_floor_failure_next_key
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_gain_ladder_packet_projected_residual_scalar_blend_score_path_visibility_compile_surface_redesign_next_key
     ]
     assert (
         "time_centered_staging_contract_ready"
