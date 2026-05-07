@@ -20765,11 +20765,105 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         benchmark_gate[face_resolved_transport_parity_scoring_status_key]
         in benchmark_gate["blocking_diagnostic"]
     )
+    face_resolved_transport_failure_theory_key = (
+        face_resolved_transport_parity_scoring_key.replace(
+            "_parity_scoring", "_failure_theory"
+        )
+    )
+    face_resolved_transport_failure_theory_status_key = (
+        f"{face_resolved_transport_failure_theory_key}_status"
+    )
+    face_resolved_transport_failure_theory_next_key = (
+        f"{face_resolved_transport_failure_theory_key}_next_prerequisite"
+    )
+    face_resolved_transport_failure_theory = benchmark_gate[
+        face_resolved_transport_failure_theory_key
+    ]
+    assert benchmark_gate[face_resolved_transport_failure_theory_status_key].endswith(
+        "_phase_amplitude_transport_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_time_centered_work_ledger_theory_ready"
+    )
+    assert face_resolved_transport_failure_theory[
+        "upstream_work_conjugate_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_parity_scoring_status"
+    ] == benchmark_gate[face_resolved_transport_parity_scoring_status_key]
+    assert (
+        face_resolved_transport_failure_theory["selected_candidate_id"]
+        == "ALR3_time_centered_face_work_ledger_transport"
+    )
+    assert face_resolved_transport_failure_theory["selected_failure_hypothesis"] == (
+        "packet_support_weighted_face_residual_not_time_centered_to_staggered_eh_work_transfer"
+    )
+    assert face_resolved_transport_failure_theory[
+        "selected_next_private_design_target"
+    ] == "time_centered_face_work_ledger_transport"
+    assert face_resolved_transport_failure_theory[
+        "face_resolved_transport_parity_scoring_consumed"
+    ] is True
+    assert face_resolved_transport_failure_theory[
+        "packet_support_weighted_face_residual_insufficient"
+    ] is True
+    assert face_resolved_transport_failure_theory[
+        "axis_difference_retry_rejected"
+    ] is True
+    assert face_resolved_transport_failure_theory[
+        "packet_mean_residual_retry_rejected"
+    ] is True
+    assert face_resolved_transport_failure_theory[
+        "time_centered_face_work_ledger_transport_theory_ready"
+    ] is True
+    assert face_resolved_transport_failure_theory[
+        "bounded_follow_up_implementation_surface"
+    ] is True
+    assert face_resolved_transport_failure_theory[
+        "no_new_solver_hunk_in_failure_theory"
+    ] is True
+    assert face_resolved_transport_failure_theory[
+        "fixture_quality_ready"
+    ] is False
+    assert face_resolved_transport_failure_theory[
+        "true_rt_readiness_unlocked"
+    ] is False
+    assert face_resolved_transport_failure_theory[
+        "dft_flux_tfsf_port_sparameter_promoted"
+    ] is False
+    failure_candidates = {
+        candidate["candidate_id"]: candidate
+        for candidate in face_resolved_transport_failure_theory["candidate_ladder"]
+    }
+    assert failure_candidates[
+        "ALR1_repeat_packet_support_weighted_residual_rejected"
+    ]["accepted_candidate"] is False
+    assert failure_candidates[
+        "ALR2_axis_difference_or_packet_mean_retry_rejected"
+    ]["accepted_candidate"] is False
+    assert failure_candidates[
+        "ALR3_time_centered_face_work_ledger_transport"
+    ]["accepted_candidate"] is True
+    assert failure_candidates[
+        "ALR4_unbounded_global_or_mortar_rewrite_rejected"
+    ]["accepted_candidate"] is False
+    assert failure_candidates[
+        "ALR5_public_observable_or_threshold_escape_rejected"
+    ]["accepted_candidate"] is False
+    assert any(
+        key.startswith("next_lane_requires_")
+        and key.endswith(
+            "work_conjugate_phase_transport_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_time_centered_work_ledger_implementation"
+        )
+        and value is True
+        for key, value in face_resolved_transport_failure_theory.items()
+    )
+    assert face_resolved_transport_failure_theory["next_prerequisite"] == benchmark_gate[
+        face_resolved_transport_failure_theory_next_key
+    ]
+    assert (
+        benchmark_gate[face_resolved_transport_failure_theory_status_key]
+        in benchmark_gate["blocking_diagnostic"]
+    )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        face_resolved_transport_parity_scoring_next_key
+        face_resolved_transport_failure_theory_next_key
     ]
     assert benchmark_gate["follow_up_recommendation"] == benchmark_gate[
-        face_resolved_transport_parity_scoring_next_key
+        face_resolved_transport_failure_theory_next_key
     ]
     assert benchmark_gate[
         source_interface_residual_phase_rotation_phase_energy_closure_residual_distribution_gradient_balance_curvature_parity_status_key
@@ -21868,7 +21962,7 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         == redesign["next_prerequisite"]
     )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        face_resolved_transport_parity_scoring_next_key
+        face_resolved_transport_failure_theory_next_key
     ]
     assert (
         "time_centered_staging_contract_ready"
