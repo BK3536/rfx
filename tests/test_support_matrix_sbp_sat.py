@@ -20609,11 +20609,93 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         benchmark_gate[ledger_coupling_failure_theory_status_key]
         in benchmark_gate["blocking_diagnostic"]
     )
+    face_resolved_transport_implementation_key = (
+        ledger_coupling_failure_theory_key.replace(
+            "_failure_theory", "_face_resolved_transport_implementation"
+        )
+    )
+    face_resolved_transport_implementation_status_key = (
+        f"{face_resolved_transport_implementation_key}_status"
+    )
+    face_resolved_transport_implementation_next_key = (
+        f"{face_resolved_transport_implementation_key}_next_prerequisite"
+    )
+    face_resolved_transport_implementation = benchmark_gate[
+        face_resolved_transport_implementation_key
+    ]
+    assert benchmark_gate[face_resolved_transport_implementation_status_key].endswith(
+        "_phase_amplitude_transport_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_hunk_retained_fixture_quality_pending"
+    )
+    assert face_resolved_transport_implementation[
+        "upstream_work_conjugate_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_failure_theory_status"
+    ] == benchmark_gate[ledger_coupling_failure_theory_status_key]
+    assert (
+        face_resolved_transport_implementation["selected_candidate_id"]
+        == "ALP1_face_resolved_source_interface_ledger_transport_hunk"
+    )
+    assert face_resolved_transport_implementation["selected_failure_hypothesis"] == (
+        "packet_scalar_ledger_coupling_not_face_resolved_transverse_energy_transfer"
+    )
+    assert face_resolved_transport_implementation[
+        "selected_next_private_design_target"
+    ] == "face_resolved_source_interface_energy_ledger_transport"
+    assert face_resolved_transport_implementation[
+        "ledger_coupling_failure_theory_consumed"
+    ] is True
+    assert face_resolved_transport_implementation[
+        "face_resolved_ledger_transport_hunk_retained"
+    ] is True
+    assert face_resolved_transport_implementation[
+        "face_resolved_ledger_uses_packet_support_weighted_residual"
+    ] is True
+    assert face_resolved_transport_implementation[
+        "face_resolved_transport_uses_existing_ledger_coupling"
+    ] is True
+    assert face_resolved_transport_implementation[
+        "face_resolved_transport_bounded_by_half"
+    ] is True
+    assert face_resolved_transport_implementation["production_patch_applied"] is True
+    assert face_resolved_transport_implementation["solver_behavior_changed"] is True
+    assert face_resolved_transport_implementation["field_update_behavior_changed"] is True
+    assert face_resolved_transport_implementation["new_solver_hunk_retained"] is True
+    assert face_resolved_transport_implementation["fixture_quality_ready"] is False
+    assert face_resolved_transport_implementation["true_rt_readiness_unlocked"] is False
+    assert face_resolved_transport_implementation[
+        "dft_flux_tfsf_port_sparameter_promoted"
+    ] is False
+    face_impl_candidates = {
+        candidate["candidate_id"]: candidate
+        for candidate in face_resolved_transport_implementation["candidate_ladder"]
+    }
+    assert face_impl_candidates[
+        "ALP1_face_resolved_source_interface_ledger_transport_hunk"
+    ]["accepted_candidate"] is True
+    assert face_impl_candidates[
+        "ALP2_unbounded_face_graph_or_mortar_rewrite_rejected"
+    ]["accepted_candidate"] is False
+    assert face_impl_candidates[
+        "ALP3_public_observable_or_threshold_escape_rejected"
+    ]["accepted_candidate"] is False
+    assert any(
+        key.startswith("next_lane_requires_")
+        and key.endswith(
+            "work_conjugate_phase_transport_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_parity_scoring"
+        )
+        and value is True
+        for key, value in face_resolved_transport_implementation.items()
+    )
+    assert face_resolved_transport_implementation["next_prerequisite"] == benchmark_gate[
+        face_resolved_transport_implementation_next_key
+    ]
+    assert (
+        benchmark_gate[face_resolved_transport_implementation_status_key]
+        in benchmark_gate["blocking_diagnostic"]
+    )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        ledger_coupling_failure_theory_next_key
+        face_resolved_transport_implementation_next_key
     ]
     assert benchmark_gate["follow_up_recommendation"] == benchmark_gate[
-        ledger_coupling_failure_theory_next_key
+        face_resolved_transport_implementation_next_key
     ]
     assert benchmark_gate[
         source_interface_residual_phase_rotation_phase_energy_closure_residual_distribution_gradient_balance_curvature_parity_status_key
@@ -21712,7 +21794,7 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         == redesign["next_prerequisite"]
     )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        ledger_coupling_failure_theory_next_key
+        face_resolved_transport_implementation_next_key
     ]
     assert (
         "time_centered_staging_contract_ready"
