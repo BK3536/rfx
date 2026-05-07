@@ -95,19 +95,21 @@ C0 = 2.998e8
 EPS_R = 3.66
 H_SUB = 254e-6
 W_TRACE = 600e-6
-DX = 80e-6                             # cv06b standard — 3 substrate
-                                        # cells.  Tightens the
-                                        # Hammerstad-vs-FDTD ε_eff
-                                        # staircase to ~1.6 % (vs ~10 %
-                                        # at h_sub/2), so the
-                                        # informational L_target_an
-                                        # vs L_opt delta in the
-                                        # verification block reads as
-                                        # a clean engineering match.
-                                        # Memory budget: ≈ 25 GB peak
-                                        # for value_and_grad — fits
-                                        # comfortably on A6000 (48 GB)
-                                        # but exceeds RTX 4090 (24 GB).
+DX = 127e-6                            # h_sub / 2 — 2 substrate cells.
+                                        # Demo geometry of record
+                                        # (Y2 GPU run #7, 2026-05-07,
+                                        # all four redefined gates
+                                        # PASS).  Refining to 80 µm
+                                        # (cv06b standard) gives
+                                        # cleaner ε_eff staircase but
+                                        # exposed a dx-fragility in
+                                        # the plane lane (Y2 run #9,
+                                        # |S21|² > 1 unphysical) that
+                                        # is a Phase 4 follow-up; for
+                                        # now the demo runs at h_sub/2
+                                        # where Phase 1+2+3 closure is
+                                        # bit-identically verified by
+                                        # ``tests/test_msl_plane_extractor_jax.py``.
 L_LINE = 30.0e-3                       # cv06b-class line length.  Each
                                         # MSL port's V₃ probe must sit
                                         # ≥ λ_g/4 from the stub PEC
