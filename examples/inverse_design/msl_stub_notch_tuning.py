@@ -349,23 +349,27 @@ def main() -> int:
     cost_init = history["cost"][0]
     cost_drop_db = 10.0 * math.log10(cost_init / max(cost_opt, 1e-12))
     on_rail = L_opt <= L_MIN * 1.005 or L_opt >= L_MAX * 0.995
-    # All five gates are now tight — Phase 2 of gap #2/#4 closure
-    # (2026-05-07) replaced the scalar-Ez point-probe extractor with
-    # a plane-integrated JAX extractor that mirrors the imperative
-    # `compute_msl_s_matrix` integration exactly.  The 15-20 % notch-
-    # frequency bias documented on the scalar lane is now ~5-10 %
-    # on the same mesh.  Gates G2/G3 set at 10 % to leave a 2× margin
-    # over the typical plane-lane residual at this geometry.
+    # All five gates are now tight — Phases 2 + 3 of gap #2/#4
+    # closure (commits 0e0183c + 1c50dff, 2026-05-07) replaced the
+    # scalar-Ez point-probe extractor with a plane-integrated JAX
+    # extractor AND brought `_forward_from_materials` MSL-port
+    # source construction into parity with the imperative
+    # `compute_msl_s_matrix`.  After Phase 3 the plane lane is
+    # bit-identical to the imperative reference at FP32 noise
+    # (test_msl_plane_extractor_jax.py: |S21| max diff 0.0009,
+    # RMS 0.0002).  Gates G2/G3 tightened to 5 % — the residual at
+    # this mesh comes from the FDTD physics floor, not the
+    # extractor.
     g1 = cost_drop_db >= 1.0
-    g2 = L_err_an <= 10.0
-    g3 = f_err <= 10.0
+    g2 = L_err_an <= 5.0
+    g3 = f_err <= 5.0
     g4 = depth_imp <= -15.0
     g5 = not on_rail
     print(f"  G1  Adam cost ↓ ≥ 1 dB:                  "
           f"{cost_drop_db:.1f} dB  ({'PASS' if g1 else 'FAIL'})")
-    print(f"  G2  L_opt ≈ analytic L_target (≤ 10%):   "
+    print(f"  G2  L_opt ≈ analytic L_target (≤ 5%):    "
           f"err={L_err_an:.2f}%  ({'PASS' if g2 else 'FAIL'})")
-    print(f"  G3  Imperative notch ≈ f_target (≤ 10%): "
+    print(f"  G3  Imperative notch ≈ f_target (≤ 5%):  "
           f"err={f_err:.2f}%  ({'PASS' if g3 else 'FAIL'})")
     print(f"  G4  Imperative notch depth ≤ -15 dB:     "
           f"{depth_imp:+.1f} dB  ({'PASS' if g4 else 'FAIL'})")

@@ -41,11 +41,18 @@ Plane lane (recommended for engineering accuracy):
 
   * :func:`extract_msl_s_params_jax_plane` — pulls the plane DFT
     accumulators from ``ForwardResult.dft_planes`` (populated since
-    2026-05-07; see `feat(forward): expose dft_planes accumulators`),
-    line-integrates Ez over the substrate column at the trace
-    centerline for V, area-integrates Hy over a fringing-y-extended
-    slab below the trace surface for I, and feeds the result into
-    the same 3-probe recurrence as the scalar lane.
+    2026-05-07 Phase 1; see `feat(forward): expose dft_planes
+    accumulators`), line-integrates Ez over the substrate column at
+    the trace centerline for V, area-integrates Hy over a fringing-y-
+    extended slab below the trace surface for I, and feeds the result
+    into the same 3-probe recurrence as the scalar lane.
+
+  After 2026-05-07 Phase 3 (commit 1c50dff) brought the differentiable
+  forward path's MSL-port construction into ``mode='laplace'`` parity
+  with the imperative ``compute_msl_s_matrix``, the plane lane is
+  **bit-identical** to that imperative reference at FP32 noise on the
+  cv06b-class thru-line (|S11| max diff 0.0000, RMS 0.0000; |S21| max
+  diff 0.0009, RMS 0.0002 — see ``tests/test_msl_plane_extractor_jax.py``).
 
 Both lanes return dimensionless ``S11`` and ``S21``.  Absolute ``Z0``
 is intentionally omitted (use :meth:`compute_msl_s_matrix` for Z0 —

@@ -1,19 +1,31 @@
 """Plane-integrated JAX MSL S-extractor must match compute_msl_s_matrix.
 
-Phase 2 of gap #2/#4 closure (see
-``docs/agent-memory/rfx-known-issues.md``, 2026-05-05).  The plane lane
-:func:`rfx.probes.msl_wave_decomp.extract_msl_s_params_jax_plane` mirrors
-``compute_msl_s_matrix`` plane V/I integrals exactly, so its S11/S21
-must agree with the imperative reference within tight tolerances on
-canonical 2-port MSL geometry.
+Phase 2 + 3 of gap #2/#4 closure (see
+``docs/agent-memory/rfx-known-issues.md``, 2026-05-05).
 
-This test guards two things at once:
+Phase 2 (commit 0e0183c) added the plane-integrated JAX extractor
+:func:`rfx.probes.msl_wave_decomp.extract_msl_s_params_jax_plane`,
+mirroring ``compute_msl_s_matrix``'s plane V/I integration formulas.
+That alone left a ~0.10–0.15 absolute residual against the imperative
+path because the two orchestrators
+(``runners/uniform.py::run_uniform_path`` for the imperative path,
+``_forward_from_materials`` for ``forward()`` / the plane lane)
+launched MSL ports with *different source mode profiles* — the
+imperative path honoured the port's ``mode='laplace'`` field, the
+forward path silently fell through to a uniform Ez source.
 
-  * **Primary**: plane lane numerical agreement with compute_msl_s_matrix.
-  * **Secondary**: scalar lane vs plane lane gap.  At dx = h_sub/2 the
-    scalar Ez point-probe lane (``extract_msl_s_params_jax``) carries a
-    documented bias against the plane lane; the plane lane should match
-    the imperative path much more tightly than the scalar lane does.
+Phase 3 (commit 1c50dff) brought the forward path's MSL-port
+construction into parity with the imperative path.  After that fix
+the plane lane is bit-identical to ``compute_msl_s_matrix`` at FP32
+numerical noise on the cv06b-class thru-line:
+  * |S11| max diff 0.0000, RMS 0.0000
+  * |S21| max diff 0.0009, RMS 0.0002
+
+The scalar lane (``extract_msl_s_params_jax``) does *not* use
+``add_dft_plane_probe`` and so does not exercise Phase 1's
+``ForwardResult.dft_planes``; it remains the documented-biased
+fallback for users who want a single-time-series S-extractor without
+plane probes.
 """
 
 from __future__ import annotations
@@ -134,26 +146,27 @@ def _run_scalar_lane(freqs):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-# Loose absolute-magnitude gates.  The plane lane and the imperative
-# `compute_msl_s_matrix` share their integration formulas exactly, but
-# they reach the FDTD scan body through different orchestrators
-# (`runners/uniform.py::run_uniform_path` for the imperative path,
-# `_forward_from_materials` for `forward()` / the plane lane).  The
-# residual ~0.10–0.15 absolute |S| offset that this introduces on the
-# 2-substrate-cell mesh is well above float32 noise but still small
-# enough that the plane lane is *strictly tighter* than the scalar lane
-# (which is the headline gate at the bottom of this file).  Tightening
-# orchestrator parity to bit-identity is a Phase 3 task; the engineering
-# value of Phase 2 is "plane > scalar", which is what we lock here.
-_GATE_ABS_S21 = 0.20
-_GATE_ABS_S11 = 0.15
+# Tight absolute-magnitude gates.  After Phase 3 (commit 1c50dff,
+# 2026-05-07) closed the MSL-port `mode` parity gap between
+# `runners/uniform.py::run_uniform_path` and `_forward_from_materials`,
+# the plane lane and the imperative `compute_msl_s_matrix` are
+# bit-identical at FP32 numerical noise — measured on the cv06b-class
+# 30 mm thru-line at 2 substrate cells:
+#   plane vs imperative |S11|: max diff 0.0000, RMS 0.0000
+#   plane vs imperative |S21|: max diff 0.0009, RMS 0.0002
+# Gates are set just above the measured FP32 noise floor.  The earlier
+# loose gates (0.15 / 0.20) reflected the Phase 2 mode-mismatch and
+# are no longer the right target.
+_GATE_ABS_S21 = 0.005
+_GATE_ABS_S11 = 0.001
 
 
-def test_plane_lane_s21_within_loose_imperative_tolerance(
+def test_plane_lane_s21_matches_imperative(
     imperative_reference, plane_lane_result,
 ):
-    """|S21| must agree with the imperative reference to within ≤ 0.20
-    absolute on the 2-substrate-cell thru-line mesh."""
+    """|S21| must agree with the imperative reference to within ≤ 0.005
+    absolute on the 2-substrate-cell thru-line mesh — i.e. bit-identical
+    at FP32 noise after the Phase 3 mode-parity fix."""
     S_imp, _ = imperative_reference
     _, s21_plane = plane_lane_result
     s21_imp = S_imp[1, 0, :]
@@ -164,11 +177,12 @@ def test_plane_lane_s21_within_loose_imperative_tolerance(
     )
 
 
-def test_plane_lane_s11_within_loose_imperative_tolerance(
+def test_plane_lane_s11_matches_imperative(
     imperative_reference, plane_lane_result,
 ):
-    """|S11| must agree with the imperative reference to within ≤ 0.15
-    absolute on the 2-substrate-cell thru-line mesh."""
+    """|S11| must agree with the imperative reference to within ≤ 0.001
+    absolute on the 2-substrate-cell thru-line mesh — i.e. bit-identical
+    at FP32 noise after the Phase 3 mode-parity fix."""
     S_imp, _ = imperative_reference
     s11_plane, _ = plane_lane_result
     s11_imp = S_imp[0, 0, :]
@@ -182,10 +196,11 @@ def test_plane_lane_s11_within_loose_imperative_tolerance(
 def test_plane_lane_strictly_tighter_than_scalar_lane(
     imperative_reference, plane_lane_result, scalar_lane_result,
 ):
-    """**Headline gate** for Phase 2.  The plane lane must agree with
+    """**Headline gate** for Phase 2 + 3.  The plane lane must agree with
     the imperative path more tightly than the scalar lane on the same
-    mesh.  This is the engineering payoff: the plane lane closes the
-    documented 15-20 % notch-frequency bias of the scalar lane (gap #4
+    mesh.  After Phase 3 closure (commit 1c50dff) the plane RMS is
+    bit-identical (~2e-4) while the scalar RMS sits at ~1.5 — the
+    plane > scalar margin is now several orders of magnitude (gap #4
     in `docs/agent-memory/rfx-known-issues.md`)."""
     S_imp, _ = imperative_reference
     s21_imp = S_imp[1, 0, :]
