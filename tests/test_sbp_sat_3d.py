@@ -21,6 +21,7 @@ from rfx.subgridding.sbp_sat_3d import (
     _face_interior_masks,
     _get_face_ops,
     _init_private_interface_owner_state,
+    _private_compile_budgeted_time_centered_work_ledger_microkernel,
     _private_interface_owner_joint_score,
     _private_score_path_visibility_field_update_coupling_target,
     _private_score_path_visibility_field_update_solver_observed_delta,
@@ -4409,6 +4410,28 @@ def test_private_characteristic_energy_pairing_is_bounded_and_fail_closed():
 
 
 
+
+def test_private_compile_budgeted_time_centered_work_ledger_microkernel_is_bounded():
+    packet_mask = jnp.asarray([[1.0, 1.0, 0.0], [1.0, 0.0, 1.0]])
+    face_transport = jnp.asarray([[0.4, -0.4, 0.3], [0.1, 0.2, -0.2]])
+    ledger_coupling = jnp.asarray([[0.8, -0.8, 0.7], [0.4, -0.5, -0.6]])
+
+    transport = _private_compile_budgeted_time_centered_work_ledger_microkernel(
+        face_resolved_ledger_transport=face_transport,
+        phase_work_conjugacy_ledger_coupling=ledger_coupling,
+        packet_mask=packet_mask,
+    )
+
+    expected = np.clip(
+        np.asarray(face_transport) + 0.25 * np.asarray(ledger_coupling),
+        -0.5,
+        0.5,
+    ) * np.asarray(packet_mask)
+    np.testing.assert_allclose(np.asarray(transport), expected, rtol=1.0e-7, atol=1.0e-8)
+    assert np.max(np.abs(np.asarray(transport))) <= 0.5
+    assert np.asarray(transport)[0, 2] == 0.0
+    assert np.max(np.abs(np.asarray(transport) - np.asarray(face_transport) * np.asarray(packet_mask))) > 0.0
+
 def test_private_characteristic_work_conjugate_phase_transport_is_bounded_and_fail_closed():
     delta_real = jnp.asarray(
         [[0.003, -0.002, 0.004], [0.005, -0.003, 0.002], [0.004, 0.006, -0.005]],
@@ -4526,7 +4549,11 @@ def test_private_characteristic_work_conjugate_phase_transport_is_bounded_and_fa
         -0.5,
         0.5,
     ) * packet_mask_np
-    time_centered_face_work_ledger_transport = face_resolved_transport
+    time_centered_face_work_ledger_transport = np.clip(
+        face_resolved_transport + 0.25 * ledger_coupling,
+        -0.5,
+        0.5,
+    ) * packet_mask_np
     transport = (
         work_phase
         + signed_admittance_residual

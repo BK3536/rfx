@@ -21150,11 +21150,109 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         benchmark_gate[face_resolved_transport_time_centered_work_ledger_failure_theory_status_key]
         in benchmark_gate["blocking_diagnostic"]
     )
+    face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_key = (
+        face_resolved_transport_time_centered_work_ledger_failure_theory_key.replace(
+            "_failure_theory", "_compile_budgeted_helper_implementation"
+        )
+    )
+    face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_status_key = (
+        f"{face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_key}_status"
+    )
+    face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_next_key = (
+        f"{face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_key}_next_prerequisite"
+    )
+    face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation = benchmark_gate[
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_key
+    ]
+    assert benchmark_gate[
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_status_key
+    ].endswith(
+        "_phase_amplitude_transport_characteristic_energy_pairing_work_conjugate_phase_transport_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_hunk_retained_fixture_quality_pending"
+    )
+    assert face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation[
+        "upstream_work_conjugate_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_time_centered_work_ledger_failure_theory_status"
+    ] == benchmark_gate[face_resolved_transport_time_centered_work_ledger_failure_theory_status_key]
+    assert (
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation[
+            "selected_candidate_id"
+        ]
+        == "ALV1_compile_budgeted_time_centered_work_ledger_microkernel_hunk"
+    )
+    assert face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation[
+        "selected_next_private_design_target"
+    ] == "compile_budgeted_time_centered_work_ledger_microkernel"
+    for flag in (
+        "time_centered_work_ledger_failure_theory_consumed",
+        "time_centered_work_ledger_parity_scoring_consumed",
+        "time_centered_work_ledger_implementation_consumed",
+        "compile_budgeted_private_microkernel_hunk_retained",
+        "compile_budgeted_private_microkernel_helper_added",
+        "compile_budgeted_private_microkernel_uses_existing_face_resolved_transport",
+        "compile_budgeted_private_microkernel_uses_existing_phase_work_conjugacy_ledger_coupling",
+        "compile_budgeted_private_microkernel_uses_existing_packet_mask",
+        "compile_budgeted_private_microkernel_bounded_by_half",
+        "direct_product_blend_slow_no_go_rejected",
+        "slow_no_go_required_before_commit",
+        "slow_no_go_passed_before_commit",
+        "production_patch_applied",
+        "solver_behavior_changed",
+        "field_update_behavior_changed",
+        "new_solver_hunk_retained",
+    ):
+        assert face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation[flag] is True
+    for flag in (
+        "fixture_quality_ready",
+        "true_rt_readiness_unlocked",
+        "slab_rt_scored",
+        "runner_behavior_changed",
+        "api_preflight_changes_allowed",
+        "rfx_api_changes_allowed",
+        "package_export_changed",
+        "readme_changed",
+        "docs_public_changed",
+        "examples_changed",
+        "hook_surface_changed",
+        "true_rt_public_observable_promoted",
+        "dft_flux_tfsf_port_sparameter_promoted",
+    ):
+        assert face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation[flag] is False
+    helper_candidates = {
+        candidate["candidate_id"]: candidate
+        for candidate in face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation[
+            "candidate_ladder"
+        ]
+    }
+    assert helper_candidates[
+        "ALV1_compile_budgeted_time_centered_work_ledger_microkernel_hunk"
+    ]["accepted_candidate"] is True
+    assert helper_candidates[
+        "ALV2_direct_product_or_blend_retry_rejected"
+    ]["accepted_candidate"] is False
+    assert helper_candidates[
+        "ALV3_public_observable_or_threshold_escape_rejected"
+    ]["accepted_candidate"] is False
+    assert any(
+        key.startswith("next_lane_requires_")
+        and key.endswith(
+            "work_conjugate_phase_transport_impedance_balanced_energy_flux_expression_budgeted_existing_helper_signed_characteristic_admittance_phase_work_conjugacy_ledger_coupling_face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_parity_scoring"
+        )
+        and value is True
+        for key, value in face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation.items()
+    )
+    assert face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation[
+        "next_prerequisite"
+    ] == benchmark_gate[
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_next_key
+    ]
+    assert (
+        benchmark_gate[face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_status_key]
+        in benchmark_gate["blocking_diagnostic"]
+    )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        face_resolved_transport_time_centered_work_ledger_failure_theory_next_key
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_next_key
     ]
     assert benchmark_gate["follow_up_recommendation"] == benchmark_gate[
-        face_resolved_transport_time_centered_work_ledger_failure_theory_next_key
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_next_key
     ]
     assert benchmark_gate[
         source_interface_residual_phase_rotation_phase_energy_closure_residual_distribution_gradient_balance_curvature_parity_status_key
@@ -22253,7 +22351,7 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         == redesign["next_prerequisite"]
     )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        face_resolved_transport_time_centered_work_ledger_failure_theory_next_key
+        face_resolved_transport_time_centered_work_ledger_compile_budgeted_helper_implementation_next_key
     ]
     assert (
         "time_centered_staging_contract_ready"

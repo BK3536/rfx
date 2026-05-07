@@ -5262,6 +5262,31 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
     )
 
 
+def _private_compile_budgeted_time_centered_work_ledger_microkernel(
+    *,
+    face_resolved_ledger_transport: jnp.ndarray,
+    phase_work_conjugacy_ledger_coupling: jnp.ndarray,
+    packet_mask: jnp.ndarray,
+) -> jnp.ndarray:
+    dtype = jnp.result_type(
+        face_resolved_ledger_transport,
+        phase_work_conjugacy_ledger_coupling,
+        packet_mask,
+    )
+    half = jnp.asarray(0.5, dtype=dtype)
+    quarter = jnp.asarray(0.25, dtype=dtype)
+    packet_mask = jnp.asarray(packet_mask, dtype=dtype)
+    return (
+        jnp.clip(
+            face_resolved_ledger_transport
+            + quarter * phase_work_conjugacy_ledger_coupling,
+            -half,
+            half,
+        )
+        * packet_mask
+    )
+
+
 def _private_score_path_visibility_field_update_solver_observed_delta_packet_normalized_residual_residual_weighted_delta_coupling_target_packet_residual_projection_source_interface_residual_phase_rotation_phase_energy_closure_residual_distribution_gradient_balance_curvature_cross_modal_laplacian_normal_poynting_flux_signed_flux_divergence_phase_energy_balance_source_interface_transfer_residual_split_modal_phase_coupling_phase_amplitude_transport_characteristic_energy_pairing_work_conjugate_phase_transport(
     *,
     delta_real: jnp.ndarray,
@@ -5372,7 +5397,13 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
         )
         * packet_mask
     )
-    time_centered_face_work_ledger_transport = face_resolved_ledger_transport
+    time_centered_face_work_ledger_transport = (
+        _private_compile_budgeted_time_centered_work_ledger_microkernel(
+            face_resolved_ledger_transport=face_resolved_ledger_transport,
+            phase_work_conjugacy_ledger_coupling=phase_work_conjugacy_ledger_coupling,
+            packet_mask=packet_mask,
+        )
+    )
     work_conjugate_phase_transport = (
         (
             work_conjugate_phase
