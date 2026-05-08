@@ -27304,11 +27304,153 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         in benchmark_gate["blocking_diagnostic"]
     )
 
+    characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_key = (
+        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_parity_scoring_key.replace(
+            "_characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_parity_scoring",
+            "_characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory",
+        )
+    )
+    characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_status_key = (
+        f"{characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_key}_status"
+    )
+    characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_next_key = (
+        f"{characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_key}_next_prerequisite"
+    )
+    characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_metadata = benchmark_gate[
+        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_key
+    ]
+    assert benchmark_gate[
+        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_status_key
+    ].endswith(
+        "_characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_visibility_theory_ready"
+    )
+    assert (
+        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_metadata[
+            "upstream_characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_parity_scoring_status"
+        ]
+        == benchmark_gate[
+            characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_parity_scoring_status_key
+        ]
+    )
+    assert (
+        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_metadata[
+            "selected_candidate_id"
+        ]
+        == "AOC1_work_conjugate_visibility_phase_energy_coupling_microkernel"
+    )
+    assert (
+        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_metadata[
+            "selected_next_private_design_target"
+        ]
+        == "relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_visibility_implementation"
+    )
+    for flag in (
+        "phase_energy_coupling_parity_scoring_consumed",
+        "phase_energy_coupling_implementation_consumed",
+        "phase_energy_coupling_insufficient_floor_identified",
+        "phase_energy_coupled_signed_flux_balance_hunk_retained",
+        "signed_relative_impedance_flux_balance_hunk_retained",
+        "relative_impedance_contrast_flux_coupling_hunk_retained",
+        "characteristic_impedance_flux_coupling_hunk_retained",
+        "work_conjugate_visibility_phase_energy_coupling_theory_ready",
+        "work_conjugate_visibility_phase_energy_coupling_selected",
+        "uses_existing_score_path_visibility",
+        "uses_existing_work_conjugate_coherence",
+        "uses_existing_phase_resolved_transport",
+        "uses_existing_relative_impedance_contrast",
+        "uses_existing_signed_flux_balance",
+        "uses_existing_phase_work_balance",
+        "uses_existing_delta_energy",
+        "uses_existing_packet_mask",
+        "bounded_follow_up_implementation_surface",
+        "avoids_new_helper_nesting",
+        "avoids_public_observable_escape",
+        "repeat_phase_energy_scalar_gate_rejected",
+        "private_benchmark_evidence_only",
+    ):
+        assert characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_metadata[
+            flag
+        ] is True
+    for flag in (
+        "fixture_quality_ready",
+        "true_rt_readiness_unlocked",
+        "slab_rt_scored",
+        "production_patch_applied",
+        "solver_behavior_changed",
+        "field_update_behavior_changed",
+        "runner_behavior_changed",
+        "new_solver_hunk_retained",
+        "api_preflight_changes_allowed",
+        "rfx_api_changes_allowed",
+        "package_export_changed",
+        "readme_changed",
+        "docs_public_changed",
+        "examples_changed",
+        "hook_surface_changed",
+        "true_rt_public_observable_promoted",
+        "dft_flux_tfsf_port_sparameter_promoted",
+        "public_claim_allowed",
+        "public_observable_promoted",
+        "promotion_candidate_ready",
+        "hook_experiment_allowed",
+        "public_api_behavior_changed",
+        "public_default_tau_changed",
+        "simresult_changed",
+        "result_surface_changed",
+        "slab_rt_public_claim_allowed",
+        "api_surface_changed",
+        "runner_surface_changed",
+        "env_config_changed",
+    ):
+        assert characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_metadata[
+            flag
+        ] is False
+    phase_energy_failure_candidates = {
+        candidate["candidate_id"]: candidate
+        for candidate in characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_metadata[
+            "candidate_ladder"
+        ]
+    }
+    assert phase_energy_failure_candidates[
+        "AOC0_phase_energy_coupling_parity_floor_freeze"
+    ]["accepted_candidate"] is False
+    assert phase_energy_failure_candidates[
+        "AOC1_work_conjugate_visibility_phase_energy_coupling_microkernel"
+    ]["accepted_candidate"] is True
+    assert phase_energy_failure_candidates[
+        "AOC2_repeat_phase_energy_scalar_gate_rejected"
+    ]["accepted_candidate"] is False
+    assert phase_energy_failure_candidates[
+        "AOC3_public_observable_or_threshold_escape_rejected"
+    ]["accepted_candidate"] is False
+    assert any(
+        key.startswith("next_lane_requires_")
+        and key.endswith(
+            "work_conjugate_coherence_phase_resolved_transport_source_interface_packet_admittance_transport_characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_visibility_implementation"
+        )
+        and value is True
+        for key, value in characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_metadata.items()
+    )
+    assert (
+        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_metadata[
+            "next_prerequisite"
+        ]
+        == benchmark_gate[
+            characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_next_key
+        ]
+    )
+    assert (
+        benchmark_gate[
+            characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_status_key
+        ]
+        in benchmark_gate["blocking_diagnostic"]
+    )
+
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_parity_scoring_next_key
+        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_next_key
     ]
     assert benchmark_gate["follow_up_recommendation"] == benchmark_gate[
-        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_parity_scoring_next_key
+        characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_failure_theory_next_key
     ]
     assert benchmark_gate[
         source_interface_residual_phase_rotation_phase_energy_closure_residual_distribution_gradient_balance_curvature_parity_status_key
