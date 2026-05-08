@@ -141,25 +141,61 @@ def _windowed_dft(ts_col: jnp.ndarray, dt: float,
     return jnp.sum(sig[None, :].astype(jnp.complex64) * jnp.exp(phase), axis=1)
 
 
+_Q_EPS = 1e-30
+
+
+@jax.custom_jvp
+def _solve_q(v1: jnp.ndarray, v2: jnp.ndarray, v3: jnp.ndarray) -> jnp.ndarray:
+    """Solve q² − c·q + 1 = 0 for the physical root with branch-cut-safe AD.
+
+    The two roots are reciprocals (q₊·q₋ = 1).  Primal forward picks
+    the root whose phase matches the observed step ratio v2/v1, then
+    `jnp.where` returns it.  Reverse-mode AD through `jnp.where` and
+    `jnp.sqrt(complex)` is correct on each branch *interior* but
+    silently drops the implicit derivative when adjacent samples
+    straddle the √disc branch cut at |q|→1.  This `custom_jvp`
+    computes ∂q/∂c via the implicit-function rule:
+
+        2q·dq − q·dc − c·dq = 0   ⇒   dq/dc = q² / (q² − 1)
+
+    This is continuous on both branches, blows up only at the genuine
+    degeneracy q² = 1 (handled by the `+eps` regularizer).  The √disc
+    discontinuity is now contained inside the `custom_jvp` boundary
+    where AD never traverses it.
+    """
+    coeff = (v1 + v3) / (v2 + _Q_EPS)
+    disc = coeff ** 2 - 4.0
+    sqrt_disc = jnp.sqrt(disc.astype(jnp.complex64))
+    q_plus = (coeff + sqrt_disc) / 2.0
+    q_minus = (coeff - sqrt_disc) / 2.0
+    ratio = v2 / (v1 + _Q_EPS)
+    use_plus = jnp.abs(q_plus - ratio) < jnp.abs(q_minus - ratio)
+    return jnp.where(use_plus, q_plus, q_minus)
+
+
+@_solve_q.defjvp
+def _solve_q_jvp(primals, tangents):
+    v1, v2, v3 = primals
+    dv1, dv2, dv3 = tangents
+    q = _solve_q(v1, v2, v3)
+    # c = (v1 + v3) / (v2 + eps);  dc applied via product/quotient rule
+    inv_v2 = 1.0 / (v2 + _Q_EPS)
+    dc = (dv1 + dv3) * inv_v2 - (v1 + v3) * dv2 * inv_v2 ** 2
+    dq_dc = q * q / (q * q - 1.0 + _Q_EPS)
+    return q, dq_dc * dc
+
+
 def _solve_3probe_jax(v1: jnp.ndarray, v2: jnp.ndarray, v3: jnp.ndarray,
                       i1: jnp.ndarray | None, eps: float = 1e-30
                       ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """JAX port of :func:`rfx.sources.msl_port._solve_3probe`.
 
     Returns ``(alpha, gamma, q)`` — forward and backward amplitudes at
-    probe 1, and the per-Δ phasor.  Same root-selection logic as the
-    numpy version: pick the q whose phase is closer to ``v2/v1``.
+    probe 1, and the per-Δ phasor.  Uses ``_solve_q`` (custom_jvp,
+    branch-cut safe) for the root selection.  ``i1`` is unused here
+    (the impedance Z0 is computed elsewhere when needed).
     """
-    coeff = (v1 + v3) / (v2 + eps)
-    disc = coeff ** 2 - 4.0
-    sqrt_disc = jnp.sqrt(disc.astype(jnp.complex64))
-    q_plus = (coeff + sqrt_disc) / 2.0
-    q_minus = (coeff - sqrt_disc) / 2.0
-    ratio = v2 / (v1 + eps)
-    err_plus = jnp.abs(q_plus - ratio)
-    err_minus = jnp.abs(q_minus - ratio)
-    use_plus = err_plus < err_minus
-    q = jnp.where(use_plus, q_plus, q_minus)
+    q = _solve_q(v1, v2, v3)
     denom = (q * q - 1.0) + eps
     alpha = (q * v2 - v1) / denom
     gamma = q * (v1 * q - v2) / denom
