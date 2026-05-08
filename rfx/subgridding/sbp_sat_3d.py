@@ -5601,6 +5601,28 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
         )
         * packet_mask
     )
+    work_conjugate_visibility_phase_energy_coupling = (
+        jnp.clip(
+            jnp.abs(residual_projection_phase_resolved_transport)
+            * (half + half * residual_projection_work_conjugate_coherence_gate)
+            * (half + half * jnp.clip(jnp.abs(visibility_scale_signed_direction), zero, one))
+            * (
+                half
+                + half
+                * jnp.clip(
+                    jnp.abs(residual_projection_visible_delta_energy_weighted_direction),
+                    zero,
+                    one,
+                )
+            )
+            * (half + half * relative_impedance_contrast)
+            * (half + half * residual_projection_phase_work_balance_normalizer)
+            * (half + half * residual_projection_limiter_delta_energy_weight),
+            zero,
+            one,
+        )
+        * packet_mask
+    )
     relative_impedance_flux_coupling_factor = (
         characteristic_flux_coupling_factor
         * (
@@ -5609,6 +5631,7 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
             * relative_impedance_contrast
             * (half + half * relative_impedance_signed_flux_balance)
             * (half + half * relative_impedance_phase_energy_coupling)
+            * (half + half * work_conjugate_visibility_phase_energy_coupling)
         )
         * packet_mask
     )
