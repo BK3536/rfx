@@ -5539,6 +5539,36 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
         )
         * packet_mask
     )
+    source_packet_admittance_weight = (
+        jnp.clip(source_energy / local_energy, zero, one) * packet_mask
+    )
+    interface_packet_admittance_weight = (
+        jnp.clip(interface_energy / local_energy, zero, one) * packet_mask
+    )
+    source_interface_packet_admittance_balance = (
+        jnp.clip(
+            (source_packet_admittance_weight - interface_packet_admittance_weight)
+            / (
+                floor
+                + source_packet_admittance_weight
+                + interface_packet_admittance_weight
+            ),
+            -one,
+            one,
+        )
+        * packet_mask
+    )
+    source_interface_packet_admittance_transport = (
+        jnp.clip(
+            residual_projection_phase_resolved_transport
+            * source_interface_packet_admittance_balance
+            * residual_projection_signed_flux_residual_conditioner
+            * residual_projection_limiter_delta_energy_weight,
+            -half,
+            half,
+        )
+        * packet_mask
+    )
     residual_projection_visible_phase_work_balanced_direction = (
         (
             residual_projection_visible_delta_energy_weighted_direction
@@ -5547,6 +5577,7 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
             * residual_projection_signed_flux_residual_polarity_alignment
             * residual_projection_work_conjugate_coherence_gate
             + (half * half) * residual_projection_phase_resolved_transport
+            + (half * half) * source_interface_packet_admittance_transport
         )
         * packet_mask
     )
