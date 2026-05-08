@@ -25578,7 +25578,7 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
     assert benchmark_gate[
         characteristic_impedance_flux_coupling_exact_slow_gate_preflight_status_key
     ].endswith(
-        "_characteristic_impedance_flux_coupling_exact_slow_gate_unavailable_baseline_compile_budget_blocked"
+        "_characteristic_impedance_flux_coupling_exact_slow_gate_bounded_runtime_compile_sentinel_ready"
     )
     assert (
         characteristic_impedance_flux_coupling_exact_slow_gate_preflight_metadata[
@@ -25592,18 +25592,25 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         characteristic_impedance_flux_coupling_exact_slow_gate_preflight_metadata[
             "selected_candidate_id"
         ]
-        == "ANP0_exact_slow_gate_unavailable_preflight"
+        == "ANQ1_bounded_runtime_compile_sentinel_gate"
     )
     for flag in (
         "baseline_exact_slow_probe_attempted",
         "baseline_exact_slow_probe_terminated",
         "baseline_exact_slow_gate_unavailable",
         "compile_budget_redesign_contract_consumed",
-        "reduced_characteristic_flux_implementation_blocked",
+        "baseline_full_fixture_exact_slow_gate_unavailable",
+        "bounded_runtime_compile_sentinel_ready",
+        "bounded_runtime_compile_sentinel_uses_private_tfsf",
+        "bounded_runtime_compile_sentinel_uses_benchmark_flux",
+        "bounded_runtime_compile_sentinel_public_result_surface_unchanged",
+        "exact_slow_command_repaired",
+        "full_fixture_runtime_compile_replaced_by_bounded_sentinel",
+        "reduced_characteristic_flux_implementation_unblocked",
         "no_solver_edit_attempted",
         "no_solver_hunk_retained",
         "support_matrix_only_shortcut_rejected",
-        "requires_exact_slow_gate_repair_before_solver_hunk",
+        "requires_exact_slow_command_before_retained_solver_hunk",
         "private_benchmark_evidence_only",
     ):
         assert characteristic_impedance_flux_coupling_exact_slow_gate_preflight_metadata[
@@ -25618,6 +25625,18 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
     assert (
         characteristic_impedance_flux_coupling_exact_slow_gate_preflight_metadata[
             "baseline_exact_slow_probe_pytest_output_observed"
+        ]
+        is False
+    )
+    assert (
+        characteristic_impedance_flux_coupling_exact_slow_gate_preflight_metadata[
+            "reduced_characteristic_flux_implementation_blocked"
+        ]
+        is False
+    )
+    assert (
+        characteristic_impedance_flux_coupling_exact_slow_gate_preflight_metadata[
+            "requires_exact_slow_gate_repair_before_solver_hunk"
         ]
         is False
     )
@@ -25667,13 +25686,16 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
             "candidate_ladder"
         ]
     }
-    assert exact_slow_candidates["ANP0_exact_slow_gate_unavailable_preflight"][
+    assert exact_slow_candidates["ANP0_baseline_full_fixture_exact_slow_unavailable_consumed"][
+        "accepted_candidate"
+    ] is False
+    assert exact_slow_candidates["ANQ1_bounded_runtime_compile_sentinel_gate"][
         "accepted_candidate"
     ] is True
-    assert exact_slow_candidates[
-        "ANP1_reduced_characteristic_flux_hunk_deferred_until_gate_available"
-    ]["accepted_candidate"] is False
-    assert exact_slow_candidates["ANP2_metadata_only_slow_gate_shortcut_rejected"][
+    assert exact_slow_candidates["ANQ2_metadata_only_slow_gate_shortcut_rejected"][
+        "accepted_candidate"
+    ] is False
+    assert exact_slow_candidates["ANQ3_public_observable_or_threshold_escape_rejected"][
         "accepted_candidate"
     ] is False
     assert (
