@@ -835,13 +835,18 @@ def run(
                     st, cpml_params, carry["cpml"], grid, cpml_axes,
                     materials=materials)
             # Stage 2 H damping — applied AFTER CPML-H so CPML cannot
-            # un-zero H at Kottke-frozen PEC cells.
+            # un-zero H at Kottke-frozen PEC cells.  Threshold rather
+            # than ``== 0.0`` so smooth-Kottke (eps_inside = 1e10)
+            # cells (inv ≈ 1e-10 at f=1) are caught alongside exact-PEC
+            # cells (inv = 0 from binary `pec_shapes`); at FDTD dt the
+            # two are physically indistinguishable.
             if use_aniso_inv:
                 from rfx.boundaries.pec import apply_pec_h_mask
                 _inv_xx, _inv_yy, _inv_zz = aniso_inv_eps
-                _xx0 = (_inv_xx == 0.0)
-                _yy0 = (_inv_yy == 0.0)
-                _zz0 = (_inv_zz == 0.0)
+                _PEC_INV_THRESHOLD = 1e-9
+                _xx0 = (_inv_xx < _PEC_INV_THRESHOLD)
+                _yy0 = (_inv_yy < _PEC_INV_THRESHOLD)
+                _zz0 = (_inv_zz < _PEC_INV_THRESHOLD)
                 st = apply_pec_h_mask(
                     st,
                     pec_mask=_xx0 & _yy0 & _zz0,
@@ -908,10 +913,11 @@ def run(
             # boundary condition is not violated.
             if use_aniso_inv:
                 _inv_xx_r, _inv_yy_r, _inv_zz_r = aniso_inv_eps
+                _PEC_INV_THRESHOLD = 1e-9
                 st = st._replace(
-                    ex=jnp.where(_inv_xx_r == 0.0, 0.0, st.ex),
-                    ey=jnp.where(_inv_yy_r == 0.0, 0.0, st.ey),
-                    ez=jnp.where(_inv_zz_r == 0.0, 0.0, st.ez),
+                    ex=jnp.where(_inv_xx_r < _PEC_INV_THRESHOLD, 0.0, st.ex),
+                    ey=jnp.where(_inv_yy_r < _PEC_INV_THRESHOLD, 0.0, st.ey),
+                    ez=jnp.where(_inv_zz_r < _PEC_INV_THRESHOLD, 0.0, st.ez),
                 )
 
             if pec_axes:
@@ -1540,12 +1546,16 @@ def run_until_decay(
                 st, cpml_params, carry_in["cpml"], grid, cpml_axes,
                 materials=materials)
         # Stage 2 H damping — after CPML-H so CPML cannot un-zero H.
+        # Threshold rather than ``== 0.0`` so smooth-Kottke (eps_inside
+        # = 1e10) cells (inv ≈ 1e-10 at f=1) are caught alongside
+        # exact-PEC cells.
         if use_aniso_inv:
             from rfx.boundaries.pec import apply_pec_h_mask
             _inv_xx, _inv_yy, _inv_zz = aniso_inv_eps
-            _xx0 = (_inv_xx == 0.0)
-            _yy0 = (_inv_yy == 0.0)
-            _zz0 = (_inv_zz == 0.0)
+            _PEC_INV_THRESHOLD = 1e-9
+            _xx0 = (_inv_xx < _PEC_INV_THRESHOLD)
+            _yy0 = (_inv_yy < _PEC_INV_THRESHOLD)
+            _zz0 = (_inv_zz < _PEC_INV_THRESHOLD)
             st = apply_pec_h_mask(
                 st,
                 pec_mask=_xx0 & _yy0 & _zz0,
@@ -1601,12 +1611,14 @@ def run_until_decay(
                 st, cpml_params, cpml_new, grid, cpml_axes,
                 materials=materials)
         # Re-enforce Kottke-frozen E cells after CPML-E correction.
+        # Threshold to catch smooth-Kottke cells (see twin block earlier).
         if use_aniso_inv:
             _inv_xx_r, _inv_yy_r, _inv_zz_r = aniso_inv_eps
+            _PEC_INV_THRESHOLD = 1e-9
             st = st._replace(
-                ex=jnp.where(_inv_xx_r == 0.0, 0.0, st.ex),
-                ey=jnp.where(_inv_yy_r == 0.0, 0.0, st.ey),
-                ez=jnp.where(_inv_zz_r == 0.0, 0.0, st.ez),
+                ex=jnp.where(_inv_xx_r < _PEC_INV_THRESHOLD, 0.0, st.ex),
+                ey=jnp.where(_inv_yy_r < _PEC_INV_THRESHOLD, 0.0, st.ey),
+                ez=jnp.where(_inv_zz_r < _PEC_INV_THRESHOLD, 0.0, st.ez),
             )
 
         if pec_axes:
