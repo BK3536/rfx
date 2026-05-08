@@ -1291,3 +1291,5 @@ Current private benchmark-gate note: polarity-aligned work-conjugate coherence i
 Private true-R/T gate note: ANE1 work-conjugate coherence parity scoring does not unlock fixture/reference quality or slab true R/T. The benchmark remains no-go/inconclusive and the next prerequisite is private work-conjugate coherence failure-theory redesign, without public observable/API/export promotion.
 
 Private true-R/T gate note: work-conjugate coherence failure theory does not unlock fixture/reference quality. The private benchmark remains inconclusive and the next prerequisite is phase-resolved residual transport implementation, still without public true R/T/DFT/flux/TFSF/port/S-parameter promotion.
+
+Private true-R/T gate note: the phase-resolved residual transport hunk is retained but does not itself unlock fixture/reference quality. The benchmark remains inconclusive until private parity scoring proves otherwise, with public true R/T/DFT/flux/TFSF/port/S-parameter promotion still forbidden.

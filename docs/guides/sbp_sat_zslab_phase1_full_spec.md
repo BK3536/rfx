@@ -1153,3 +1153,5 @@ Current private benchmark-gate note: polarity-aligned work-conjugate coherence i
 Private phase-1 ladder note: the polarity-aligned work-conjugate coherence hunk has now been parity-scored as finite but insufficient (`ANF1`). The next private-only lane is work-conjugate coherence failure-theory redesign; public surfaces and thresholds remain locked.
 
 Private phase-1 ladder note: work-conjugate coherence failure theory is ready and selects a phase-resolved residual transport microkernel (`ANG1`) for the next private implementation lane. No public API/observable/export or threshold change is authorized.
+
+Private phase-1 ladder note: the ANG1 phase-resolved residual transport design now has a retained private implementation hunk (`ANH1`). The next private-only gate is parity scoring; no public API/observable/export or threshold change is authorized.
