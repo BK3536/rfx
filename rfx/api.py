@@ -5603,6 +5603,19 @@ class Simulation:
                 aniso_inv_eps_baseline=inv_baseline,
             )
             pec_occupancy_for_run = None
+            if os.environ.get("RFX_PEC_OCC_KOTTKE_DEBUG", "0") not in ("0", "", "false", "False"):
+                import sys as _sys
+                _ix, _iy, _iz = aniso_inv_eps_run
+                print(f"[kottke debug] occ shape={pec_occupancy_local.shape} "
+                      f"min={float(jnp.min(pec_occupancy_local)):.3e} "
+                      f"max={float(jnp.max(pec_occupancy_local)):.3e}", file=_sys.stderr, flush=True)
+                print(f"[kottke debug] inv_xx min={float(jnp.min(_ix)):.3e} "
+                      f"max={float(jnp.max(_ix)):.3e} "
+                      f"any_nan={bool(jnp.any(jnp.isnan(_ix)))}", file=_sys.stderr, flush=True)
+                print(f"[kottke debug] eps_r min={float(jnp.min(materials.eps_r)):.3e} "
+                      f"max={float(jnp.max(materials.eps_r)):.3e}", file=_sys.stderr, flush=True)
+                print(f"[kottke debug] sigma min={float(jnp.min(materials.sigma)):.3e} "
+                      f"max={float(jnp.max(materials.sigma)):.3e}", file=_sys.stderr, flush=True)
 
         result = _run(
             grid,
