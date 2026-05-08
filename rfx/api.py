@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import os
 import jax
 from numbers import Integral
 from typing import NamedTuple
@@ -5572,6 +5573,37 @@ class Simulation:
         cpml_axes_run = grid.cpml_axes
         pec_axes_run = "".join(a for a in "xyz" if a not in cpml_axes_run)
 
+        # Stage 2 Kottke for AD-traceable PEC density (opt-in via env
+        # ``RFX_PEC_OCC_KOTTKE=1``).  When enabled and
+        # ``pec_occupancy_local`` is supplied, build an ``aniso_inv_eps``
+        # tensor via Kottke's PEC limit ((1−f)/ε perpendicular, 0
+        # parallel) using the gradient of the occupancy as the
+        # interface normal.  This routes the override through the same
+        # subpixel machinery hard ``Box(material="pec")`` uses
+        # (``compute_inv_eps_tensor_diag``), eliminating the sub-β
+        # wiggle near high-Q resonances.  Bypasses the legacy
+        # ``apply_pec_occupancy`` E-zeroing path on this branch — the
+        # two would double-correct at sigmoid edges (cf. Stage 2
+        # design memo §R9 anti-pattern).  See
+        # ``docs/agent-memory/rfx-known-issues.md`` for the full
+        # diagnosis and the closure predicate.
+        aniso_inv_eps_run = None
+        pec_occupancy_for_run = pec_occupancy_local
+        if (pec_occupancy_local is not None and
+                os.environ.get("RFX_PEC_OCC_KOTTKE", "0") not in ("0", "", "false", "False")):
+            from rfx.geometry.smoothing import kottke_inv_eps_from_occupancy
+            inv_baseline = (
+                (1.0 / materials.eps_r).astype(jnp.float32),
+                (1.0 / materials.eps_r).astype(jnp.float32),
+                (1.0 / materials.eps_r).astype(jnp.float32),
+            )
+            aniso_inv_eps_run = kottke_inv_eps_from_occupancy(
+                grid,
+                pec_occupancy_local,
+                aniso_inv_eps_baseline=inv_baseline,
+            )
+            pec_occupancy_for_run = None
+
         result = _run(
             grid,
             materials,
@@ -5589,7 +5621,8 @@ class Simulation:
             checkpoint=checkpoint,
             checkpoint_segments=checkpoint_segments,
             pec_mask=pec_mask_local,
-            pec_occupancy=pec_occupancy_local,
+            pec_occupancy=pec_occupancy_for_run,
+            aniso_inv_eps=aniso_inv_eps_run,
             lumped_port_sparams=lumped_port_sparam_specs or None,
             wire_port_sparams=wire_port_sparam_specs or None,
             dft_planes=dft_planes if dft_planes else None,

@@ -788,3 +788,123 @@ def compute_inv_eps_tensor_diag(
                 inv_zz = jnp.minimum(inv_zz, inv_zz_c)
 
     return inv_xx, inv_yy, inv_zz
+
+
+def kottke_inv_eps_from_occupancy(
+    grid: Grid,
+    pec_occupancy: jnp.ndarray,
+    *,
+    aniso_inv_eps_baseline: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray] | None = None,
+    background_eps: float = 1.0,
+    grad_eps: float = 1e-12,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Stage 2 Kottke inv-eps tensor from a continuous-fill PEC occupancy.
+
+    The AD-traceable analogue of the ``pec_shapes`` branch in
+    :func:`compute_inv_eps_tensor_diag`.  ``pec_occupancy`` is a per-cell
+    fill fraction in ``[0, 1]``; ``f = occ`` plays the role of Kottke's
+    fill, and the interface normal is derived from ``∇occ / |∇occ|``.
+
+    For a sigmoid mask, ``∇occ`` is large only at the boundary cells
+    (occ ≈ 0.5 transition zone); interior PEC cells (occ ≈ 1) and
+    exterior vacuum cells (occ ≈ 0) have small ``|∇occ|`` but
+    Kottke's diagonal output is independent of the normal there
+    (``inv_perp = inv_par = (1−f)/ε`` reduces to a scalar at f → 0
+    or f → 1 in the PEC limit), so the small-norm regime is benign.
+
+    Yee staggering is approximated by applying the cell-centred Kottke
+    output to all three E-component positions of the cell.  The error
+    is O(dx) at the sigmoid edge — second-order to the staircase
+    error that the override path replaces.
+
+    Parameters
+    ----------
+    grid : Grid
+    pec_occupancy : (nx, ny, nz) float array
+        Continuous-fill PEC field; values clipped to ``[0, 1]``.
+    aniso_inv_eps_baseline : (inv_xx, inv_yy, inv_zz) tuple, optional
+        Pre-computed inv-eps tensor with dielectric subpixel smoothing
+        already applied.  When supplied, the Kottke PEC limit is taken
+        as the elementwise minimum against this baseline (union of
+        PEC effects on top of dielectrics).  When ``None``, the
+        background uses ``background_eps``.
+    background_eps : float
+        Background permittivity used when ``aniso_inv_eps_baseline``
+        is ``None``.  Default 1.0 (vacuum).
+    grad_eps : float
+        Numerical guard for ``|∇occ|`` normalisation.  Cells with
+        ``|∇occ| < grad_eps`` get a default normal direction (x̂);
+        the Kottke output is independent of the normal in those cells
+        (see docstring above).
+
+    Returns
+    -------
+    (inv_xx, inv_yy, inv_zz)
+        Per-component inverse-permittivity diagonal arrays, each of
+        shape ``grid.shape``, dtype ``float32``.  Feed directly into
+        ``simulation.run(aniso_inv_eps=...)`` or
+        ``update_e_aniso_inv``.
+    """
+    f = jnp.clip(pec_occupancy.astype(jnp.float32), 0.0, 1.0)
+
+    # Central-difference gradient of the occupancy.  ``jnp.roll`` gives
+    # periodic boundary semantics; on rfx's CPML/PEC domain boundaries
+    # the occupancy is vacuum (0) by construction (PEC stub geometry
+    # never extends to the absorbing boundary).  Periodic boundary
+    # therefore evaluates to "0 next to 0" at the domain edge, giving
+    # a vanishing gradient — physically correct: no interface there.
+    dx = float(grid.dx)
+    dy = float(getattr(grid, "dy", grid.dx))
+    dz = float(getattr(grid, "dz", grid.dx))
+    grad_x = (jnp.roll(f, -1, axis=0) - jnp.roll(f, 1, axis=0)) / (2.0 * dx)
+    grad_y = (jnp.roll(f, -1, axis=1) - jnp.roll(f, 1, axis=1)) / (2.0 * dy)
+    grad_z = (jnp.roll(f, -1, axis=2) - jnp.roll(f, 1, axis=2)) / (2.0 * dz)
+    norm = jnp.sqrt(grad_x ** 2 + grad_y ** 2 + grad_z ** 2 + grad_eps ** 2)
+    n_x = grad_x / norm
+    n_y = grad_y / norm
+    n_z = grad_z / norm
+
+    # Kottke PEC limit at every cell.  ``eps_outside`` is the dielectric
+    # background — for the sigmoid stub on ro4350b, this is the substrate
+    # ε at substrate cells and vacuum elsewhere.  When the caller passes
+    # an ``aniso_inv_eps_baseline``, we use the baseline's reciprocal
+    # as the local background ε (one per axis); otherwise the scalar
+    # ``background_eps`` applies everywhere.
+    if aniso_inv_eps_baseline is not None:
+        inv_xx_b, inv_yy_b, inv_zz_b = aniso_inv_eps_baseline
+        # The PEC Kottke needs a scalar eps_outside per cell — the
+        # baseline already encodes the dielectric subpixel smoothing
+        # per axis.  We invert each component locally.
+        eps_outside_x = 1.0 / (inv_xx_b + 1e-30)
+        eps_outside_y = 1.0 / (inv_yy_b + 1e-30)
+        eps_outside_z = 1.0 / (inv_zz_b + 1e-30)
+    else:
+        bg = jnp.asarray(background_eps, dtype=jnp.float32)
+        eps_outside_x = bg
+        eps_outside_y = bg
+        eps_outside_z = bg
+
+    # Three Kottke evaluations — one per axis, using the corresponding
+    # baseline eps.  Each returns the FULL tensor diagonal at that cell;
+    # we extract the matching component.
+    inv_xx_c, _, _ = _kottke_inv_eps_diag(
+        f, jnp.inf, eps_outside_x, n_x, n_y, n_z, is_pec=True,
+    )
+    _, inv_yy_c, _ = _kottke_inv_eps_diag(
+        f, jnp.inf, eps_outside_y, n_x, n_y, n_z, is_pec=True,
+    )
+    _, _, inv_zz_c = _kottke_inv_eps_diag(
+        f, jnp.inf, eps_outside_z, n_x, n_y, n_z, is_pec=True,
+    )
+
+    if aniso_inv_eps_baseline is not None:
+        inv_xx_b, inv_yy_b, inv_zz_b = aniso_inv_eps_baseline
+        inv_xx = jnp.minimum(inv_xx_b, inv_xx_c).astype(jnp.float32)
+        inv_yy = jnp.minimum(inv_yy_b, inv_yy_c).astype(jnp.float32)
+        inv_zz = jnp.minimum(inv_zz_b, inv_zz_c).astype(jnp.float32)
+    else:
+        inv_xx = inv_xx_c.astype(jnp.float32)
+        inv_yy = inv_yy_c.astype(jnp.float32)
+        inv_zz = inv_zz_c.astype(jnp.float32)
+
+    return inv_xx, inv_yy, inv_zz
