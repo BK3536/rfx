@@ -28731,11 +28731,80 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
         ]
         in benchmark_gate["blocking_diagnostic"]
     )
+
+    phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_key = (
+        phase_energy_coupling_visibility_residual_balance_phase_work_coherence_parity_scoring_key.replace(
+            "_characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_visibility_residual_balance_phase_work_transport_phase_work_coherence_parity_scoring",
+            "_characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_visibility_residual_balance_phase_work_transport_phase_work_coherence_failure_theory",
+        )
+    )
+    phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_status_key = (
+        f"{phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_key}_status"
+    )
+    phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_next_key = (
+        f"{phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_key}_next_prerequisite"
+    )
+    phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_metadata = benchmark_gate[
+        phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_key
+    ]
+    assert benchmark_gate[
+        phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_status_key
+    ].endswith(
+        "_characteristic_impedance_flux_coupling_relative_impedance_contrast_signed_flux_balance_phase_energy_coupling_visibility_residual_balance_phase_work_transport_phase_work_coherence_residual_work_alignment_theory_ready"
+    )
+    assert (
+        phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_metadata[
+            "selected_candidate_id"
+        ]
+        == "AOO1_residual_work_alignment_phase_work_coherence_microkernel"
+    )
+    for flag in (
+        "phase_work_coherence_parity_scoring_consumed",
+        "phase_work_coherence_insufficient_floor_identified",
+        "residual_work_alignment_theory_ready",
+        "residual_work_alignment_selected",
+        "uses_existing_visibility_residual_balance",
+        "uses_existing_phase_work_balance",
+        "uses_existing_work_conjugate_coherence",
+        "bounded_follow_up_implementation_surface",
+        "private_benchmark_evidence_only",
+    ):
+        assert phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_metadata[flag] is True
+    for flag in (
+        "fixture_quality_ready",
+        "true_rt_readiness_unlocked",
+        "slab_rt_scored",
+        "production_patch_applied",
+        "solver_behavior_changed",
+        "field_update_behavior_changed",
+        "new_solver_hunk_retained",
+        "public_claim_allowed",
+        "public_observable_promoted",
+        "runner_behavior_changed",
+        "api_surface_changed",
+        "result_surface_changed",
+        "env_config_changed",
+    ):
+        assert phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_metadata[flag] is False
+    assert (
+        phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_metadata[
+            "next_prerequisite"
+        ]
+        == benchmark_gate[
+            phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_next_key
+        ]
+    )
+    assert (
+        benchmark_gate[
+            phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_status_key
+        ]
+        in benchmark_gate["blocking_diagnostic"]
+    )
     assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        phase_energy_coupling_visibility_residual_balance_phase_work_coherence_parity_scoring_next_key
+        phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_next_key
     ]
     assert benchmark_gate["follow_up_recommendation"] == benchmark_gate[
-        phase_energy_coupling_visibility_residual_balance_phase_work_coherence_parity_scoring_next_key
+        phase_energy_coupling_visibility_residual_balance_phase_work_coherence_failure_theory_next_key
     ]
     assert benchmark_gate[
         source_interface_residual_phase_rotation_phase_energy_closure_residual_distribution_gradient_balance_curvature_parity_status_key
@@ -29948,14 +30017,44 @@ def test_sbp_sat_true_rt_benchmark_is_explicitly_deferred():
     assert latest_phase_work_parity["material_improvement_demonstrated"] is False
     assert latest_phase_work_parity["public_claim_allowed"] is False
     assert latest_phase_work_parity["public_observable_promoted"] is False
-    assert benchmark_gate["next_prerequisite"] == benchmark_gate[
-        latest_phase_work_parity_next_key
-    ]
-    assert benchmark_gate["follow_up_recommendation"] == benchmark_gate[
+    assert latest_phase_work_parity["next_prerequisite"] == benchmark_gate[
         latest_phase_work_parity_next_key
     ]
     assert (
         benchmark_gate[latest_phase_work_parity_status_key]
+        in benchmark_gate["blocking_diagnostic"]
+    )
+
+    latest_phase_work_failure_theory_key = latest_phase_work_parity_key.replace(
+        "phase_energy_coupling_visibility_residual_balance_phase_work_transport_phase_work_coherence_parity_scoring",
+        "phase_energy_coupling_visibility_residual_balance_phase_work_transport_phase_work_coherence_failure_theory",
+    )
+    latest_phase_work_failure_theory = benchmark_gate[latest_phase_work_failure_theory_key]
+    latest_phase_work_failure_theory_status_key = (
+        f"{latest_phase_work_failure_theory_key}_status"
+    )
+    latest_phase_work_failure_theory_next_key = (
+        f"{latest_phase_work_failure_theory_key}_next_prerequisite"
+    )
+    assert benchmark_gate[latest_phase_work_failure_theory_status_key].endswith(
+        "_phase_energy_coupling_visibility_residual_balance_phase_work_transport_phase_work_coherence_residual_work_alignment_theory_ready"
+    )
+    assert (
+        latest_phase_work_failure_theory["selected_candidate_id"]
+        == "AOO1_residual_work_alignment_phase_work_coherence_microkernel"
+    )
+    assert latest_phase_work_failure_theory["residual_work_alignment_theory_ready"] is True
+    assert latest_phase_work_failure_theory["solver_behavior_changed"] is False
+    assert latest_phase_work_failure_theory["public_claim_allowed"] is False
+    assert latest_phase_work_failure_theory["public_observable_promoted"] is False
+    assert benchmark_gate["next_prerequisite"] == benchmark_gate[
+        latest_phase_work_failure_theory_next_key
+    ]
+    assert benchmark_gate["follow_up_recommendation"] == benchmark_gate[
+        latest_phase_work_failure_theory_next_key
+    ]
+    assert (
+        benchmark_gate[latest_phase_work_failure_theory_status_key]
         in benchmark_gate["blocking_diagnostic"]
     )
 
