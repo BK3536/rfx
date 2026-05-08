@@ -4929,6 +4929,41 @@ class Simulation:
                     stacklevel=3,
                 )
 
+            # ---- 2b. Substrate-boundary cell alignment for
+            # ``pec_occupancy_override`` users.  When h_sub/dx has a
+            # fractional part in [0.10, 0.40], the substrate-air
+            # interface lands in the lower portion of a Yee cell that
+            # ALSO contains the trace at z=h_sub..h_sub+dx; the cell is
+            # mixed substrate + PEC.  Hard-PEC ``Box(material="pec")``
+            # handles this via subpixel material assembly, but the
+            # AD-traceable ``pec_occupancy_override`` path zeros the
+            # whole cell and produces unphysical |S21| (verified
+            # 2026-05-08, runs #563/#567: |S21|² > 1 across all stub
+            # lengths at dx ∈ [75, 82]µm with h_sub=254µm).  Snap dx
+            # so h_sub/dx is integer or its fractional part is > 0.6 to
+            # stay in a safe alignment window.
+            frac = (h_sub / dx) - int(h_sub / dx)
+            if 0.10 <= frac <= 0.40:
+                # Snap suggestions: nearest integer above and below.
+                n_below = int(h_sub / dx)
+                n_above = n_below + 1
+                dx_low = h_sub / n_above   # frac=0
+                dx_high = h_sub / n_below  # frac=0
+                _w.warn(
+                    f"MSL port '{pe.name}': h_sub/dx = "
+                    f"{h_sub/dx:.3f} (fractional part {frac:.3f}) lands "
+                    f"in the [0.10, 0.40] mixed-cell danger zone. The "
+                    f"substrate-air interface bisects the same Yee cell "
+                    f"that holds the trace; AD-traceable "
+                    f"``pec_occupancy_override`` zeros the whole cell "
+                    f"and produces unphysical |S21|² > 1 in this regime. "
+                    f"Hard ``Box(material='pec')`` is unaffected. To "
+                    f"snap onto a safe alignment, set dx = "
+                    f"{dx_low*1e6:.1f}µm (= h_sub/{n_above}) or "
+                    f"{dx_high*1e6:.1f}µm (= h_sub/{n_below}).",
+                    stacklevel=3,
+                )
+
             # ---- 3. Port-to-CPML distance in x ----
             x_abs_lo = float(cpml_thick_lo[0])
             x_abs_hi = float(domain[0]) - float(cpml_thick_hi[0])

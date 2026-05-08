@@ -93,9 +93,45 @@ def test_port_close_to_cpml_warning():
 
 
 def test_well_setup_msl_port_zero_warnings():
-    sim = _build_sim(dx=40e-6, ly=W_TRACE + 8 * H_SUB, port_x=2e-3)
+    # dx = h_sub / 6 → exactly 6 substrate cells, no mixed-cell at the
+    # trace boundary (frac == 0).
+    sim = _build_sim(dx=H_SUB / 6, ly=W_TRACE + 8 * H_SUB, port_x=2e-3)
     msgs = _msl_warnings(sim)
     assert len(msgs) == 0, f"expected zero MSL warnings, got: {msgs}"
+
+
+def test_mixed_cell_warning_fires_at_dx_80():
+    """h_sub/dx = 3.175 (frac 0.175) — substrate-air interface bisects
+    a Yee cell holding the trace.  AD-traceable
+    ``pec_occupancy_override`` produces unphysical |S21|² > 1 in this
+    regime (verified runs #563/#567, 2026-05-08)."""
+    sim = _build_sim(dx=80e-6, ly=W_TRACE + 8 * H_SUB, port_x=2e-3)
+    msgs = _msl_warnings(sim)
+    mixed = [m for m in msgs if "mixed-cell danger zone" in m]
+    assert len(mixed) >= 1, f"expected mixed-cell warning at dx=80, got: {msgs}"
+    assert "pec_occupancy_override" in mixed[0]
+    assert "snap" in mixed[0].lower() or "Snap" in mixed[0] or "h_sub/" in mixed[0]
+
+
+def test_mixed_cell_silent_at_dx_127_clean_alignment():
+    """h_sub/dx = 2.000 exactly — substrate boundary at a cell face,
+    no mixed cell."""
+    sim = _build_sim(dx=127e-6, ly=W_TRACE + 8 * H_SUB, port_x=2e-3)
+    msgs = _msl_warnings(sim)
+    mixed = [m for m in msgs if "mixed-cell danger zone" in m]
+    assert len(mixed) == 0, (
+        f"expected no mixed-cell warning at dx=127 (clean alignment), got: {mixed}"
+    )
+
+
+def test_mixed_cell_silent_at_dx_70_above_danger():
+    """h_sub/dx = 3.629 (frac 0.629) — outside [0.10, 0.40] danger zone."""
+    sim = _build_sim(dx=70e-6, ly=W_TRACE + 8 * H_SUB, port_x=2e-3)
+    msgs = _msl_warnings(sim)
+    mixed = [m for m in msgs if "mixed-cell danger zone" in m]
+    assert len(mixed) == 0, (
+        f"expected no mixed-cell warning at dx=70 (frac 0.629), got: {mixed}"
+    )
 
 
 def test_strict_mode_raises_on_bad_geometry():
