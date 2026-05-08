@@ -5647,6 +5647,32 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
         )
         * packet_mask
     )
+    visibility_residual_phase_energy_balance = (
+        jnp.clip(
+            residual_projection_visible_delta_energy_weighted_direction
+            * source_interface_packet_admittance_balance
+            * (
+                half
+                + half * jnp.clip(jnp.abs(relative_impedance_signed_flux_balance), zero, one)
+            )
+            * (half + half * relative_impedance_phase_energy_coupling)
+            * (half + half * work_conjugate_visibility_phase_energy_coupling),
+            -one,
+            one,
+        )
+        * packet_mask
+    )
+    visibility_residual_phase_energy_transport = (
+        jnp.clip(
+            source_interface_packet_admittance_transport
+            + half
+            * visibility_residual_phase_energy_balance
+            * residual_projection_phase_resolved_transport,
+            -half,
+            half,
+        )
+        * packet_mask
+    )
     residual_projection_visible_phase_work_balanced_direction = (
         (
             residual_projection_visible_delta_energy_weighted_direction
@@ -5655,7 +5681,7 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
             * residual_projection_signed_flux_residual_polarity_alignment
             * residual_projection_work_conjugate_coherence_gate
             + (half * half) * residual_projection_phase_resolved_transport
-            + (half * half) * source_interface_packet_admittance_transport
+            + (half * half) * visibility_residual_phase_energy_transport
         )
         * packet_mask
     )
