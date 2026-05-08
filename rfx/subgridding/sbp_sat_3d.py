@@ -5686,6 +5686,39 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
         )
         * packet_mask
     )
+    visibility_residual_phase_work_coherence = (
+        jnp.clip(
+            jnp.abs(visibility_residual_phase_work_transport)
+            * (half + half * residual_projection_phase_work_balance_normalizer)
+            * (half + half * residual_projection_work_conjugate_coherence_gate)
+            * (
+                half
+                + half
+                * jnp.clip(
+                    jnp.abs(relative_impedance_signed_flux_balance),
+                    zero,
+                    one,
+                )
+            )
+            * (half + half * relative_impedance_phase_energy_coupling)
+            * (half + half * work_conjugate_visibility_phase_energy_coupling),
+            zero,
+            one,
+        )
+        * packet_mask
+    )
+    visibility_residual_phase_work_coherence_transport = (
+        jnp.clip(
+            visibility_residual_phase_work_transport
+            * (half + half * visibility_residual_phase_work_coherence)
+            + (half * half)
+            * visibility_residual_phase_work_coherence
+            * limited_work_conjugate_phase_transport,
+            -half,
+            half,
+        )
+        * packet_mask
+    )
     residual_projection_visible_phase_work_balanced_direction = (
         (
             residual_projection_visible_delta_energy_weighted_direction
@@ -5694,7 +5727,7 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
             * residual_projection_signed_flux_residual_polarity_alignment
             * residual_projection_work_conjugate_coherence_gate
             + (half * half) * residual_projection_phase_resolved_transport
-            + (half * half) * visibility_residual_phase_work_transport
+            + (half * half) * visibility_residual_phase_work_coherence_transport
         )
         * packet_mask
     )
@@ -5757,6 +5790,7 @@ def _private_score_path_visibility_field_update_solver_observed_delta_packet_nor
         & jnp.any(jnp.abs(signed_admittance_phase_work_conjugacy) > floor)
         & jnp.any(jnp.abs(phase_work_conjugacy_ledger_coupling) > floor)
         & jnp.any(jnp.abs(face_resolved_ledger_transport) > floor)
+        & jnp.any(jnp.abs(visibility_residual_phase_work_coherence) > floor)
         & jnp.any((work_conjugate_phase_transport_balance * packet_mask) > floor)
     )
     gate = jnp.where(work_conjugate_phase_transport_ready, one, zero)
