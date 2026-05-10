@@ -919,7 +919,7 @@ def kottke_inv_eps_from_occupancy(
     # Sigmund 2011): cells with occ ≥ ~0.6 get ~zero inv (full PEC),
     # cells with occ ≤ ~0.4 keep the Kottke output (boundary/vacuum).
     # The sigmoid is differentiable everywhere so AD flows.
-    smooth_width = 0.05
+    smooth_width = 0.01
     interior_mask = jax.nn.sigmoid((f - 0.5) / smooth_width)
     inv_xx_c = (1.0 - interior_mask) * inv_xx_c
     inv_yy_c = (1.0 - interior_mask) * inv_yy_c
