@@ -159,3 +159,70 @@ def test_preflight_sparameters_rejects_coaxial_when_no_ports():
     )
     issues = sim.preflight_sparameters(calculator="coaxial")
     assert any("No coaxial ports" in issue for issue in issues)
+
+
+# ---------------------------------------------------------------------------
+# Calibration target tests (xfail)
+# ---------------------------------------------------------------------------
+#
+# These tests state the expected calibrated behaviour the experimental
+# compute_coaxial_s_matrix API should produce once the underlying source-
+# plane bidirectional-injection limitation is resolved (TFSF-style one-side
+# injection or explicit incident-wave subtraction). They are marked xfail
+# while the M72 prototype-promoted source remains bidirectional. Removing
+# the xfail marker is the gate for promoting the API beyond experimental.
+
+
+def _make_pec_short_sim() -> Simulation:
+    """Coaxial port whose centre pin reaches the cavity floor (PEC short)."""
+    from rfx.sources.sources import GaussianPulse
+
+    sim = Simulation(
+        freq_max=10.0e9,
+        domain=(0.020, 0.020, 0.020),
+        boundary="pec",
+    )
+    sim.add_coaxial_port(
+        position=(0.010, 0.010, 0.015),
+        face="top",
+        pin_length=15.0e-3,  # extends from gap (z=15mm) to cavity floor (z=0)
+        waveform=GaussianPulse(f0=5.0e9, bandwidth=0.8),
+    )
+    return sim
+
+
+@pytest.mark.xfail(
+    reason=(
+        "M72 inherits the M67 bidirectional plane-source limitation: |S11| for "
+        "a PEC-short coaxial geometry should be ≥ 0.9 (lossless full reflection "
+        "with cavity-loading phase). The current source injects on both sides of "
+        "the source plane, mixing forward and backward field at the V/I "
+        "extractor. Calibration requires either TFSF-style one-side injection "
+        "or explicit incident-wave subtraction. Unmark when fixed."
+    ),
+    strict=True,
+)
+def test_pec_short_yields_full_reflection_calibration_target():
+    sim = _make_pec_short_sim()
+    res = sim.compute_coaxial_s_matrix(n_steps=400, n_freqs=5)
+    s11 = np.abs(res.s_params[0, 0, :])
+    assert float(np.min(s11)) >= 0.9, (
+        f"PEC-short |S11| should be near 1, got {s11.tolist()}"
+    )
+
+
+def test_pec_short_smoke_returns_finite_values():
+    """Mechanical smoke check that the PEC-short geometry runs end-to-end.
+
+    Pairs with the xfail calibration-target test above: while the API is
+    experimental, this test simply asserts |S11| is finite, bounded, and
+    nonzero so regressions on plumbing (DFT-plane scope, V/I extraction,
+    power-wave decomposition) are still caught.
+    """
+    sim = _make_pec_short_sim()
+    res = sim.compute_coaxial_s_matrix(n_steps=400, n_freqs=5)
+    s11 = res.s_params[0, 0, :]
+    assert np.all(np.isfinite(s11))
+    mag = np.abs(s11)
+    assert float(np.max(mag)) < 5.0
+    assert float(np.max(mag)) > 0.0
