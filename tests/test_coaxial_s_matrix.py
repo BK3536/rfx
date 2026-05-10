@@ -293,6 +293,60 @@ def test_pec_short_calibration_holds_across_faces(face, gap_z):
     )
 
 
+def test_open_termination_helpers_run_without_error():
+    """Smoke check that pin-retract + PEC end-cap helpers run end-to-end.
+
+    A clean Γ ≈ +1 open-circuit termination at this fixture's
+    resolution is not yet achievable: shallow pin retraction (1–3 cells)
+    leaves a below-cutoff PTFE-shell waveguide region too short to fully
+    confine the wave, so the dominant reflection comes from the cavity
+    floor PEC and looks short-like (phase ≈ 180°). Adding a PEC end-cap
+    closes the shell and isolates the line from the cavity, but the
+    resulting closed below-cutoff cup has discrete-grid resonances that
+    drag |S11| below 1. Testing the resulting calibration target needs
+    a finer grid AND a redesigned fixture; we keep this smoke test so
+    the helpers don't regress structurally while that work is staged.
+    """
+    from rfx.sources.sources import GaussianPulse
+
+    sim = Simulation(
+        freq_max=20.0e9,
+        domain=(0.020, 0.020, 0.020),
+        boundary="pec",
+    )
+    sim.add_coaxial_port(
+        position=(0.010, 0.010, 0.018),
+        face="top",
+        pin_length=15.0e-3,
+        waveform=GaussianPulse(f0=5.0e9, bandwidth=0.8),
+    )
+    sim.add_coaxial_open_termination(pin_retract_cells=3)
+    sim.add_coaxial_pec_end_cap()
+    res = sim.compute_coaxial_s_matrix(n_steps=400, n_freqs=5)
+    s11 = res.s_params[0, 0, :]
+    assert np.all(np.isfinite(s11))
+    assert float(np.max(np.abs(s11))) < 5.0
+    # The result must differ from a vanilla (no-helper) PEC short — if it
+    # didn't, the helpers would be no-ops.
+    sim_short = Simulation(
+        freq_max=20.0e9,
+        domain=(0.020, 0.020, 0.020),
+        boundary="pec",
+    )
+    sim_short.add_coaxial_port(
+        position=(0.010, 0.010, 0.018),
+        face="top",
+        pin_length=15.0e-3,
+        waveform=GaussianPulse(f0=5.0e9, bandwidth=0.8),
+    )
+    res_short = sim_short.compute_coaxial_s_matrix(n_steps=400, n_freqs=5)
+    delta_max = float(np.max(np.abs(s11 - res_short.s_params[0, 0, :])))
+    assert delta_max > 0.05, (
+        f"open-termination helpers should perturb |S11| relative to a "
+        f"plain PEC short; got max |Δ| = {delta_max}"
+    )
+
+
 def test_matched_load_absorbs_at_design_band():
     """Distributed annular Z₀ termination absorbs at high-freq design band.
 

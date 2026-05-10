@@ -711,6 +711,14 @@ class Simulation:
         # (port_index, target_impedance, axial_offset_cells). Stamped during
         # compute_coaxial_s_matrix's materials build for the targeted port.
         self._coaxial_terminations: list[tuple[int, float, int]] = []
+        # Open-circuit terminations: each entry is (port_index,
+        # pin_retract_cells). Retracts the inner pin to create a circular-
+        # waveguide-like open termination beyond the new pin tip.
+        self._coaxial_open_terminations: list[tuple[int, int]] = []
+        # PEC end-cap closures: each entry is (port_index, axial_offset_cells).
+        # Closes the outer shell with a PEC disk to isolate the line from the
+        # surrounding cavity (used together with open termination).
+        self._coaxial_pec_end_caps: list[tuple[int, int]] = []
         self._ntff: tuple | None = None  # (corner_lo, corner_hi, freqs)
         self._tfsf: _TFSFEntry | None = None
         self._dft_planes: list[_DFTPlaneEntry] = []
@@ -1017,6 +1025,70 @@ class Simulation:
             impedance=impedance,
             excitation=waveform,
         ))
+        return self
+
+    def add_coaxial_pec_end_cap(
+        self,
+        port_index: int = 0,
+        *,
+        axial_offset_cells: int = 0,
+    ) -> "Simulation":
+        """Close the outer shell of a coaxial port with a PEC end-cap.
+
+        Stamps a PEC disk one cell past the original shell tip in the
+        forward direction, isolating the coax line from the surrounding
+        cavity. Combined with :meth:`add_coaxial_open_termination`,
+        this completes a proper open-circuit cup geometry.
+
+        Parameters
+        ----------
+        port_index : int
+        axial_offset_cells : int
+            Optional offset from the default (one cell past the shell
+            tip). Negative moves the cap into the line.
+        """
+        if port_index < 0 or port_index >= len(self._coaxial_ports):
+            raise ValueError(
+                f"port_index {port_index} is out of range "
+                f"(have {len(self._coaxial_ports)} coaxial ports registered)"
+            )
+        self._coaxial_pec_end_caps.append(
+            (int(port_index), int(axial_offset_cells))
+        )
+        return self
+
+    def add_coaxial_open_termination(
+        self,
+        port_index: int = 0,
+        *,
+        pin_retract_cells: int = 1,
+    ) -> "Simulation":
+        """Register an open-circuit termination on a coaxial port.
+
+        Retracts the inner pin by ``pin_retract_cells`` Yee cells from
+        its original ``pin_length`` end. The resulting cross-section
+        beyond the new pin tip is a PTFE-filled circular waveguide whose
+        TE/TM modes have cutoff frequencies far above the design band,
+        so the wave reaching the step is below cutoff and reflects
+        evanescently — an open-circuit-like termination with ``|Γ| ≈ 1``.
+
+        Parameters
+        ----------
+        port_index : int
+            Index into the order of ``add_coaxial_port`` calls.
+        pin_retract_cells : int
+            Number of Yee cells to remove from the pin's far end.
+            Default 1 cuts back exactly one cell.
+        """
+
+        if port_index < 0 or port_index >= len(self._coaxial_ports):
+            raise ValueError(
+                f"port_index {port_index} is out of range "
+                f"(have {len(self._coaxial_ports)} coaxial ports registered)"
+            )
+        self._coaxial_open_terminations.append(
+            (int(port_index), int(pin_retract_cells))
+        )
         return self
 
     def add_coaxial_matched_load(
@@ -3368,6 +3440,8 @@ class Simulation:
         from rfx.sources.coaxial_port import (
             setup_coaxial_port,
             add_coaxial_matched_termination,
+            add_coaxial_open_termination,
+            add_coaxial_pec_end_cap,
         )
         grid = self._build_grid()
         materials, _, _ = self._build_materials(grid)
@@ -3380,6 +3454,20 @@ class Simulation:
                 materials,
                 target_impedance=term_R,
                 axial_offset_cells=term_offset_cells,
+            )
+        for term_port_idx, retract_cells in self._coaxial_open_terminations:
+            materials = add_coaxial_open_termination(
+                grid,
+                ports[term_port_idx],
+                materials,
+                pin_retract_cells=retract_cells,
+            )
+        for cap_port_idx, cap_offset_cells in self._coaxial_pec_end_caps:
+            materials = add_coaxial_pec_end_cap(
+                grid,
+                ports[cap_port_idx],
+                materials,
+                axial_offset_cells=cap_offset_cells,
             )
 
         # Frequency grid.

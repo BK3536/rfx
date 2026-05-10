@@ -793,6 +793,225 @@ def add_coaxial_matched_termination(
     )
 
 
+def add_coaxial_pec_end_cap(
+    grid: Grid,
+    port: CoaxialPort,
+    materials,
+    *,
+    axial_offset_cells: int = 0,
+):
+    """Close the outer shell of a coaxial port with a PEC end-cap disk.
+
+    Stamps a PEC-filled disk across the full outer-conductor radius at a
+    chosen axial position (defaulting to the original line end at
+    ``pin_tip``). Combined with :func:`add_coaxial_open_termination`,
+    this forms a proper open-circuit cup: a section of PTFE-filled
+    circular waveguide closed at the far end by PEC, where the inner
+    conductor terminates inside the cup and the outer conductor + cap
+    isolate the line from the surrounding vacuum cavity.
+
+    Without an end-cap, a retracted pin alone leaves the line "open" to
+    the rest of the cavity through the shell end (since the shell
+    rasterises only along ``pin_length``); below-cutoff evanescent
+    decay is small over a few Yee cells, and a cavity-floor reflection
+    dominates the observed Γ. The end-cap eliminates that escape path.
+
+    Parameters
+    ----------
+    grid : Grid
+    port : CoaxialPort
+        Must already have been stamped via :func:`setup_coaxial_port`.
+    materials : MaterialArrays
+    axial_offset_cells : int
+        Axial offset (in Yee cells) from the original pin tip. ``0``
+        places the cap exactly at the line end (one cell past the
+        last pin/shell cell). Negative values move the cap into the
+        line; positive values move it out into the surrounding vacuum.
+
+    Returns
+    -------
+    Updated MaterialArrays with the PEC end-cap stamped.
+    """
+
+    axis, direction, _, pin_center, pin_tip, _ = _coaxial_port_geometry(
+        grid, port
+    )
+    if axis != "z":
+        raise NotImplementedError(
+            "add_coaxial_pec_end_cap currently supports only z-axis "
+            "coaxial ports (face='top'/'bottom')."
+        )
+
+    sigma_np = np.array(materials.sigma)
+    eps_r_np = np.array(materials.eps_r)
+
+    # Find the forward-most z index where the outer shell is stamped,
+    # then place the cap one cell past it (in the forward direction).
+    # The shell is identified by PEC at radii in the shell band.
+    shell_thickness = min(
+        float(grid.dx),
+        0.5 * (float(port.outer_radius) - float(port.pin_radius)),
+    )
+    shell_inner_radius = float(port.outer_radius) - shell_thickness
+    nz = grid.shape[2]
+    forward = int(direction)
+    z_iter = range(nz - 1, -1, -1) if forward > 0 else range(nz)
+    shell_tip_z: int | None = None
+    for z_idx in z_iter:
+        for i in range(grid.nx):
+            x = (i - grid.pad_x_lo) * grid.dx
+            for j in range(grid.ny):
+                y = (j - grid.pad_y_lo) * grid.dx
+                r = float(np.hypot(x - port.position[0], y - port.position[1]))
+                if not (shell_inner_radius <= r <= float(port.outer_radius)):
+                    continue
+                if sigma_np[i, j, z_idx] >= 0.5 * PEC_SIGMA:
+                    shell_tip_z = z_idx
+                    break
+            if shell_tip_z is not None:
+                break
+        if shell_tip_z is not None:
+            break
+    if shell_tip_z is None:
+        raise ValueError(
+            "add_coaxial_pec_end_cap could not locate the shell tip; ensure "
+            "setup_coaxial_port has been called for this port"
+        )
+
+    # Cap one cell past the shell tip, in the forward direction.
+    cap_z = shell_tip_z + forward * (1 + int(axial_offset_cells))
+    if cap_z < 0 or cap_z >= nz:
+        raise ValueError(
+            f"PEC end-cap z-index {cap_z} falls outside grid "
+            f"(axial_offset_cells={axial_offset_cells})"
+        )
+
+    cells_stamped = 0
+    for i in range(grid.nx):
+        x = (i - grid.pad_x_lo) * grid.dx
+        for j in range(grid.ny):
+            y = (j - grid.pad_y_lo) * grid.dx
+            r = float(np.hypot(x - port.position[0], y - port.position[1]))
+            if r > float(port.outer_radius):
+                continue
+            sigma_np[i, j, cap_z] = float(PEC_SIGMA)
+            eps_r_np[i, j, cap_z] = 1.0
+            cells_stamped += 1
+
+    if cells_stamped == 0:
+        raise ValueError(
+            "add_coaxial_pec_end_cap stamped 0 cells; check geometry"
+        )
+
+    return materials._replace(
+        sigma=jnp.asarray(sigma_np),
+        eps_r=jnp.asarray(eps_r_np),
+    )
+
+
+def add_coaxial_open_termination(
+    grid: Grid,
+    port: CoaxialPort,
+    materials,
+    *,
+    pin_retract_cells: int = 1,
+):
+    """Open-circuit termination via pin retraction (inner-conductor cut-back).
+
+    The center pin is shortened from its original length by
+    ``pin_retract_cells`` Yee cells, while the outer shell, PTFE fill,
+    and gap excitation are left intact. Beyond the new pin tip the
+    cross-section is *PTFE-filled outer shell with no inner conductor*,
+    which is the geometry of a PTFE-loaded circular waveguide. The
+    lowest such waveguide TE/TM mode for an SMA shell sits well above
+    the GHz–10 GHz test band (TE₁₁ cutoff ≈ 45 GHz inside ε_r=2.1
+    PTFE), so any wave reaching the pin-tip step is below cutoff in the
+    rest of the line and decays evanescently. The reflection back
+    toward the source is therefore an open-circuit-like ``Γ ≈ +1``
+    (with a small fringing-capacitance phase) at all sub-cutoff
+    frequencies.
+
+    Parameters
+    ----------
+    grid : Grid
+    port : CoaxialPort
+        Must already have been stamped via :func:`setup_coaxial_port`
+        before calling this helper.
+    materials : MaterialArrays
+    pin_retract_cells : int
+        Number of Yee cells to retract the pin from its original
+        ``port.pin_length`` end. ``1`` removes one cell of pin at the
+        far end and replaces it with PTFE. Larger values produce a
+        deeper "cup" in the outer shell.
+
+    Returns
+    -------
+    Updated MaterialArrays with the retracted pin geometry stamped.
+    """
+
+    if pin_retract_cells <= 0:
+        raise ValueError(
+            f"pin_retract_cells must be positive, got {pin_retract_cells}"
+        )
+
+    axis, direction, _, pin_center, pin_tip, _ = _coaxial_port_geometry(
+        grid, port
+    )
+    if axis != "z":
+        raise NotImplementedError(
+            "add_coaxial_open_termination currently supports only z-axis "
+            "coaxial ports (face='top'/'bottom')."
+        )
+
+    sigma_np = np.array(materials.sigma)
+    eps_r_np = np.array(materials.eps_r)
+
+    # Pre-compute the (i, j) cells that fall inside the pin radius and
+    # were stamped by setup_coaxial_port as PEC. This avoids relying on
+    # a separate ``pin_tip_idx`` computation that may be off-by-one
+    # against the Cylinder mask's rasterisation convention.
+    pin_ij: list[tuple[int, int]] = []
+    for i in range(grid.nx):
+        x = (i - grid.pad_x_lo) * grid.dx
+        for j in range(grid.ny):
+            y = (j - grid.pad_y_lo) * grid.dx
+            r = float(np.hypot(x - port.position[0], y - port.position[1]))
+            if r <= float(port.pin_radius):
+                pin_ij.append((i, j))
+
+    # Walk z indices along the forward direction and collect the first
+    # ``pin_retract_cells`` z-indices where any pin (i, j) cell is
+    # stamped PEC. These are the "tip" cells in the wave-forward sense.
+    nz = grid.shape[2]
+    forward = int(direction)
+    z_iter = range(nz - 1, -1, -1) if forward > 0 else range(nz)
+    pin_tip_z_indices: list[int] = []
+    for z_idx in z_iter:
+        if any(sigma_np[i, j, z_idx] >= 0.5 * PEC_SIGMA for (i, j) in pin_ij):
+            pin_tip_z_indices.append(z_idx)
+            if len(pin_tip_z_indices) >= int(pin_retract_cells):
+                break
+
+    cells_retracted = 0
+    for z_idx in pin_tip_z_indices:
+        for (i, j) in pin_ij:
+            if sigma_np[i, j, z_idx] >= 0.5 * PEC_SIGMA:
+                sigma_np[i, j, z_idx] = 0.0
+                eps_r_np[i, j, z_idx] = float(PTFE_EPS_R)
+                cells_retracted += 1
+
+    if cells_retracted == 0:
+        raise ValueError(
+            "add_coaxial_open_termination retracted 0 pin cells; check "
+            "pin_retract_cells and the original pin geometry"
+        )
+
+    return materials._replace(
+        sigma=jnp.asarray(sigma_np),
+        eps_r=jnp.asarray(eps_r_np),
+    )
+
+
 # ---------------------------------------------------------------------------
 # make_coaxial_port_source / apply_coaxial_port_source
 # ---------------------------------------------------------------------------
