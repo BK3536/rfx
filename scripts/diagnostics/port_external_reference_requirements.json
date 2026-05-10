@@ -110,9 +110,12 @@
         "scripts/physics_gate_port_external_waveguide_broad.yaml"
       ],
       "external_comparison_artifacts": [
-        ".omx/physics-gate/2026-05-09-m30-waveguide-wr90-generic-comparison/wr90_external_generic_sparameter_comparison.json"
+        ".omx/physics-gate/2026-05-09-m30-waveguide-wr90-generic-comparison/wr90_external_generic_sparameter_comparison.json",
+        ".omx/physics-gate/2026-05-10-m69-waveguide-wr90-broad-envelope/waveguide_wr90_openems_broad_envelope.json"
       ],
-      "broad_e5_envelope_artifacts": []
+      "broad_e5_envelope_artifacts": [
+        ".omx/physics-gate/2026-05-10-m69-waveguide-wr90-broad-envelope/waveguide_wr90_openems_broad_envelope.json"
+      ]
     },
     {
       "family": "coaxial_port",
