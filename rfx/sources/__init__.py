@@ -4,9 +4,12 @@
 from rfx.sources.sources import GaussianPulse, add_point_source, add_lumped_port
 from rfx.sources.coaxial_port import (
     CoaxialPort,
+    CoaxialPlaneSourceSpec,
     CoaxialTEMCartesianPlaneVI,
     setup_coaxial_port,
     make_coaxial_port_source,
+    build_coaxial_tem_plane_source_specs,
+    extract_coaxial_plane_vi_from_dft,
     CoaxialTEMReferencePlaneVI,
     coaxial_load_reflection,
     coaxial_tem_capacitance_per_m,

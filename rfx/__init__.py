@@ -8,14 +8,17 @@ from rfx.simulation import run, run_until_decay, make_source, make_probe, make_p
 from rfx.adi import ADIState2D, ADIState3D, thomas_solve, adi_step_2d, run_adi_2d, adi_step_3d, run_adi_3d
 from rfx.api import (
     Simulation, Result, WaveguideSParamResult, WaveguideSMatrixResult,
-    MSLSMatrixResult, MATERIAL_LIBRARY,
+    MSLSMatrixResult, CoaxialSMatrixResult, MATERIAL_LIBRARY,
 )
 from rfx.geometry.csg import Box, Sphere, Cylinder, PolylineWire
 from rfx.geometry.curved import CurvedPatch
 from rfx.geometry.via import Via
 from rfx.sources.sources import GaussianPulse, ModulatedGaussian, CWSource, CustomWaveform
 from rfx.sources.coaxial_port import (
-    CoaxialPort, CoaxialTEMCartesianPlaneVI, CoaxialTEMReferencePlaneVI,
+    CoaxialPort, CoaxialPlaneSourceSpec,
+    CoaxialTEMCartesianPlaneVI, CoaxialTEMReferencePlaneVI,
+    build_coaxial_tem_plane_source_specs,
+    extract_coaxial_plane_vi_from_dft,
     coaxial_load_reflection,
     coaxial_tem_capacitance_per_m,
     coaxial_tem_characteristic_impedance, coaxial_tem_inductance_per_m,

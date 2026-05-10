@@ -716,3 +716,232 @@ def make_coaxial_port_source(grid: Grid, port: CoaxialPort, materials, n_steps: 
         return state._replace(**{component: field})
 
     return apply_fn
+
+
+# ---------------------------------------------------------------------------
+# Distributed TEM plane-source builder (M67 prototype → public)
+# ---------------------------------------------------------------------------
+#
+# These helpers build the per-cell ``SourceSpec`` / ``MagneticSourceSpec`` lists
+# for a transverse E/M coaxial plane source.  They are the public surface that
+# ``compute_coaxial_s_matrix`` uses to assemble each driven-port FDTD run.  The
+# helpers are intentionally low-level: a higher-level Simulation method is
+# responsible for plane index, DFT probe setup, V/I extraction, and S-matrix
+# bookkeeping.
+#
+# Reference plane convention:
+#   The plane source is injected on a single transverse cross-section of the
+#   coaxial port at axial position ``z = pin_center[axis]``.  The same plane
+#   is the V/I extraction reference plane.  Callers can shift the reference
+#   plane downstream by passing ``reference_plane_axial_index_offset`` to
+#   ``build_coaxial_tem_plane_source_specs``; the V/I extractor must use the
+#   matching offset for the calibration to remain self-consistent.
+
+
+class CoaxialPlaneSourceSpec(NamedTuple):
+    """Specs returned by :func:`build_coaxial_tem_plane_source_specs`.
+
+    The lists carry one ``SourceSpec`` / ``MagneticSourceSpec`` per cell on
+    the coaxial cross-section between ``pin_radius`` and ``outer_radius``.
+    Cells whose radius falls outside that annulus are skipped.
+    """
+
+    electric_sources: tuple
+    magnetic_sources: tuple
+    plane_axial_index: int
+    plane_axis: str
+    source_cell_count: int
+    field_scale: float
+    magnetic_ratio: float
+    z_tem_ohm: float
+
+
+def build_coaxial_tem_plane_source_specs(
+    *,
+    grid: "Grid",
+    port: CoaxialPort,
+    n_steps: int,
+    field_scale: float = 1.0e4,
+    magnetic_ratio: float = 1.0,
+    reference_plane_axial_index_offset: int = 0,
+    eps_r: float = PTFE_EPS_R,
+) -> CoaxialPlaneSourceSpec:
+    """Return the distributed transverse E/M source specs for a coaxial port.
+
+    Parameters
+    ----------
+    grid:
+        The simulation grid.
+    port:
+        :class:`CoaxialPort` with geometry and excitation waveform.
+    n_steps:
+        Number of FDTD timesteps the simulation will execute. The waveform
+        is materialised at each step so this must match the runner.
+    field_scale:
+        Linear scale on the radial E waveform. Increase to lift the plane
+        signal above DFT noise; the V/I extraction is amplitude-linear.
+    magnetic_ratio:
+        Multiplier on the H waveform after the analytic ``1/Z_TEM`` factor.
+        ``1.0`` injects the lossless TEM Poynting-balanced amplitude;
+        smaller values bias toward an E-only source (reflective).
+    reference_plane_axial_index_offset:
+        Shift of the source plane (and therefore the V/I reference plane)
+        relative to ``port.pin_center`` along the port axis. ``0`` injects
+        at the pin centre plane.
+    eps_r:
+        Coaxial dielectric permittivity for the analytic ``Z_TEM``. Default
+        :data:`PTFE_EPS_R` matches the SMA helper.
+
+    Returns
+    -------
+    CoaxialPlaneSourceSpec
+        Lists of per-cell source specs plus bookkeeping needed by the V/I
+        extractor.
+    """
+
+    # Lazy imports so the source helpers stay JIT-friendly for callers that
+    # import this module without a full simulation pipeline.
+    from rfx.simulation import MagneticSourceSpec, SourceSpec
+    import jax
+    import jax.numpy as jnp
+
+    axis, _direction, _component, pin_center, _pin_tip, _gap_idx = (
+        _coaxial_port_geometry(grid, port)
+    )
+    if axis != "z":
+        raise NotImplementedError(
+            "build_coaxial_tem_plane_source_specs currently supports only the "
+            "default z-axis coaxial port (face='top'/'bottom')."
+        )
+
+    times = jnp.arange(int(n_steps), dtype=jnp.float32) * grid.dt
+    waveform = jax.vmap(port.excitation)(times)
+
+    z0 = coaxial_tem_characteristic_impedance(
+        port.pin_radius,
+        port.outer_radius,
+        eps_r,
+    )
+    log_ratio = float(np.log(port.outer_radius / port.pin_radius))
+    plane_index = int(grid.position_to_index(pin_center)[2]) + int(
+        reference_plane_axial_index_offset
+    )
+
+    electric_sources: list = []
+    magnetic_sources: list = []
+    source_cell_count = 0
+    for i in range(grid.nx):
+        x = (i - grid.pad_x_lo) * grid.dx
+        for j in range(grid.ny):
+            y = (j - grid.pad_y_lo) * grid.dx
+            du = x - port.position[0]
+            dv = y - port.position[1]
+            radius = float(np.hypot(du, dv))
+            if not (
+                port.pin_radius + 0.25 * grid.dx
+                <= radius
+                <= port.outer_radius - 0.25 * grid.dx
+            ):
+                continue
+            cos_phi = du / radius
+            sin_phi = dv / radius
+            e_radial = float(field_scale) / (radius * log_ratio)
+            h_phi = (
+                float(field_scale)
+                * float(magnetic_ratio)
+                * (1.0 / z0)
+                / (2.0 * np.pi * radius)
+            )
+            source_cell_count += 1
+            if abs(cos_phi) > 1e-12:
+                electric_sources.append(
+                    SourceSpec(
+                        i=i,
+                        j=j,
+                        k=plane_index,
+                        component="ex",
+                        waveform=(e_radial * cos_phi * waveform).astype(jnp.float32),
+                    )
+                )
+            if abs(sin_phi) > 1e-12:
+                electric_sources.append(
+                    SourceSpec(
+                        i=i,
+                        j=j,
+                        k=plane_index,
+                        component="ey",
+                        waveform=(e_radial * sin_phi * waveform).astype(jnp.float32),
+                    )
+                )
+            if abs(sin_phi) > 1e-12:
+                magnetic_sources.append(
+                    MagneticSourceSpec(
+                        i=i,
+                        j=j,
+                        k=plane_index,
+                        component="hx",
+                        waveform=(-h_phi * sin_phi * waveform).astype(jnp.float32),
+                    )
+                )
+            if abs(cos_phi) > 1e-12:
+                magnetic_sources.append(
+                    MagneticSourceSpec(
+                        i=i,
+                        j=j,
+                        k=plane_index,
+                        component="hy",
+                        waveform=(h_phi * cos_phi * waveform).astype(jnp.float32),
+                    )
+                )
+
+    return CoaxialPlaneSourceSpec(
+        electric_sources=tuple(electric_sources),
+        magnetic_sources=tuple(magnetic_sources),
+        plane_axial_index=plane_index,
+        plane_axis=axis,
+        source_cell_count=source_cell_count,
+        field_scale=float(field_scale),
+        magnetic_ratio=float(magnetic_ratio),
+        z_tem_ohm=float(z0),
+    )
+
+
+def extract_coaxial_plane_vi_from_dft(
+    *,
+    grid: "Grid",
+    port: CoaxialPort,
+    plane_axial_index: int,
+    ex_dft: np.ndarray,
+    ey_dft: np.ndarray,
+    hx_dft: np.ndarray,
+    hy_dft: np.ndarray,
+    eps_r: float = PTFE_EPS_R,
+) -> CoaxialTEMCartesianPlaneVI:
+    """Pull V/I phasors from DFT plane probes at the coaxial reference plane.
+
+    This is the convenience wrapper used by ``compute_coaxial_s_matrix``: it
+    takes the DFT-plane outputs (one per Ex/Ey/Hx/Hy component) and delegates
+    to :func:`coaxial_tem_reference_plane_vi_from_cartesian_plane`, which
+    already implements the radial line-integral / azimuthal loop-integral
+    extraction with bilinear interpolation.
+
+    The plane probes must be on the same cross-section that
+    :func:`build_coaxial_tem_plane_source_specs` injected on, i.e.
+    ``plane_axial_index``.
+    """
+
+    u_coords = (np.arange(grid.nx, dtype=np.float64) - grid.pad_x_lo) * grid.dx
+    v_coords = (np.arange(grid.ny, dtype=np.float64) - grid.pad_y_lo) * grid.dx
+    return coaxial_tem_reference_plane_vi_from_cartesian_plane(
+        u_coords,
+        v_coords,
+        np.asarray(ex_dft, dtype=np.complex128),
+        np.asarray(ey_dft, dtype=np.complex128),
+        np.asarray(hx_dft, dtype=np.complex128),
+        np.asarray(hy_dft, dtype=np.complex128),
+        center_u_m=float(port.position[0]),
+        center_v_m=float(port.position[1]),
+        inner_radius=float(port.pin_radius),
+        outer_radius=float(port.outer_radius),
+        eps_r=float(eps_r),
+    )
