@@ -25,7 +25,7 @@ Hz.
 |---|---|---|---|---|
 | `add_port(..., extent=None)` lumped port | `Simulation.run(compute_s_params=True, s_param_freqs=...)` | `Result.s_params`, `Result.freqs` | E2/E3/E4 partial | M13 analytic extractor oracles (`open` / `short` / `matched` / RLC, `max_abs_diff 7.91e-8 <= 2.20e-6`), M11 real raw V/I replay (`max_abs_diff 1.13e-7 <= 9.84e-7`), M14 three-case replay/passivity/reciprocity sweep (`max_column_power 0.971`, reciprocity diff `3.02e-7`), M33 narrow rfx/openEMS PEC-box magnitude comparator (`S11 max_mag_abs_diff 0.11224`, `S21 max_mag_abs_diff 0.00373`), M47 three-case rfx/openEMS PEC-box position sweep (`max case max_mag_abs_diff 0.11835`, `max case mean_mag_abs_diff 0.06466`), and M56 VESSL-parallel rerun of that sweep (`3/3` jobs completed and aggregate passed); broad calibrated-port E5 remains blocked |
 | `add_port(..., extent=None)` lumped port | `Simulation.forward(port_s11_freqs=...)` | `ForwardResult.s_params`, `ForwardResult.freqs` (S11 vectors only) | E0/E1 | AD/schema contract; physics claim inherits the lumped-port envelope |
-| `add_port(..., extent=...)` wire port | `Simulation.run(compute_s_params=True, s_param_freqs=...)` | `Result.s_params`, `Result.freqs` | E2/E3/E4 partial | `examples/crossval/05_patch_antenna.py` for probe-fed patch resonance, M32 generic patch/OpenEMS magnitude comparator (`max_mag_abs_diff 0.05318`, `mean_mag_abs_diff 0.02750` over 1.5--3.4 GHz), M12 real midpoint V/I replay (`max_abs_diff 7.82e-8 <= 9.80e-7`), and M15 three-case replay/passivity/reciprocity sweep (`max_column_power 0.979`, reciprocity diff `1.24e-6`); absolute S-matrix calibration still caveated |
+| `add_port(..., extent=...)` wire port | `Simulation.run(compute_s_params=True, s_param_freqs=...)` | `Result.s_params`, `Result.freqs` | E2/E3/E4 partial + broad-E4-enabling envelope | `examples/crossval/05_patch_antenna.py` for probe-fed patch resonance, M32 generic patch/OpenEMS magnitude comparator (`max_mag_abs_diff 0.05318`, `mean_mag_abs_diff 0.02750` over 1.5--3.4 GHz), M12 real midpoint V/I replay (`max_abs_diff 7.82e-8 <= 9.80e-7`), M15 three-case replay/passivity/reciprocity sweep (`max_column_power 0.979`, reciprocity diff `1.24e-6`), and **M68 broad mesh/length openEMS envelope** (3 cases over `dx in [1, 2] mm`, wire length `[4, 8] mm`, `0.8--1.8 GHz`, `max_mag_abs_diff_across_cases 0.05212`); absolute S-matrix calibration convention still caveated |
 | `add_port(..., extent=...)` wire port | `Simulation.forward(port_s11_freqs=...)` | `ForwardResult.s_params`, `ForwardResult.freqs` (S11 vectors only) | E0/E1 | `tests/test_wire_port_sparams_forward.py`; uniform single-device AD path; nonuniform is shadow only |
 | `add_msl_port(...)` | `Simulation.compute_msl_s_matrix(...)` | `MSLSMatrixResult.S`, `.freqs`, `.Z0`, `.beta`, `.port_names` | E5-narrow / eigenmode-blocked | M10 envelope report: thru-line `|S21|` / `Z0` slow gate, cv06b notch error `1.63%` and depth `-34.3 dB`, stored-openEMS smoke S11/S21 mean abs diffs `0.02502` / `0.02661`, M29 generic comparator artifact (`max_mag_abs_diff 0.05225`, `mean_mag_abs_diff 0.02664`, magnitude mode), and real raw 3-probe replay `max_abs_diff=0`; eigenmode/nonuniform remain blocked |
 | `add_waveguide_port(...)` | `Simulation.compute_waveguide_s_matrix(...)` | `WaveguideSMatrixResult.s_params`, `.freqs`, `.port_names`, `.port_directions`, `.reference_planes` | E5-narrow current port | M4 envelope report: `waveguide_ports` gate `37 passed`, cv11 WR-90 empty/PEC-short/slab analytic + external references, and M30 generic WR90/Palace magnitude comparator (`max_mag_abs_diff 0.0709`, `mean_mag_abs_diff 0.0440`); restricted to documented uniform-Yee rectangular-guide envelope |
@@ -73,13 +73,17 @@ Hz.
 ### Wire `add_port(..., extent=...)`
 
 - **Evidence status:** E2/E3/E4 partial for probe-fed resonance/field
-  workflows. M12 adds a real two-port midpoint V/I replay of the current wire
-  extractor convention (`max_abs_diff 7.82e-8 <= 9.80e-7`), and M15 adds a
-  small uniform-Yee replay/passivity/reciprocity sweep over three two-port
-  geometries (`max_column_power 0.979`, reciprocity diff `1.24e-6`). M32 adds
-  a narrow crossval05 patch/OpenEMS S11 magnitude comparison artifact
+  workflows, plus a broad-E4-enabling mesh/length envelope. M12 adds a real
+  two-port midpoint V/I replay of the current wire extractor convention
+  (`max_abs_diff 7.82e-8 <= 9.80e-7`), and M15 adds a small uniform-Yee
+  replay/passivity/reciprocity sweep over three two-port geometries
+  (`max_column_power 0.979`, reciprocity diff `1.24e-6`). M32 adds a narrow
+  crossval05 patch/OpenEMS S11 magnitude comparison artifact
   (`max_mag_abs_diff 0.05318`, `mean_mag_abs_diff 0.02750`, 1.5--3.4 GHz).
-  Absolute S-matrix calibration remains caveated.
+  M68 adds a broad mesh/length openEMS envelope across three PEC-cavity
+  two-port wire-port cases (`dx in [1, 2] mm`, wire length `[4, 8] mm`,
+  `0.8--1.8 GHz`, `max_mag_abs_diff_across_cases 0.05212`, all 3 cases
+  passed). Absolute S-matrix calibration convention remains caveated.
 - **Shadow lane:** nonuniform wire-port extraction is retained and covered by
   regression tests, but it is not the public physics-validated baseline.
 - **API:** `run(compute_s_params=True)` for a full S-matrix;
