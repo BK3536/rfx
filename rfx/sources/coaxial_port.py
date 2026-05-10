@@ -1057,7 +1057,22 @@ def extract_coaxial_plane_vi_from_dft(
     The plane probes must be on the same cross-section that
     :func:`build_coaxial_tem_plane_source_specs` injected on, i.e.
     ``plane_axial_index``.
+
+    The ``current_sign`` is derived from the port's face direction. The
+    raw azimuthal-loop integral ``2π·r·⟨H_φ⟩`` measures the line current
+    flowing in the ``+ẑ`` direction; the standard ``V/I = +Z_TEM`` forward-
+    wave convention requires this to align with the *forward* direction of
+    the source. For ``face='top'`` the source emits in ``-z`` (pin extends
+    into ``-z``), so ``current_sign = -1`` gives ``V/I = +Z_TEM`` for a
+    clean forward wave; ``face='bottom'`` emits ``+z`` and uses
+    ``current_sign = +1``. Without this, ``compute_coaxial_s_matrix``
+    reports ``|S11| = 1/Γ`` instead of ``Γ`` for ``face='top'`` ports —
+    same magnitude for lossless reflections but the wrong phase, and
+    biased away from 1 by numerical asymmetries.
     """
+
+    _, direction, _, _, _, _ = _coaxial_port_geometry(grid, port)
+    current_sign = float(direction)
 
     u_coords = (np.arange(grid.nx, dtype=np.float64) - grid.pad_x_lo) * grid.dx
     v_coords = (np.arange(grid.ny, dtype=np.float64) - grid.pad_y_lo) * grid.dx
@@ -1073,4 +1088,5 @@ def extract_coaxial_plane_vi_from_dft(
         inner_radius=float(port.pin_radius),
         outer_radius=float(port.outer_radius),
         eps_r=float(eps_r),
+        current_sign=current_sign,
     )

@@ -174,11 +174,19 @@ def test_preflight_sparameters_rejects_coaxial_when_no_ports():
 
 
 def _make_pec_short_sim() -> Simulation:
-    """Coaxial port whose centre pin reaches the cavity floor (PEC short)."""
+    """Coaxial port whose centre pin reaches the cavity floor (PEC short).
+
+    ``freq_max=20 GHz`` gives ``dx ≈ 0.75 mm`` so the SMA PTFE annulus
+    (0.71 mm wide between the 0.635 mm pin and the 1.345 mm shell-inner
+    edge) is resolved by ~1 cell; at the previous ``freq_max=10 GHz``
+    setting the PTFE region was 0.47 cells wide and could not support a
+    discrete coax TEM mode regardless of source quality (see the
+    20260510_coaxial_tfsf_session_progress handover doc).
+    """
     from rfx.sources.sources import GaussianPulse
 
     sim = Simulation(
-        freq_max=10.0e9,
+        freq_max=20.0e9,
         domain=(0.020, 0.020, 0.020),
         boundary="pec",
     )
@@ -191,17 +199,6 @@ def _make_pec_short_sim() -> Simulation:
     return sim
 
 
-@pytest.mark.xfail(
-    reason=(
-        "M72 inherits the M67 bidirectional plane-source limitation: |S11| for "
-        "a PEC-short coaxial geometry should be ≥ 0.9 (lossless full reflection "
-        "with cavity-loading phase). The current source injects on both sides of "
-        "the source plane, mixing forward and backward field at the V/I "
-        "extractor. Calibration requires either TFSF-style one-side injection "
-        "or explicit incident-wave subtraction. Unmark when fixed."
-    ),
-    strict=True,
-)
 def test_pec_short_yields_full_reflection_calibration_target():
     sim = _make_pec_short_sim()
     res = sim.compute_coaxial_s_matrix(n_steps=400, n_freqs=5)
