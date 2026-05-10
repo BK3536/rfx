@@ -26,6 +26,7 @@ Three design improvements over the original rfx linear-SDF scheme:
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 
 from rfx.grid import Grid
@@ -905,6 +906,24 @@ def kottke_inv_eps_from_occupancy(
     _, _, inv_zz_c = _kottke_inv_eps_diag(
         f, jnp.inf, eps_outside_z, n_x, n_y, n_z, is_pec=True,
     )
+
+    # Force-zero interior cells.  Kottke's `(1-f)/eps_out` perpendicular
+    # term remains finite at boundary cells (any f < 1) — for the strict
+    # PEC limit we instead want fully-occupied cells to act as a hard
+    # mirror.  The reference imperative path
+    # (``compute_inv_eps_tensor_diag``, line ~779) does exactly this:
+    # `inv_xx_c = jnp.where(e_inside, 0.0, inv_xx_c)` where
+    # `e_inside = (sdf <= 0.0)` marks cells *inside* the PEC.  For the
+    # occupancy path we don't have an SDF; use a soft sigmoid mask
+    # centered at occ=0.5 (Heaviside projection style — Wang/Lazarov/
+    # Sigmund 2011): cells with occ ≥ ~0.6 get ~zero inv (full PEC),
+    # cells with occ ≤ ~0.4 keep the Kottke output (boundary/vacuum).
+    # The sigmoid is differentiable everywhere so AD flows.
+    smooth_width = 0.05
+    interior_mask = jax.nn.sigmoid((f - 0.5) / smooth_width)
+    inv_xx_c = (1.0 - interior_mask) * inv_xx_c
+    inv_yy_c = (1.0 - interior_mask) * inv_yy_c
+    inv_zz_c = (1.0 - interior_mask) * inv_zz_c
 
     if aniso_inv_eps_baseline is not None:
         inv_xx_b, inv_yy_b, inv_zz_b = aniso_inv_eps_baseline
