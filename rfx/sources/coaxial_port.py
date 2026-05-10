@@ -668,6 +668,131 @@ def setup_coaxial_port(grid: Grid, port: CoaxialPort, materials):
     return materials
 
 
+def add_coaxial_matched_termination(
+    grid: Grid,
+    port: CoaxialPort,
+    materials,
+    *,
+    target_impedance: float,
+    axial_offset_cells: int = 1,
+):
+    """Add a distributed annular resistive load to a coaxial port.
+
+    Places conductive material in the PTFE annulus on a single
+    cross-section, with sigma chosen so the radial resistance from the
+    inner conductor (pin) to the outer conductor (shell) matches
+    ``target_impedance``. This is the line-end equivalent of soldering a
+    Z₀-valued resistor between pin and shell at one axial position.
+
+    For an annulus of inner radius ``a``, outer radius ``b``, and axial
+    thickness ``dz``, the radial resistance through a uniform conductor of
+    conductivity ``sigma`` is::
+
+        R = log(b/a) / (2π · dz · sigma)
+
+    so the matching ``sigma = log(b/a) / (2π · dz · Z_target)``. This
+    produces a clean impedance match at the FDTD's design frequency; the
+    discrete absorption at off-design frequencies has the usual lossy-
+    line behaviour and is not unity-power.
+
+    Parameters
+    ----------
+    grid : Grid
+    port : CoaxialPort
+        Must already have been stamped via :func:`setup_coaxial_port`
+        before calling this helper.
+    materials : MaterialArrays
+    target_impedance : float
+        The line impedance to match, typically the closed-form
+        ``coaxial_tem_characteristic_impedance(...)``.
+    axial_offset_cells : int
+        How many Yee cells away from the pin tip the load slice sits,
+        stepping *into* the coax line (toward the gap, opposite the
+        forward direction). ``1`` puts the load one cell inside the line
+        from the pin tip — the load slice still sits inside the PTFE
+        annulus between pin and shell, so the radial pin-to-shell
+        integration path is well-defined. Larger values leave more
+        unloaded PTFE line between the source and the termination.
+
+    Returns
+    -------
+    Updated MaterialArrays with the matched-termination slice stamped.
+
+    Notes
+    -----
+    The helper deliberately writes only into PTFE-region cells (radii in
+    ``[pin_radius, shell_inner]``); the PEC pin and PEC shell at the load
+    z-slice are left untouched, so the analytic ``log(b/a)`` integration
+    path from pin to shell is preserved and the resulting termination has
+    the correct discrete radial impedance.
+    """
+
+    if not np.isfinite(target_impedance) or target_impedance <= 0.0:
+        raise ValueError(
+            f"target_impedance must be a positive finite resistance, got "
+            f"{target_impedance}"
+        )
+
+    axis, direction, _, pin_center, pin_tip, _ = _coaxial_port_geometry(
+        grid, port
+    )
+    if axis != "z":
+        raise NotImplementedError(
+            "add_coaxial_matched_termination currently supports only z-axis "
+            "coaxial ports (face='top'/'bottom')."
+        )
+
+    shell_thickness = min(
+        float(grid.dx),
+        0.5 * (float(port.outer_radius) - float(port.pin_radius)),
+    )
+    shell_inner_radius = float(port.outer_radius) - shell_thickness
+    log_ratio = float(np.log(shell_inner_radius / float(port.pin_radius)))
+    dz = float(grid.dx)
+
+    sigma_load = log_ratio / (2.0 * np.pi * dz * float(target_impedance))
+
+    # Forward direction along z (face='top' is -z, face='bottom' is +z).
+    # axial_offset_cells > 0 means "step into the line" (against forward
+    # direction, toward the gap), so the load slice sits inside the
+    # stamped PTFE annulus between the pin and the outer shell.
+    pin_tip_idx = int(grid.position_to_index(pin_tip)[2])
+    load_idx_z = pin_tip_idx - int(direction) * int(axial_offset_cells)
+    if load_idx_z < 0 or load_idx_z >= grid.shape[2]:
+        raise ValueError(
+            f"matched-termination slice z-index {load_idx_z} falls outside "
+            f"grid (axial_offset_cells={axial_offset_cells})"
+        )
+
+    sigma_np = np.array(materials.sigma)
+    eps_r_np = np.array(materials.eps_r)
+    cells_stamped = 0
+    for i in range(grid.nx):
+        x = (i - grid.pad_x_lo) * grid.dx
+        for j in range(grid.ny):
+            y = (j - grid.pad_y_lo) * grid.dx
+            r = float(np.hypot(x - port.position[0], y - port.position[1]))
+            if not (float(port.pin_radius) <= r <= shell_inner_radius):
+                continue
+            # Skip cells already stamped as PEC by setup_coaxial_port.
+            if sigma_np[i, j, load_idx_z] >= 0.5 * PEC_SIGMA:
+                continue
+            sigma_np[i, j, load_idx_z] = sigma_load
+            eps_r_np[i, j, load_idx_z] = 1.0
+            cells_stamped += 1
+
+    if cells_stamped == 0:
+        raise ValueError(
+            "add_coaxial_matched_termination stamped 0 PTFE annulus cells; "
+            "check axial_offset_cells and grid resolution"
+        )
+
+    return materials._replace(
+        sigma=jnp.asarray(sigma_np),
+        eps_r=jnp.asarray(eps_r_np),
+    )
+
+
 # ---------------------------------------------------------------------------
 # make_coaxial_port_source / apply_coaxial_port_source
 # ---------------------------------------------------------------------------

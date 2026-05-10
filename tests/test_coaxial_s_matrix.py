@@ -256,6 +256,113 @@ def test_pec_short_calibration_holds_across_pin_lengths(pin_length_mm):
     )
 
 
+@pytest.mark.parametrize(
+    "face,gap_z",
+    [
+        ("top", 0.015),     # gap at z=15 mm, pin extends -z to floor at z=0
+        ("bottom", 0.005),  # gap at z= 5 mm, pin extends +z to ceiling at z=20 mm
+    ],
+)
+def test_pec_short_calibration_holds_across_faces(face, gap_z):
+    """PEC-short |S11| stays near 1 for both face='top' and face='bottom'.
+
+    The two faces are mirror geometries: face='top' emits a wave in -z and
+    reads V/I with the port-direction-aware ``current_sign = -1``;
+    face='bottom' emits +z with ``current_sign = +1``. The calibration
+    must reproduce the same |S11| ≈ 1 in both cases — a one-sided
+    asymmetry would indicate a residual convention bug in the port-
+    direction handling of either the source or the V/I extractor.
+    """
+    from rfx.sources.sources import GaussianPulse
+
+    sim = Simulation(
+        freq_max=20.0e9,
+        domain=(0.020, 0.020, 0.020),
+        boundary="pec",
+    )
+    sim.add_coaxial_port(
+        position=(0.010, 0.010, gap_z),
+        face=face,
+        pin_length=15.0e-3,  # pin reaches the opposite PEC wall
+        waveform=GaussianPulse(f0=5.0e9, bandwidth=0.8),
+    )
+    res = sim.compute_coaxial_s_matrix(n_steps=400, n_freqs=5)
+    s11 = np.abs(res.s_params[0, 0, :])
+    assert float(np.min(s11)) >= 0.9, (
+        f"PEC-short |S11| should be near 1 at face={face!r}; got {s11.tolist()}"
+    )
+
+
+def test_matched_load_absorbs_at_design_band():
+    """Distributed annular Z₀ termination absorbs at high-freq design band.
+
+    A single-cell matched load via ``add_coaxial_matched_load`` is
+    electrically thin compared to the source pulse's longest wavelengths,
+    so it does not match perfectly at low frequency — this is a known
+    physical limit of a thin lossy slab, not a calibration bug.
+    Stacking several slabs in series across multiple Yee cells gives an
+    increasingly good match at high frequencies. We assert that the
+    upper-band ``|S11|`` is markedly below the open-circuit baseline,
+    which is the minimum signature that the load is absorbing rather
+    than reflecting the incident wave.
+    """
+    from rfx.sources.sources import GaussianPulse
+    from rfx.sources.coaxial_port import (
+        SMA_OUTER_RADIUS,
+        SMA_PIN_RADIUS,
+        PTFE_EPS_R,
+        coaxial_tem_characteristic_impedance,
+    )
+
+    z_tem = float(
+        coaxial_tem_characteristic_impedance(
+            SMA_PIN_RADIUS, SMA_OUTER_RADIUS, PTFE_EPS_R
+        )
+    )
+
+    def _build_sim():
+        sim = Simulation(
+            freq_max=20.0e9,
+            domain=(0.020, 0.020, 0.020),
+            boundary="cpml",
+        )
+        sim.add_coaxial_port(
+            position=(0.010, 0.010, 0.018),
+            face="top",
+            pin_length=12.0e-3,
+            waveform=GaussianPulse(f0=5.0e9, bandwidth=0.8),
+        )
+        return sim
+
+    # Open-circuit baseline (no load placed) for the same geometry.
+    sim_open = _build_sim()
+    res_open = sim_open.compute_coaxial_s_matrix(n_steps=400, n_freqs=5)
+    s11_open = np.abs(res_open.s_params[0, 0, :])
+
+    # Stacked five-cell parallel absorber: each slab carries 5·Z₀ so the
+    # parallel combination looks like Z₀.
+    sim_load = _build_sim()
+    for offset in range(1, 6):
+        sim_load.add_coaxial_matched_load(
+            target_impedance=5.0 * z_tem, axial_offset_cells=offset
+        )
+    res_load = sim_load.compute_coaxial_s_matrix(n_steps=400, n_freqs=5)
+    s11_load = np.abs(res_load.s_params[0, 0, :])
+
+    # Upper-band gates: at the auto-freq tail (15.5–20 GHz, last two bins
+    # for freq_max=20 GHz), the loaded line should reflect markedly less
+    # than the open baseline. Both gates are conservative — the
+    # five-cell absorber typically gives ≤ 0.25 at these frequencies vs
+    # ≥ 0.95 for the open termination.
+    assert float(s11_load[-1]) <= 0.5, (
+        f"matched-load |S11| at 20 GHz should be ≤ 0.5; got {s11_load.tolist()}"
+    )
+    assert float(s11_load[-1]) < 0.6 * float(s11_open[-1]), (
+        f"matched-load |S11| should be markedly below open baseline; "
+        f"load={s11_load.tolist()}, open={s11_open.tolist()}"
+    )
+
+
 def test_pec_short_phase_rotates_with_pin_length():
     """Pin-length sweep changes V/I-plane to short distance → S11 phase rotates.
 

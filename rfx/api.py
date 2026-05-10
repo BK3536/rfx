@@ -707,6 +707,10 @@ class Simulation:
         self._probes: list[_ProbeEntry] = []
         self._thin_conductors: list[ThinConductor] = []
         self._coaxial_ports: list[CoaxialPort] = []
+        # Terminations applied after setup_coaxial_port: each entry is
+        # (port_index, target_impedance, axial_offset_cells). Stamped during
+        # compute_coaxial_s_matrix's materials build for the targeted port.
+        self._coaxial_terminations: list[tuple[int, float, int]] = []
         self._ntff: tuple | None = None  # (corner_lo, corner_hi, freqs)
         self._tfsf: _TFSFEntry | None = None
         self._dft_planes: list[_DFTPlaneEntry] = []
@@ -1013,6 +1017,57 @@ class Simulation:
             impedance=impedance,
             excitation=waveform,
         ))
+        return self
+
+    def add_coaxial_matched_load(
+        self,
+        port_index: int = 0,
+        *,
+        target_impedance: float | None = None,
+        axial_offset_cells: int = 1,
+    ) -> "Simulation":
+        """Register a distributed annular matched termination on a coaxial port.
+
+        Stamps a single-z-cell annular conductor in the PTFE region
+        between the pin and outer-shell of the targeted port, with sigma
+        chosen so the radial pin-to-shell resistance equals
+        ``target_impedance``. Use this to build a matched-load test
+        without needing a full lumped pin↔shell resistor model.
+
+        Parameters
+        ----------
+        port_index : int
+            Index into the order of ``add_coaxial_port`` calls. Default 0
+            targets the first registered coaxial port.
+        target_impedance : float or None
+            Resistance of the radial pin-to-shell path in ohms. ``None``
+            uses the closed-form ``coaxial_tem_characteristic_impedance``
+            for the port's geometry — the canonical "matched load".
+        axial_offset_cells : int
+            Number of Yee cells past the pin tip (in the forward
+            direction) where the load slice sits. Default 1 places the
+            load one cell beyond the pin tip.
+        """
+
+        if port_index < 0 or port_index >= len(self._coaxial_ports):
+            raise ValueError(
+                f"port_index {port_index} is out of range "
+                f"(have {len(self._coaxial_ports)} coaxial ports registered)"
+            )
+        if target_impedance is None:
+            from rfx.sources.coaxial_port import (
+                coaxial_tem_characteristic_impedance,
+                PTFE_EPS_R,
+            )
+            p = self._coaxial_ports[port_index]
+            target_impedance = float(
+                coaxial_tem_characteristic_impedance(
+                    p.pin_radius, p.outer_radius, PTFE_EPS_R
+                )
+            )
+        self._coaxial_terminations.append(
+            (int(port_index), float(target_impedance), int(axial_offset_cells))
+        )
         return self
 
     # ---- thin conductors ----
@@ -3310,11 +3365,22 @@ class Simulation:
         # vacuum and the wave would radiate bidirectionally with no coax
         # structure to confine it (this is the real source of the
         # calibration-blocked status documented in the handover).
-        from rfx.sources.coaxial_port import setup_coaxial_port
+        from rfx.sources.coaxial_port import (
+            setup_coaxial_port,
+            add_coaxial_matched_termination,
+        )
         grid = self._build_grid()
         materials, _, _ = self._build_materials(grid)
         for p in ports:
             materials = setup_coaxial_port(grid, p, materials)
+        for term_port_idx, term_R, term_offset_cells in self._coaxial_terminations:
+            materials = add_coaxial_matched_termination(
+                grid,
+                ports[term_port_idx],
+                materials,
+                target_impedance=term_R,
+                axial_offset_cells=term_offset_cells,
+            )
 
         # Frequency grid.
         if freqs is None:

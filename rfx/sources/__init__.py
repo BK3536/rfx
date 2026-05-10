@@ -7,6 +7,7 @@ from rfx.sources.coaxial_port import (
     CoaxialPlaneSourceSpec,
     CoaxialTEMCartesianPlaneVI,
     setup_coaxial_port,
+    add_coaxial_matched_termination,
     make_coaxial_port_source,
     build_coaxial_tem_plane_source_specs,
     extract_coaxial_plane_vi_from_dft,
