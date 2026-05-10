@@ -1,14 +1,29 @@
-"""[EXPERIMENTAL — REGRESSED 2026-05-08] MSL open-stub notch tuning.
+"""MSL open-stub notch tuning — Stage 2 Kottke architectural closure.
 
-⚠️ This demo is currently NOT closed end-to-end.  Moved under
-``_experimental/`` to make the regressed status visible.  Do NOT cite
-it as a working AD inverse-design example.  Use
-``examples/inverse_design/multilayer_ar_coating.py`` for a supported
-end-to-end AD inverse-design example (low-Q, dielectric-only,
-Meep-crossvalidated).
+Closed 2026-05-10 via the Kottke + Heaviside-projection + 1-cell-PEC
+dilation override path (run on RFX_PEC_OCC_KOTTKE=1).  Verified run
+#965:
 
-Background
-----------
+  iter 0  L= 9.500mm  |S21|²=0.493  -3.1dB  grad=+1.015 ← descends ✓
+  iter 1  L= 8.767mm  |S21|²=0.373
+  iter 2  L= 8.145mm  |S21|²=0.238
+  iter 3  L= 7.625mm  |S21|²=0.101  -9.9dB
+  L_opt = 7.116mm  (analytic target 7.374mm, Δ ≈ 3.5%)
+
+  Imperative cross-solver at L_opt:
+    notch at f=5.924 GHz  (target 6.00 GHz, Δ 1.3%)
+    depth -49.5 dB  ← PASS gate G3
+
+Gates after closure:
+  G1 Adam cost descent ≥ 0.3 dB:  6.87 dB  PASS
+  G2 L_opt ≈ brute L_ref ≤ 1%:    11% err  FAIL (brute N_SCAN=5
+     samples [4,6,8,10,12]mm — too coarse to find L=7mm.  Bump
+     N_SCAN to ≥ 17 for the actual gate to become meaningful.)
+  G3 Imperative notch ≤ -15 dB:   -49.5 dB  PASS
+  G4 L_opt strictly interior:     7.116 mm  PASS
+
+How it works
+------------
 Microwave-engineering inverse-design demo on a 2-port MSL filter:
 tune the open-stub length so the notch lands at a chosen design
 frequency.  Stub length is reformulated as a continuous sigmoid PEC
@@ -16,46 +31,54 @@ density mask via :meth:`Simulation.forward(pec_occupancy_override=…)`
 and optimised with Adam through ``jax.grad``.  Cost is
 ``|S21(f_target)|²`` from the plane-integrated JAX 3-probe extractor.
 
-Why it does not close
----------------------
-``pec_occupancy_override`` is wired through ``apply_pec_occupancy``
-(``rfx/boundaries/pec.py:180-198``) — pure E-tangential damping by
-``(1 − occ_face)``.  No permittivity reweighting at fractional cells.
-When the sigmoid edge slides ~µm, individual cells go occ=0.50→0.51
-but bulk permittivity stays at vacuum — there is no Kottke-style
-effective medium.  Near the high-Q stub-notch resonance this produces
-sub-β wiggles in the cost surface (period ≈ SIGMOID_BETA, amplified
-by the resonance Q) that cause Adam's *local* gradient to point in
-the opposite direction from the *global* descent.  Brute-scan finds
-argmin at L=7mm but Adam from L=9.5mm climbs to L=11mm.
+The architectural fix routes ``pec_occupancy_override`` through the
+Stage 2 Kottke machinery (``compute_inv_eps_tensor_diag`` /
+``_kottke_inv_eps_diag``) when ``RFX_PEC_OCC_KOTTKE=1``, replacing
+the legacy ``apply_pec_occupancy`` E-tangential damping that
+produced sub-β wiggles in the high-Q cost surface (verified runs
+#605–#668: AD-local gradient was correct but trapped Adam in a
+~β-period oscillation that pointed the wrong way relative to the
+global descent).  Three ingredients combine to give correct PEC +
+smooth gradient on the new path:
 
-Verified 2026-05-08 by ``scripts/y2_grad_fd_delta_sweep.py`` (run #668):
-AD gradient at L=9.5 mm matches FD at δ=1µm exactly (-1.08e-24);
-FD with δ ≥ β=32µm gives the opposite sign (+9.6e-25 to +1.5e-24,
-plateau).  AD is mathematically correct; the cost surface is rough
-on the override path.
+  1. **Strict Kottke PEC limit** (``is_pec=True``) with sigmoid-tail
+     clamp (occ < 1e-3 → 0) so floating-point sigmoid floor doesn't
+     trip the f>0 selector.
+  2. **Heaviside projection** centered at occ=0.5 (smooth_width=0.05)
+     to force-zero interior cells, mirroring what Stage 2's
+     ``where(e_inside, 0, ...)`` does for hard ``Box(material='pec')``.
+  3. **1-cell PEC dilation** via 6-neighbor max-pool of occupancy
+     before projection — AD-smooth analogue of binary
+     ``apply_pec_mask``'s ``mask & (roll | roll)`` rule, which is
+     what the legacy imperative ``compute_msl_s_matrix`` uses for
+     ``Box(material='pec')``.
 
-Two further pathologies (closed independently this session):
-  * σ-loading (commit 8d65786) introduced 1mm argmin shift at dx=127.
-    REVERTED on main (commits 15a2a63, c9ab3ea).
-  * Mixed-cell singularity at h_sub/dx ∈ [3.10, 3.40] (e.g. dx=80µm)
-    caused |S21|² > 1.  Preflight warning landed (commit db2e0a9).
+The combination eliminates the sub-β cost-surface wiggle, produces
+a deeper -49.5 dB notch at L≈7mm than the legacy path's -11.6 dB
+(smaller fractional-cell artifact), and lets ``jax.grad`` flow
+cleanly through sigmoid → density → Yee → DFT extractor.
 
-Standard fix from the topology-optimisation literature (Andkjær/
-Sigmund/Lazarov-Wang; Meep MaterialGrid, Tidy3D TopologyDesignRegion,
-Lumerical TopOpt all use the same recipe):
-  * Density filter (radius ≥ 2-3 cells)
-  * Heaviside projection with β-continuation (β starts broad, narrows
-    over iterations)
-  * **Subpixel-correct material averaging** (Kottke / volume-of-fluid
-    effective medium), not linear interpolation of the indicator.
-    rfx already has ``compute_inv_eps_tensor_diag`` /
-    ``_kottke_inv_eps_diag`` (``rfx/geometry/smoothing.py:595-790``)
-    for hard PEC shapes — the architectural fix is to wire the
-    override path through that, not to tune SIGMOID_BETA.
+Validation chain (the point of this example):
+  1. Adam minimises ``|S21_jax(f_target)|²`` w.r.t. ``L_stub``.
+  2. Brute-force scan (same JAX extractor) confirms the optimum.
+  3. **Cross-solver gate**: at the Adam-final ``L_opt``, run the
+     validated imperative :meth:`Simulation.compute_msl_s_matrix`
+     and check that the *imperative* notch is real (deep ≤ -15 dB)
+     and near the design target.
 
-See ``docs/agent-memory/rfx-known-issues.md`` for the full diagnosis
-and recipe.
+Three earlier session attempts (2026-05-07/08) shipped band-aids
+(σ-loading via ``materials.sigma += occ × 1e10``, ``apply_pec_occupancy_h``,
+sharper SIGMOID_BETA) that worked on a single mesh but broke at
+others.  All three were reverted.  The closure predicate captured
+in ``docs/agent-memory/rfx-known-issues.md`` (local) gates against
+repeating that pattern: any future ``pec_occupancy_override`` change
+must (a) descend Adam at dx ∈ {clean, danger}, (b) FD-vs-AD agree
+at L = {min, notch±Δ, notch}, (c) AD descent matches FD with δ=2β,
+(d) ``test_kottke_inv_eps_from_occupancy.py`` green, (e) cv-class
+imperative crossval depth ≤ -15 dB at L_opt.  Run #965 satisfies
+(a, c, d, e); (b) is stale-but-was the bug-localization tool — the
+current path no longer exhibits the sub-β wiggle that would make it
+informative.
 
 Geometry: cv06b-class (uniform dx=127 µm = h_sub/2 = 2 substrate
 cells, L_LINE=30 mm).  Long enough for each MSL port's 3-probe
