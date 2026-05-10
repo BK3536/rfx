@@ -766,7 +766,43 @@ def build_coaxial_tem_plane_source_specs(
     reference_plane_axial_index_offset: int = 0,
     eps_r: float = PTFE_EPS_R,
 ) -> CoaxialPlaneSourceSpec:
-    """Return the distributed transverse E/M source specs for a coaxial port.
+    """Return TFSF-style transverse E/M source specs for a coaxial port.
+
+    Bakes a Yee-half-step-correct one-side TFSF correction pair into per-
+    cell ``SourceSpec`` / ``MagneticSourceSpec`` lists. The additive
+    ``src_vals`` / ``mag_src_vals`` injection in :func:`rfx.simulation.run`
+    has the same leapfrog timing as the waveguide-port TFSF apply pair
+    (``apply_waveguide_port_h`` / ``apply_waveguide_port_e``) so the
+    additive specs reproduce its unidirectional injection without
+    requiring a separate apply hook in the simulation runner.
+
+    Three structural fixes vs the M67/M72 prototype-promotion of the
+    plane-source (whose bidirectional emission held PEC-short ``|S11|``
+    near 0.2-0.4 regardless of termination):
+
+    * **Cross-coupling**: H sources are driven by the E mode profile
+      (``e_radial`` decomposed into Cartesian ``(cos φ, sin φ)``), and
+      E sources are driven by the H mode profile (``h_φ`` decomposed
+      into Cartesian ``(-sin φ, cos φ)``). The previous implementation
+      drove H from H and E from E, which does not enforce the curl
+      coupling that makes the wave unidirectional.
+    * **Spatial half-cell offset**: H sources move from the source plane
+      to the upstream half-cell on the scattered side of the TFSF
+      boundary (``plane_index - 1`` for ``+z`` forward, ``plane_index``
+      for ``-z`` forward).
+    * **Yee half-step phase**: ``h_inc(t_n) = waveform(t_n + Δt) / Z₀``
+      with ``Δt = dt/2 + dz·sqrt(εr)/(2c)``; the previous version sampled
+      both E and H at integer ``n·dt`` so the H source carried no Yee
+      half-step phase relative to E.
+
+    The :class:`CoaxialPlaneSourceSpec` return contract is unchanged:
+    ``plane_axial_index`` is still the *E* reference plane (where the V/I
+    extractor reads). The mag-source list now lives one cell upstream.
+
+    For ``face='top'`` (pin going ``-z`` into cavity), forward = ``-z``
+    and the pattern follows the waveguide ``-x``-direction conventions.
+    For ``face='bottom'``, forward = ``+z`` and the ``+x`` pattern is
+    used.
 
     Parameters
     ----------
@@ -781,15 +817,17 @@ def build_coaxial_tem_plane_source_specs(
         Linear scale on the radial E waveform. Increase to lift the plane
         signal above DFT noise; the V/I extraction is amplitude-linear.
     magnetic_ratio:
-        Multiplier on the H waveform after the analytic ``1/Z_TEM`` factor.
-        ``1.0`` injects the lossless TEM Poynting-balanced amplitude;
-        smaller values bias toward an E-only source (reflective).
+        Multiplier on the ``H`` waveform after the analytic ``1/Z_TEM``
+        factor (already baked into ``h_inc`` so a unit ratio means
+        Poynting-balanced TEM). Kept for diagnostic ablation; production
+        callers should leave it at ``1.0``.
     reference_plane_axial_index_offset:
         Shift of the source plane (and therefore the V/I reference plane)
         relative to ``port.pin_center`` along the port axis. ``0`` injects
         at the pin centre plane.
     eps_r:
-        Coaxial dielectric permittivity for the analytic ``Z_TEM``. Default
+        Coaxial dielectric permittivity for the analytic ``Z_TEM`` and the
+        Yee-half-step delay (``v_phase = c / sqrt(εr)``). Default
         :data:`PTFE_EPS_R` matches the SMA helper.
 
     Returns
@@ -802,10 +840,11 @@ def build_coaxial_tem_plane_source_specs(
     # Lazy imports so the source helpers stay JIT-friendly for callers that
     # import this module without a full simulation pipeline.
     from rfx.simulation import MagneticSourceSpec, SourceSpec
+    from rfx.grid import C0 as _C0
     import jax
     import jax.numpy as jnp
 
-    axis, _direction, _component, pin_center, _pin_tip, _gap_idx = (
+    axis, direction, _component, pin_center, _pin_tip, _gap_idx = (
         _coaxial_port_geometry(grid, port)
     )
     if axis != "z":
@@ -814,8 +853,24 @@ def build_coaxial_tem_plane_source_specs(
             "default z-axis coaxial port (face='top'/'bottom')."
         )
 
-    times = jnp.arange(int(n_steps), dtype=jnp.float32) * grid.dt
-    waveform = jax.vmap(port.excitation)(times)
+    # Forward direction: +1 for face='bottom' (pin goes +z), -1 for face='top'.
+    forward_sign = float(direction)
+
+    plane_index = int(grid.position_to_index(pin_center)[2]) + int(
+        reference_plane_axial_index_offset
+    )
+
+    # TFSF plane indices and signs mirror waveguide_port.py:1303-1308 / 1374-1386.
+    if forward_sign > 0:  # +z forward, mirrors waveguide "+x" pattern.
+        h_plane_idx = plane_index - 1
+        e_plane_idx = plane_index
+        h_sign = -1.0
+        e_sign = -1.0
+    else:  # -z forward, mirrors waveguide "-x" pattern.
+        h_plane_idx = plane_index
+        e_plane_idx = plane_index + 1
+        h_sign = +1.0
+        e_sign = -1.0
 
     z0 = coaxial_tem_characteristic_impedance(
         port.pin_radius,
@@ -823,8 +878,60 @@ def build_coaxial_tem_plane_source_specs(
         eps_r,
     )
     log_ratio = float(np.log(port.outer_radius / port.pin_radius))
-    plane_index = int(grid.position_to_index(pin_center)[2]) + int(
-        reference_plane_axial_index_offset
+
+    # Local (intrinsic) impedance of the dielectric fill: η = sqrt(μ/ε).
+    # In a coax TEM mode the LOCAL field ratio is E_r/H_φ = η, while
+    # V/I = Z_TEM = η · log(b/a)/(2π) is the LINE impedance. The TFSF
+    # injection works on local fields, so h_inc must carry the 1/η
+    # factor — using 1/Z_TEM here would over-inject E by the geometry
+    # factor 2π/log(b/a) (Z_med/Z_TEM ratio).
+    z_med = float(np.sqrt(MU_0 / (float(eps_r) * EPS_0)))
+
+    # Yee-staggered time delay: h_inc samples the wave at the upstream H
+    # half-cell at Yee-H time (n+1/2)·dt. Forward TEM phase velocity in
+    # the dielectric is v = c / sqrt(εr); the half-cell propagation delay
+    # plus the leapfrog half-step is the same for both directions because
+    # "upstream" is always one half-cell against the wave's motion.
+    dz = float(grid.dx)
+    dt_step = float(grid.dt)
+    delta_t = 0.5 * dt_step + 0.5 * dz * float(np.sqrt(eps_r)) / float(_C0)
+
+    # E and H source amplitude tables.
+    times_e = jnp.arange(int(n_steps), dtype=jnp.float32) * jnp.float32(dt_step)
+    times_h = times_e + jnp.float32(delta_t)
+    e_inc_table = jax.vmap(port.excitation)(times_e)
+    h_inc_table = jax.vmap(port.excitation)(times_h) / jnp.float32(z_med)
+
+    # TFSF coefficients (mirror waveguide_port.py:1297, 1338, with ε
+    # replaced by εr·ε₀ for the dielectric fill — the source plane sits
+    # inside PTFE, so the E update at this cell uses the dielectric cb
+    # coefficient. ``waveguide_port.py`` uses bare ``EPS_0`` because
+    # waveguides are vacuum-filled by convention; coax in PTFE needs the
+    # εr correction so the per-step E-injection matches the physical
+    # ``cb = dt/(εr·ε₀·dz)`` of the FDTD update.
+    coeff_h = jnp.float32(dt_step / (MU_0 * dz))
+    coeff_e = jnp.float32(dt_step / (float(eps_r) * EPS_0 * dz))
+
+    # Inner edge of the PEC outer-conductor shell stamped by
+    # ``setup_coaxial_port``. Source cells must stay strictly inside the
+    # PTFE annulus [pin_radius, shell_inner]; injecting at radii in
+    # [shell_inner, outer_radius] hits PEC cells whose E is zeroed every
+    # step by ``apply_pec_mask``, breaking the TFSF cancellation
+    # symmetry.
+    shell_thickness = min(
+        float(dz),
+        0.5 * (float(port.outer_radius) - float(port.pin_radius)),
+    )
+    shell_inner_radius = float(port.outer_radius) - shell_thickness
+
+    # Time-series amplitude scales (cell-independent factors lifted out).
+    h_factor = jnp.float32(h_sign) * coeff_h * jnp.float32(field_scale) * e_inc_table
+    e_factor = (
+        jnp.float32(-e_sign)
+        * coeff_e
+        * jnp.float32(field_scale)
+        * jnp.float32(magnetic_ratio)
+        * h_inc_table
     )
 
     electric_sources: list = []
@@ -838,49 +945,37 @@ def build_coaxial_tem_plane_source_specs(
             dv = y - port.position[1]
             radius = float(np.hypot(du, dv))
             if not (
-                port.pin_radius + 0.25 * grid.dx
-                <= radius
-                <= port.outer_radius - 0.25 * grid.dx
+                float(port.pin_radius) <= radius <= shell_inner_radius
             ):
                 continue
             cos_phi = du / radius
             sin_phi = dv / radius
-            e_radial = float(field_scale) / (radius * log_ratio)
-            h_phi = (
-                float(field_scale)
-                * float(magnetic_ratio)
-                * (1.0 / z0)
-                / (2.0 * np.pi * radius)
-            )
+
+            # TEM mode shapes (1/r), normalised so V = ∫E_r dr = 1 for unit
+            # ``field_scale``. h_phi shape carries the same 1/r profile; the
+            # 1/Z_TEM factor relating H_φ to E_r is baked into h_inc_table.
+            mode_shape = 1.0 / (radius * log_ratio)
             source_cell_count += 1
-            if abs(cos_phi) > 1e-12:
-                electric_sources.append(
-                    SourceSpec(
-                        i=i,
-                        j=j,
-                        k=plane_index,
-                        component="ex",
-                        waveform=(e_radial * cos_phi * waveform).astype(jnp.float32),
-                    )
-                )
-            if abs(sin_phi) > 1e-12:
-                electric_sources.append(
-                    SourceSpec(
-                        i=i,
-                        j=j,
-                        k=plane_index,
-                        component="ey",
-                        waveform=(e_radial * sin_phi * waveform).astype(jnp.float32),
-                    )
-                )
+
+            # H-side TFSF correction at h_plane_idx, driven by E mode profile
+            # (cf. apply_waveguide_port_h: h_u += sign·coeff·src·ez_profile,
+            #                              h_v += -sign·coeff·src·ey_profile).
+            # For z-normal coax: e_u=Ex, e_v=Ey, h_u=Hx, h_v=Hy.
+            #   Hx (h_u) += h_sign·coeff_h·e_inc·Ey_profile
+            #            = h_sign·coeff_h·e_inc·(mode_shape·sin_phi)
+            #   Hy (h_v) += -h_sign·coeff_h·e_inc·Ex_profile
+            #            = -h_sign·coeff_h·e_inc·(mode_shape·cos_phi)
+            hx_shape = jnp.float32(mode_shape * sin_phi)
+            hy_shape = jnp.float32(-mode_shape * cos_phi)
+
             if abs(sin_phi) > 1e-12:
                 magnetic_sources.append(
                     MagneticSourceSpec(
                         i=i,
                         j=j,
-                        k=plane_index,
+                        k=h_plane_idx,
                         component="hx",
-                        waveform=(-h_phi * sin_phi * waveform).astype(jnp.float32),
+                        waveform=(hx_shape * h_factor).astype(jnp.float32),
                     )
                 )
             if abs(cos_phi) > 1e-12:
@@ -888,9 +983,43 @@ def build_coaxial_tem_plane_source_specs(
                     MagneticSourceSpec(
                         i=i,
                         j=j,
-                        k=plane_index,
+                        k=h_plane_idx,
                         component="hy",
-                        waveform=(h_phi * cos_phi * waveform).astype(jnp.float32),
+                        waveform=(hy_shape * h_factor).astype(jnp.float32),
+                    )
+                )
+
+            # E-side TFSF correction at e_plane_idx, driven by H mode profile
+            # (cf. apply_waveguide_port_e: e_v += sign·coeff·h_inc·hy_profile,
+            #                               e_u += -sign·coeff·h_inc·hz_profile).
+            #   Ex (e_u) += -e_sign·coeff_e·h_inc·Hy_profile
+            #            = -e_sign·coeff_e·h_inc·(mode_shape·cos_phi)
+            #   Ey (e_v) += e_sign·coeff_e·h_inc·Hx_profile
+            #            = e_sign·coeff_e·h_inc·(-mode_shape·sin_phi)
+            #            = -e_sign·coeff_e·h_inc·(mode_shape·sin_phi)
+            # Both Ex and Ey end up scaled by the same `-e_sign·coeff_e·h_inc`
+            # which is the e_factor lifted out above.
+            ex_shape = jnp.float32(mode_shape * cos_phi)
+            ey_shape = jnp.float32(mode_shape * sin_phi)
+
+            if abs(cos_phi) > 1e-12:
+                electric_sources.append(
+                    SourceSpec(
+                        i=i,
+                        j=j,
+                        k=e_plane_idx,
+                        component="ex",
+                        waveform=(ex_shape * e_factor).astype(jnp.float32),
+                    )
+                )
+            if abs(sin_phi) > 1e-12:
+                electric_sources.append(
+                    SourceSpec(
+                        i=i,
+                        j=j,
+                        k=e_plane_idx,
+                        component="ey",
+                        waveform=(ey_shape * e_factor).astype(jnp.float32),
                     )
                 )
 

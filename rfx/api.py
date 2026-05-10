@@ -3303,9 +3303,18 @@ class Simulation:
         n_ports = len(ports)
 
         # Build the working grid + materials with all coaxial geometries
-        # stamped (including the M66 outer-shell fix).
+        # stamped (PEC center pin, PTFE dielectric fill, PEC outer shell from
+        # M66). ``_build_materials`` only assembles bulk materials and shapes;
+        # ``add_coaxial_port`` only registers the port descriptor, so without
+        # this loop the FDTD would run with the source dropped into pure
+        # vacuum and the wave would radiate bidirectionally with no coax
+        # structure to confine it (this is the real source of the
+        # calibration-blocked status documented in the handover).
+        from rfx.sources.coaxial_port import setup_coaxial_port
         grid = self._build_grid()
         materials, _, _ = self._build_materials(grid)
+        for p in ports:
+            materials = setup_coaxial_port(grid, p, materials)
 
         # Frequency grid.
         if freqs is None:
