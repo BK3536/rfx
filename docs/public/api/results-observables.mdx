@@ -22,11 +22,26 @@ the solver rather than as an implementation detail.
 | `dft_planes` | frequency-domain plane observables | slices and field maps |
 | `flux_monitors` | plane flux accumulations | transmission / reflection analysis |
 | `waveguide_ports` | waveguide-port bookkeeping | modal workflows |
-| `waveguide_sparams` | waveguide-port S-matrix | waveguide validation |
+| `waveguide_sparams` | per-port waveguide S-parameter diagnostics | waveguide validation |
 | `snapshots` | saved field snapshots | visualization and post-processing |
 | `grid` | mesh metadata | reproducibility checks |
 | `dt` | timestep | time-axis conversion |
 | `freq_range` | active frequency window | reporting and validation |
+
+## S-parameter result schemas
+
+| Calculator | Result object | S-parameter field | Evidence framing |
+|---|---|---|---|
+| `run(compute_s_params=True)` with lumped/wire `add_port(...)` | `Result` | `s_params`, `freqs` | full matrix, shape `(n_ports, n_ports, n_freqs)`; lumped E2/E3-limited, wire E2/E3/E4 partial |
+| `forward(port_s11_freqs=...)` with lumped/wire `add_port(...)` | `ForwardResult` | `s_params`, `freqs` | S11 vector(s), not a full multi-port matrix; E0/E1 AD contract |
+| `compute_msl_s_matrix(...)` | `MSLSMatrixResult` | `S`, `freqs`, `Z0`, `beta`, `port_names` | E5-narrow / eigenmode-blocked specialized microstrip-line calculator; has raw 3-probe replay; eigenmode/nonuniform support remain blocked |
+| `compute_waveguide_s_matrix(...)` | `WaveguideSMatrixResult` | `s_params`, `freqs`, `port_names`, `port_directions`, `reference_planes` | E5-narrow within the documented rectangular-guide gates |
+| `run(...)` with a single waveguide port | `Result` | `waveguide_sparams[name]` | per-port `s11` / `s21` diagnostic output, not the full S-matrix API |
+
+`add_source()`, TFSF, probes, DFT plane probes, flux monitors, coaxial ports,
+and experimental Floquet ports do not populate a promoted high-level S-matrix.
+Coaxial has analytic TEM helpers/sweep plus diagnostic gap replay only, and Floquet has synthetic modal-oracle and real-FDTD DFT-plane replay
+evidence only; those helpers are not promoted S-parameter API evidence.
 
 ## Observable builders that feed `Result`
 
@@ -56,14 +71,61 @@ result.find_resonances(freq_range=None, probe_idx=0, source_decay_time=None, ban
 Use this on a clean probe signal when you want a resonance estimate that is less
 dependent on port calibration than S-parameters.
 
+## Port-observable validation helpers
+
+`rfx.validation` provides a lightweight validation layer for S-matrix-like
+port observables. It normalizes direct arrays plus the existing `Result`,
+`WaveguideSMatrixResult`, and `MSLSMatrixResult` shapes into a canonical
+`(n_ports, n_ports, n_freqs)` view and then reports schema / metadata issues
+without running another simulation.
+
+```python
+from rfx import validate_port_smatrix, assert_port_smatrix_valid
+
+report = validate_port_smatrix(
+    result,
+    port_names=("in", "out"),  # optional when the result already has names
+    check_passivity=True,
+    passivity_limit=1.0,
+    passivity_tol=0.02,          # caller-controlled physics envelope
+    check_reciprocity=True,
+    reciprocity_atol=1e-3,
+)
+print(report.summary())
+
+# In tests, raise with the same diagnostics on failure:
+assert_port_smatrix_valid(result, passivity_tol=0.02)
+```
+
+This is **validation infrastructure**, not a new physics claim. It checks that
+the observable is shaped, finite, frequency-aligned, port-name-consistent, and
+inside caller-selected passivity / reciprocity envelopes. The thresholds should
+come from the relevant physics or cross-validation test; do not use this helper
+to relax an existing validation gate.
+
+For independent E3 replay, use the compact V/I dump helpers:
+
+```python
+from rfx import load_port_vi_dump_npz, replay_smatrix_from_port_vi_dump
+
+dump = load_port_vi_dump_npz("port_dump.npz")
+replayed = replay_smatrix_from_port_vi_dump(dump)
+```
+
+The schema is documented in `docs/guides/sparameter_dump_replay.md`.
+Synthetic replay tests prove the harness, not a port-family physics claim.
+
 ## Claims-bearing observables
 
 The current public claim surface is narrow:
 
-- `time_series` for transient / resonance work
-- `s_params` for lumped or wire ports
-- `waveguide_sparams` for waveguide-port validation
-- `ntff_data` only when the radiation workflow has benchmark coverage
+| Observable | Claim framing |
+|---|---|
+| `time_series` | transient / resonance work when paired with the relevant oracle |
+| `s_params` | lumped E2/E3-limited or wire E2/E3/E4-partial, per the support matrix |
+| `MSLSMatrixResult.S` | E5-narrow / eigenmode-blocked MSL calculator under the current uniform-Yee envelope |
+| `WaveguideSMatrixResult.s_params` | E5-narrow strongest current S-parameter family under the rectangular-guide gates |
+| `ntff_data` | only when the radiation workflow has benchmark coverage |
 
 Other fields are real and useful, but they should be treated as analysis
 surfaces until their support status is documented explicitly.

@@ -4,7 +4,21 @@ sidebar:
   order: 10
 ---
 
-rfx supports rectangular waveguide ports with analytical TE/TM mode profiles for accurate S-parameter extraction.
+rfx supports rectangular waveguide ports with analytical TE/TM mode profiles.
+S-parameter claims are intentionally bounded: the promoted full-matrix path is
+`compute_waveguide_s_matrix(...)` under the rectangular-guide evidence envelope
+in `docs/guides/sparameter_support_matrix.md`.
+
+Current evidence level: E5-narrow for the documented WR-style rectangular-guide
+cases. The main gates are in `tests/test_waveguide_port_validation_battery.py`
+(empty-guide max `|S11| < 0.02`, passivity `< 1.02`, PEC-short
+`0.99 <= min(|S11|)` and `max(|S11|) < 1.03`) and
+`examples/crossval/11_waveguide_port_wr90.py` (analytic Airy/reference-plane
+gates, with external references reported as available or skipped).
+
+Waveguide ports do **not** use `run(compute_s_params=True)` for full
+multi-port matrices. Use `compute_waveguide_s_matrix(...)` for the S-matrix;
+`run(...)` exposes only single-port `result.waveguide_sparams` diagnostics.
 
 ## Single Port
 
@@ -48,13 +62,16 @@ s12 = S[0, 1, :]  # Transmission port 2 → port 1 (reciprocal: S12 ≈ S21)
 
 ## Two-Run Normalization
 
-For high-accuracy S21 (normalized |S21| = 1.0000 for empty guide):
+For the documented empty-guide envelope, two-run normalization cancels Yee-grid
+dispersion and should keep `|S21|` near unity:
 
 ```python
 result = sim.compute_waveguide_s_matrix(num_periods=30, normalize=True)
 ```
 
-This runs a reference simulation (empty waveguide) to cancel Yee-grid numerical dispersion.
+This runs a reference simulation (empty waveguide) to cancel Yee-grid numerical
+dispersion. Do not extrapolate this to arbitrary branches/T-junctions without a
+per-port reference-geometry validation artifact.
 
 ## Multi-Axis Ports
 

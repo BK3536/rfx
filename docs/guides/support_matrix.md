@@ -12,8 +12,11 @@ Status legend:
 
 ### Scope
 - boundaries: `pec`, `cpml`, `upml`
-- sources: point/current sources, lumped/wire ports, waveguide ports
-- observables: time-series probes, flux monitors, S-parameters, Harminv resonances, NTFF/far-field where benchmarked
+- sources: point/current sources, lumped/wire ports, specialized
+  microstrip-line ports, waveguide ports
+- observables: time-series probes, flux monitors, Harminv resonances,
+  NTFF/far-field where benchmarked, and S-parameters only through the
+  port-family envelopes in `docs/guides/sparameter_support_matrix.md`
 - materials: isotropic linear, conductive, and validated dispersive subsets
 - workflows: cavity, waveguide, patch antenna, simple scattering, resonance, de-embedding, selected differentiable proxy objectives
 
@@ -26,7 +29,7 @@ Status legend:
 | SBP-SAT / subgridding | experimental | research lane | not part of the claims-bearing surface |
 | ADI | experimental | research lane | separate accuracy/stability envelope |
 | Distributed | experimental | scaling lane | not part of correctness-bearing baseline |
-| Floquet/Bloch | experimental | periodic/phased-array lane | promotion pending explicit benchmark ladder |
+| Floquet/Bloch | experimental | periodic/phased-array lane | M18 synthetic modal oracle and M20 real-FDTD DFT-plane replay exist; promotion still pending analytic/RCWA/external benchmark ladder |
 
 ## Reference-lane support table
 
@@ -35,9 +38,29 @@ Status legend:
 | grid / runner | uniform Cartesian Yee |
 | materials | isotropic linear, conductive, validated Debye/Lorentz/Drude subsets |
 | absorbers | PEC, CPML, bounded UPML |
-| sources | point/current, lumped port, wire port, waveguide port |
-| observables | probes, flux, calibrated S-parameters, Harminv resonance, benchmarked NTFF |
+| sources | point/current, lumped port, wire port, specialized microstrip-line port, waveguide port |
+| observables | probes, flux, Harminv resonance, benchmarked NTFF, and port-family S-parameters with the E-levels / artifacts in `sparameter_support_matrix.md` |
 | optimization-facing observables | validated proxy objectives only until explicitly promoted |
+
+## S-parameter calculation contract
+
+The port-family-specific S-parameter contract lives in
+`docs/guides/sparameter_support_matrix.md` with a machine-readable companion at
+`docs/guides/sparameter_support_matrix.json`.
+Evidence terminology is defined in
+`docs/guides/physics_validation_evidence_rule.md`; pytest success alone is
+not physics validation.
+
+Canonical API rule:
+- `add_port(..., extent=None)` and `add_port(..., extent=...)` use
+  `run(compute_s_params=True)` for full `Result.s_params` matrices.
+- The same lumped/wire `add_port(...)` family uses
+  `forward(port_s11_freqs=...)` only for uniform single-device S11 vectors.
+- `add_msl_port(...)` uses `compute_msl_s_matrix()`.
+- `add_waveguide_port(...)` uses `compute_waveguide_s_matrix()` for full
+  multi-port matrices; `run()` exposes only per-port `waveguide_sparams`.
+- `add_coaxial_port(...)`, `add_floquet_port(...)`, sources, TFSF, probes, and
+  flux monitors do not have a promoted high-level S-parameter calculator.
 
 ## Nonuniform graded-z shadow lane
 
@@ -60,7 +83,10 @@ Current policy:
 | NTFF + nonuniform | unsupported | hard-fail |
 | DFT planes + nonuniform | unsupported | hard-fail |
 | TFSF + nonuniform | unsupported | hard-fail |
-| Waveguide ports + nonuniform | unsupported | hard-fail |
+| Waveguide ports + nonuniform | shadow / restricted | only documented `compute_waveguide_s_matrix(normalize=True)` single-mode path; otherwise hard-fail |
+| Lumped-port S-parameters + nonuniform | unsupported | hard-fail |
+| `compute_msl_s_matrix()` + nonuniform | unsupported | hard-fail |
+| Coaxial port + nonuniform | unsupported | hard-fail |
 | Lumped RLC + nonuniform | unsupported | hard-fail |
 
 ## Promotion rule
@@ -69,5 +95,5 @@ A lane or feature can be promoted to **supported** only when all of the followin
 1. support-matrix entry
 2. explicit source/observable contract where relevant
 3. unit + integration tests
-4. benchmark / convergence evidence
+4. analytic, dump-replay, external-solver, benchmark, or convergence evidence
 5. docs/examples/API wording aligned to the promoted scope

@@ -1,0 +1,61 @@
+name: rfx-physics-gate-port-external-msl-broad
+description: "Broad-E5 external-reference shard: microstrip_line_port openEMS comparison + readiness"
+tags: [rfx, physics-gate, port-external, msl-broad, sparameter-validation]
+resources:
+  cluster: remilab-c0
+  preset: gpu-rtx4090
+image: nvcr.io/nvidia/jax:24.10-py3
+env:
+  PYTHONUNBUFFERED: "1"
+  XLA_PYTHON_CLIENT_PREALLOCATE: "false"
+  HDF5_USE_FILE_LOCKING: "FALSE"
+  LANG: "C.UTF-8"
+mount:
+  /root/workspace/: volume://remilab-fs/personal-workspaces/
+run: |-
+  set -euo pipefail
+  cd /root/workspace/byungkwan-workspace/research/rfx
+  git config --global --add safe.directory /root/workspace/byungkwan-workspace/research/rfx || true
+  echo "=== rfx port external-reference shard: microstrip_line_port ==="
+  echo "=== expected state ==="
+  echo "This shard fails until the broad-E5 external/reference evidence is present and marked broad_e5_passed."
+  echo "=== working tree ==="
+  git status --short || true
+  echo "=== install runtime dependencies (repo path, no editable install) ==="
+  python -m pip install -q "scipy>=1.11" "h5py>=3.8" "matplotlib>=3.7"
+  export RFX_REPO_ROOT="/root/workspace/byungkwan-workspace/research/rfx"
+  export PYTHONPATH="$RFX_REPO_ROOT:${PYTHONPATH:-}"
+  python -c "import numpy, rfx; print('dependency_probe=passed', 'numpy', numpy.__version__, 'rfx', getattr(rfx, '__version__', 'unknown'))"
+  output_root="${RFX_PORT_EXTERNAL_OUTPUT_ROOT:-.omx/physics-gate/vessl-2026-05-09-port-external}"
+  out="$output_root/port_external_msl_broad"
+  mkdir -p "$out"
+  echo "=== dependency audit ==="
+  set +e
+  python scripts/diagnostics/check_external_solver_dependencies.py \
+    --output-dir "$out/dependencies"
+  dependency_audit_rc=$?
+  set -e
+  echo "external_solver_dependency_audit_rc=$dependency_audit_rc"
+  echo "=== narrow stored MSL rfx/openEMS generic comparison ==="
+  set +e
+  python scripts/diagnostics/build_msl_openems_sparameter_comparison.py \
+    --output-dir "$out/msl_openems_generic_comparison"
+  comparison_rc=$?
+  set -e
+  echo "msl_openems_comparison_rc=$comparison_rc"
+  if [ "$comparison_rc" -eq 0 ]; then
+    cat "$out/msl_openems_generic_comparison/msl_openems_generic_sparameter_comparison.json"
+  else
+    echo "narrow MSL/openEMS comparison failed or missing stored input; broad-E5 shard remains blocked"
+  fi
+  echo "=== broad-E5 readiness report ==="
+  set +e
+  python scripts/diagnostics/report_port_external_reference_shard.py \
+    --family microstrip_line_port \
+    --output-dir "$out" \
+    --require-complete
+  rc=$?
+  set -e
+  echo "=== shard result ==="
+  cat "$out/microstrip_line_port_external_reference_shard.json"
+  exit "$rc"

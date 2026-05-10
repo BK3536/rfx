@@ -10,7 +10,7 @@ import pytest
 
 from rfx.grid import Grid, C0
 from rfx.core.yee import (
-    FDTDState, MaterialArrays, init_state, init_materials,
+    MaterialArrays, init_state, init_materials,
     update_h, update_e, EPS_0, MU_0,
 )
 from rfx.boundaries.pec import apply_pec
@@ -95,6 +95,12 @@ def test_energy_conservation_pec_cavity():
     ez_mode = E0 * jnp.sin(jnp.pi * X / a) * jnp.sin(jnp.pi * Y / b)
     ez_init = ez_mode[:, :, None] * jnp.ones((1, 1, grid.nz))
     state = state._replace(ez=ez_init.astype(jnp.float32))
+    # Project the analytical field onto the same discrete PEC state used by
+    # the time stepper before measuring the baseline.  The Yee layout keeps an
+    # Ez ghost layer at the +z wall; counting that ghost-layer energy in the
+    # initial value and then zeroing it on the first step creates a spurious
+    # one-time loss that is not physical cavity drift.
+    state = apply_pec(state)
 
     dV = grid.dx ** 3
 
@@ -241,7 +247,7 @@ def test_reciprocity_two_port():
 
     Uses a PEC cavity with two probes — the coupling should be symmetric.
     """
-    from rfx import Simulation, Box, GaussianPulse
+    from rfx import Simulation, Box
 
     # Larger domain so ports are well inside the interior (not in CPML).
     # CPML = 8 layers × 2mm = 16mm per side. Ports must be > 20mm from edge.
@@ -287,10 +293,14 @@ def test_reciprocity_two_port():
 # 1E. Convergence order O(dx²)
 # =====================================================================
 
+@pytest.mark.slow_physics
 def test_convergence_order():
     """Error should decrease as O(dx²) — second-order Yee scheme.
 
     Run cavity at 3 resolutions, verify slope ≈ 2 on log-log plot.
+
+    This includes a 0.5 mm / ~500k-cell CPU case and is a release-tag
+    physics regression gate, not part of the default fast physics gate.
     """
     a, b, d = 0.05, 0.04, 0.03
     f_analytical = (C0 / 2) * np.sqrt((1/a)**2 + (1/b)**2)

@@ -34,11 +34,11 @@ Floquet/Bloch workflows should be treated according to
 | **Topology optimization** | Density-based with filtering, projection, and beta continuation |
 | **Conformal PEC** | Dey-Mittra method for 2nd-order accuracy on curved conductors |
 | **Multi-GPU** | Single-host multi-GPU distributed FDTD with 1D slab decomposition (experimental lane) |
-| **Multi-mode ports** | Analytical TE/TM eigenmodes for waveguide S-matrix |
-| **Floquet ports** | Phased-array unit-cell analysis with Bloch periodic BC (experimental lane) |
+| **Waveguide modal ports** | Analytical TE/TM eigenmodes for documented rectangular-guide S-matrix envelopes |
+| **Floquet ports** | Phased-array unit-cell analysis with Bloch periodic BC (experimental lane; E2/E3-modal helper evidence only) |
 | **Non-uniform x/y/z profiles** | Practical thin-substrate shadow lane with graded `dz` and per-cell `dx/dy` profiles |
-| **Accuracy validated** | 5-case benchmark against Balanis/Pozar (patch 1.97%, cavity 0.016%) |
-| **730+ tests** | CI with ruff lint + pytest, 0 xfails |
+| **Published benchmark evidence** | 5-case benchmark against Balanis/Pozar (patch 1.97%, cavity 0.016%) |
+| **730+ tests** | CI with ruff lint + pytest; strict xfails are tracked as blocked claims, not hidden passes |
 
 ## Current main highlights
 
@@ -116,7 +116,7 @@ Benchmarked against Balanis "Antenna Theory" and Pozar "Microwave Engineering":
 | Microstrip Z0 | Hammerstad-Jensen | 0.47% |
 | Coupled-line filter | Pozar Ch 8 | 22.5% (formula limitation) |
 
-Cross-validation vs Meep/OpenEMS: 0.000-0.007% on cavity Q-factors and guided-mode transmission (`examples/crossval/01-04, 09, 10`). WR-90 waveguide-port S-parameter magnitude on empty-guide and PEC-short matches Meep-class through `compute_waveguide_s_matrix`; phase de-embedding for dispersive single-slab interfaces is the one remaining open item on `examples/crossval/11_waveguide_port_wr90.py`. For the practical patch workflow on the nonuniform shadow lane, use `examples/crossval/05_patch_antenna.py` together with the validation pages rather than treating the example itself as the top-level claim source.
+Cross-validation vs Meep/OpenEMS: 0.000-0.007% on cavity Q-factors and guided-mode transmission (`examples/crossval/01-04, 09, 10`). WR-90 waveguide-port S-parameter evidence is now framed through the physics-first rule: empty-guide, PEC-short, Airy/reference-plane, dump-replay, and external-reference gates are documented in `tests/test_waveguide_port_validation_battery.py`, `examples/crossval/11_waveguide_port_wr90.py`, and `docs/guides/sparameter_support_matrix.md`. For the practical patch workflow on the nonuniform shadow lane, use `examples/crossval/05_patch_antenna.py` together with the validation pages rather than treating the example itself as the top-level claim source.
 
 ## Key Features
 
@@ -130,9 +130,12 @@ Cross-validation vs Meep/OpenEMS: 0.000-0.007% on cavity Q-factors and guided-mo
 
 ### Sources & Ports
 - GaussianPulse, ModulatedGaussian, CW, custom waveforms
-- Lumped/wire ports, lumped RLC (series/parallel ADE)
-- Multi-mode waveguide ports (analytical TE/TM eigenmodes)
-- Floquet ports with Bloch periodic BC (experimental lane)
+- Lumped/wire feed ports and lumped RLC (series/parallel ADE); calibrated
+  S-parameter claims are limited by `docs/guides/sparameter_support_matrix.md`
+- Rectangular waveguide modal ports (analytical TE/TM eigenmodes, documented
+  narrow S-matrix validation envelope)
+- Floquet ports with Bloch periodic BC (experimental lane with M18 synthetic modal-oracle and M20 real-FDTD
+  DFT-plane replay evidence, not a promoted S-parameter calculator)
 - Oblique TFSF (2D TMz + TEz auxiliary grids)
 
 ### Materials
@@ -143,7 +146,9 @@ Cross-validation vs Meep/OpenEMS: 0.000-0.007% on cavity Q-factors and guided-mo
 - Library: pec, fr4, rogers4003c, copper, alumina, water_20c, ...
 
 ### Analysis & Optimization
-- S-parameters (lumped, wire, waveguide N-port)
+- S-parameter tooling with per-family claim levels: lumped/wire are
+  limited/caveated feed models, MSL and waveguide use dedicated calculators,
+  and unsupported families fail loudly per `docs/guides/sparameter_support_matrix.md`
 - Harminv resonance extraction (MPM)
 - Far-field, RCS, radiation patterns, polarization
 - Antenna metrics: gain, efficiency, HPBW, F/B ratio, bandwidth

@@ -1,16 +1,28 @@
 """rfx — JAX-based RF FDTD electromagnetic simulator."""
+# ruff: noqa: F401
 
 __version__ = "1.6.3"
 
 from rfx.grid import Grid
 from rfx.simulation import run, run_until_decay, make_source, make_probe, make_port_source, SimResult
 from rfx.adi import ADIState2D, ADIState3D, thomas_solve, adi_step_2d, run_adi_2d, adi_step_3d, run_adi_3d
-from rfx.api import Simulation, Result, WaveguideSParamResult, WaveguideSMatrixResult, MATERIAL_LIBRARY
+from rfx.api import (
+    Simulation, Result, WaveguideSParamResult, WaveguideSMatrixResult,
+    MSLSMatrixResult, MATERIAL_LIBRARY,
+)
 from rfx.geometry.csg import Box, Sphere, Cylinder, PolylineWire
 from rfx.geometry.curved import CurvedPatch
 from rfx.geometry.via import Via
 from rfx.sources.sources import GaussianPulse, ModulatedGaussian, CWSource, CustomWaveform
-from rfx.sources.coaxial_port import CoaxialPort
+from rfx.sources.coaxial_port import (
+    CoaxialPort, CoaxialTEMCartesianPlaneVI, CoaxialTEMReferencePlaneVI,
+    coaxial_load_reflection,
+    coaxial_tem_capacitance_per_m,
+    coaxial_tem_characteristic_impedance, coaxial_tem_inductance_per_m,
+    coaxial_tem_phase_constant, coaxial_tem_reference_plane_s11,
+    coaxial_tem_reference_plane_vi,
+    coaxial_tem_reference_plane_vi_from_cartesian_plane,
+)
 from rfx.sources.waveguide_port import (
     WaveguidePort, WaveguidePortConfig,
     init_waveguide_port, inject_waveguide_port, update_waveguide_port_probe,
@@ -60,6 +72,13 @@ from rfx.io import (
     save_simulation_dataset, save_optimization_trajectory,
 )
 from rfx.deembed import deembed_port_extension, deembed_thru
+from rfx.validation import (
+    PortDumpMetadata, PortReplayComparison, PortSMatrixObservable,
+    PortValidationIssue, PortValidationReport, PortVIDump,
+    compare_replayed_smatrix, load_port_vi_dump_npz, normalize_port_smatrix,
+    replay_smatrix_from_port_vi_dump, replay_smatrix_from_vi_dump,
+    save_port_vi_dump_npz, validate_port_smatrix, assert_port_smatrix_valid,
+)
 from rfx.visualize import (
     plot_field_slice, plot_s_params, plot_radiation_pattern, plot_time_series,
     plot_rcs,

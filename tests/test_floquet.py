@@ -20,18 +20,15 @@ import jax.numpy as jnp
 from rfx.grid import Grid, C0
 from rfx.core.yee import (
     init_state, init_materials, update_e, update_h,
-    FDTDState, MaterialArrays, EPS_0, MU_0,
+    EPS_0, MU_0,
 )
 from rfx.floquet import (
-    FloquetPort,
     floquet_phase_shift,
     floquet_wave_vector,
-    FloquetDFTAccumulator,
     init_floquet_dft,
     update_floquet_dft,
     inject_floquet_source,
     extract_floquet_modes,
-    compute_floquet_s_params,
 )
 from rfx.api import Simulation
 from rfx.geometry.csg import Box

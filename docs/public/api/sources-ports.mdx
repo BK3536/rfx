@@ -33,10 +33,10 @@ load on the excited cell.
 
 | Method | Signature / note | Public role |
 |---|---|---|
-| `add_port` | `add_port(position, component="ez", impedance=50.0, waveform=None, extent=None, excite=True, direction=None)` | lumped or wire port for S-parameters |
-| `add_coaxial_port` | coaxial feed helper with pin / outer conductor geometry | practical feed modeling, but narrower than the main lumped-port path |
-| `add_waveguide_port` | rectangular waveguide port with modal calibration | waveguide-mode validation |
-| `add_floquet_port` | periodic / phased-array excitation helper | experimental lane; keep wording narrow |
+| `add_port` | `add_port(position, component="ez", impedance=50.0, waveform=None, extent=None, excite=True, direction=None)` | lumped or wire port for S-parameters; evidence depends on the lumped/wire envelope |
+| `add_coaxial_port` | coaxial feed helper with pin / outer conductor geometry | E2-sweep/E3-gap / no-sparam diagnostic helper: analytic TEM geometry sweep plus coaxial-gap V/I replay only; no promoted high-level S-parameter path |
+| `add_waveguide_port` | rectangular waveguide port with modal calibration | E5-narrow within documented rectangular-guide gates |
+| `add_floquet_port` | periodic / phased-array excitation helper | E2/E3-modal / no-promoted-api experimental lane; synthetic modal oracle plus real-FDTD DFT-plane replay only |
 | `add_lumped_rlc` | `R`, `L`, `C`, `topology="series"` | lumped network element at a cell |
 
 ```python
@@ -46,7 +46,35 @@ sim.add_coaxial_port((0.02, 0.02, 0.0016), face="top", impedance=50.0)
 sim.add_waveguide_port(x_position=0.01, y_range=(0.0, 0.023), z_range=(0.0, 0.010))
 ```
 
-Pass `compute_s_params=True` to `run()` to populate `result.s_params`.
+Use the S-parameter calculator that matches the port family:
+
+| Primitive | Calculator | Result | Evidence framing |
+|---|---|---|---|
+| `add_port(..., extent=None)` | `run(compute_s_params=True)` | `Result.s_params`, `Result.freqs` | E2/E3-limited lumped/cavity checks plus narrow raw V/I replay |
+| `add_port(..., extent=...)` | `run(compute_s_params=True)` | `Result.s_params`, `Result.freqs` | E2/E3/E4 partial probe-feed evidence plus midpoint V/I replay; calibration caveated |
+| lumped/wire `add_port(...)` in differentiable objectives | `forward(port_s11_freqs=...)` | S11 vectors in `ForwardResult.s_params` | E0/E1 AD contract |
+| `add_msl_port(...)` | `compute_msl_s_matrix()` | `MSLSMatrixResult.S`, `.freqs`, `.Z0`, `.beta` | E5-narrow / eigenmode-blocked under uniform-Yee gates |
+| `add_waveguide_port(...)` | `compute_waveguide_s_matrix()` | `WaveguideSMatrixResult.s_params`, `.freqs`, metadata | E5-narrow under rectangular-guide gates |
+
+`run(compute_s_params=True)` is **not** a universal port dispatcher. It is the
+full S-matrix path for lumped/wire `add_port(...)` only. MSL and waveguide
+ports use their specialized calculators, and unsupported families fail loudly.
+For claim strength, use `docs/guides/sparameter_support_matrix.md`: pytest
+success or finite arrays are not physics validation without an oracle, dump
+replay, or external-solver comparison and an explicit envelope.
+
+Before launching a long run, call the S-parameter preflight for the calculator
+you intend to use:
+
+```python
+sim.preflight_sparameters(calculator="run")        # run(compute_s_params=True)
+sim.preflight_sparameters(calculator="msl")        # compute_msl_s_matrix()
+sim.preflight_sparameters(calculator="waveguide")  # compute_waveguide_s_matrix()
+sim.preflight_sparameters(calculator="forward")    # forward(port_s11_freqs=...)
+```
+
+The preflight returns actionable issues without running FDTD; pass
+`strict=True` to raise instead of collecting issue strings.
 
 ### Experimental periodic port surface
 
@@ -58,8 +86,13 @@ not as part of the narrow claims-bearing default path.
 
 - Use sources when you want clean transient or resonance extraction.
 - Use ports when you need impedance-normalized S-parameters.
+- Do not treat `add_source()`, TFSF, probes, or flux monitors as ports; they
+  have no port impedance or S-matrix reference.
 - Keep waveguide-port and lumped-RLC wording aligned with the support matrix;
   do not promote them beyond the documented reference lane without new
   validation.
 - Treat coaxial and Floquet entry points as narrower / more conditional than the
-  main lumped-port path until they are promoted more explicitly.
+  main lumped-port path: coaxial has M17/M22 analytic TEM formula helpers/sweep and
+  M21 diagnostic gap replay but no promoted FDTD S-parameter extraction, and
+  Floquet remains experimental with
+  only M18 synthetic modal-oracle and M20 real-FDTD DFT-plane replay evidence.

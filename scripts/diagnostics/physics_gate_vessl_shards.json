@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "created_at": "2026-05-09",
+  "purpose": "Source-of-truth manifest for slow/release rfx physics-gate VESSL shards. Each slow family is an independent VESSL run so release validation does not rely on a serial local-only bottleneck.",
+  "default_output_root": ".omx/physics-gate/vessl-2026-05-09",
+  "shards": [
+    {
+      "group_id": "slow_physics_release",
+      "role": "Release-tag physics baseline checks",
+      "yaml_path": "scripts/vessl_physics_gate_slow-physics-release.yaml",
+      "output_dir": ".omx/physics-gate/vessl-2026-05-09/slow_physics_release",
+      "result_json": ".omx/physics-gate/vessl-2026-05-09/slow_physics_release/physics_gate_results.json",
+      "last_verified_run_id": "369367237816",
+      "required_for_release_gate": true,
+      "notes": "Contains a CPU-specific V173-A bit-identity xfail on GPU; not a claims-bearing GPU parity proof."
+    },
+    {
+      "group_id": "slow_boundary_absorber",
+      "role": "Slow CPML/PML reflectivity and absorber regressions",
+      "yaml_path": "scripts/vessl_physics_gate_slow-boundary-absorber.yaml",
+      "output_dir": ".omx/physics-gate/vessl-2026-05-09/slow_boundary_absorber",
+      "result_json": ".omx/physics-gate/vessl-2026-05-09/slow_boundary_absorber/physics_gate_results.json",
+      "last_verified_run_id": "369367237804",
+      "required_for_release_gate": true,
+      "notes": "Completed as a slow VESSL shard in the 2026-05-09 recheck."
+    },
+    {
+      "group_id": "slow_external_crossval",
+      "role": "Slow Meep/openEMS external cross-solver gate",
+      "yaml_path": "scripts/vessl_physics_gate_slow-external-crossval.yaml",
+      "output_dir": ".omx/physics-gate/vessl-2026-05-09/slow_external_crossval",
+      "result_json": ".omx/physics-gate/vessl-2026-05-09/slow_external_crossval/physics_gate_results.json",
+      "last_verified_run_id": "369367237813",
+      "m1_schema_proof_run_id": "369367237818",
+      "m1_schema_proof_result_json": ".omx/physics-gate/vessl-2026-05-09-m1/slow_external_crossval/physics_gate_results.json",
+      "required_for_release_gate": true,
+      "notes": "Currently blocked for E4 coverage because Meep/openEMS/CSXCAD are skipped in the tested image."
+    },
+    {
+      "group_id": "slow_nonuniform_subgrid_subpixel",
+      "role": "Slow nonuniform, subgrid, and subpixel checks",
+      "yaml_path": "scripts/vessl_physics_gate_slow-nonuniform-subgrid-subpixel.yaml",
+      "output_dir": ".omx/physics-gate/vessl-2026-05-09/slow_nonuniform_subgrid_subpixel",
+      "result_json": ".omx/physics-gate/vessl-2026-05-09/slow_nonuniform_subgrid_subpixel/physics_gate_results.json",
+      "last_verified_run_id": "369367237817",
+      "required_for_release_gate": true,
+      "notes": "Contains strict xfails for unpromoted SBP-SAT/subgrid RMS accuracy lanes."
+    },
+    {
+      "group_id": "slow_sbp_sat",
+      "role": "Slow SBP-SAT stability and energy-conservation checks",
+      "yaml_path": "scripts/vessl_physics_gate_slow-sbp-sat.yaml",
+      "output_dir": ".omx/physics-gate/vessl-2026-05-09/slow_sbp_sat",
+      "result_json": ".omx/physics-gate/vessl-2026-05-09/slow_sbp_sat/physics_gate_results.json",
+      "last_verified_run_id": "369367237807",
+      "required_for_release_gate": true,
+      "notes": "Long-running shard; keep independent from other slow groups."
+    },
+    {
+      "group_id": "slow_msl",
+      "role": "Slow MSL laplace/eigenmode integration gate",
+      "yaml_path": "scripts/vessl_physics_gate_slow-msl.yaml",
+      "output_dir": ".omx/physics-gate/vessl-2026-05-09/slow_msl",
+      "result_json": ".omx/physics-gate/vessl-2026-05-09/slow_msl/physics_gate_results.json",
+      "last_verified_run_id": "369367237814",
+      "required_for_release_gate": true,
+      "notes": "Laplace slow gate passes; eigenmode remains strict-xfailed until implemented."
+    }
+  ]
+}

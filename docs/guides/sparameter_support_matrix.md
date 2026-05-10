@@ -1,0 +1,282 @@
+# S-Parameter Calculation Support Matrix
+
+This matrix is the source-of-truth contract for user-facing S-parameter
+calculation support across public rfx port-like APIs. It separates three
+questions that are easy to conflate:
+
+1. **Is the primitive a calibrated port?**
+2. **Which API computes its S-parameters, if any?**
+3. **Is that calculation claims-bearing, shadow, experimental, or unsupported?**
+
+Machine-readable companion: `docs/guides/sparameter_support_matrix.json`.
+Physics-evidence terminology follows
+`docs/guides/physics_validation_evidence_rule.md`. The raw V/I dump replay
+schema for E3 evidence is `docs/guides/sparameter_dump_replay.md`.
+
+## Canonical result convention
+
+Full S-matrices use `S[receiver_port, driven_port, frequency_index]` with
+shape `(n_ports, n_ports, n_freqs)`. Frequency axes use shape `(n_freqs,)` in
+Hz.
+
+## Canonical user-facing rule
+
+| Port / observable primitive | S-parameter API | Result schema | Evidence | Artifact + metric + envelope |
+|---|---|---|---|---|
+| `add_port(..., extent=None)` lumped port | `Simulation.run(compute_s_params=True, s_param_freqs=...)` | `Result.s_params`, `Result.freqs` | E2/E3/E4 partial | M13 analytic extractor oracles (`open` / `short` / `matched` / RLC, `max_abs_diff 7.91e-8 <= 2.20e-6`), M11 real raw V/I replay (`max_abs_diff 1.13e-7 <= 9.84e-7`), M14 three-case replay/passivity/reciprocity sweep (`max_column_power 0.971`, reciprocity diff `3.02e-7`), M33 narrow rfx/openEMS PEC-box magnitude comparator (`S11 max_mag_abs_diff 0.11224`, `S21 max_mag_abs_diff 0.00373`), M47 three-case rfx/openEMS PEC-box position sweep (`max case max_mag_abs_diff 0.11835`, `max case mean_mag_abs_diff 0.06466`), and M56 VESSL-parallel rerun of that sweep (`3/3` jobs completed and aggregate passed); broad calibrated-port E5 remains blocked |
+| `add_port(..., extent=None)` lumped port | `Simulation.forward(port_s11_freqs=...)` | `ForwardResult.s_params`, `ForwardResult.freqs` (S11 vectors only) | E0/E1 | AD/schema contract; physics claim inherits the lumped-port envelope |
+| `add_port(..., extent=...)` wire port | `Simulation.run(compute_s_params=True, s_param_freqs=...)` | `Result.s_params`, `Result.freqs` | E2/E3/E4 partial | `examples/crossval/05_patch_antenna.py` for probe-fed patch resonance, M32 generic patch/OpenEMS magnitude comparator (`max_mag_abs_diff 0.05318`, `mean_mag_abs_diff 0.02750` over 1.5--3.4 GHz), M12 real midpoint V/I replay (`max_abs_diff 7.82e-8 <= 9.80e-7`), and M15 three-case replay/passivity/reciprocity sweep (`max_column_power 0.979`, reciprocity diff `1.24e-6`); absolute S-matrix calibration still caveated |
+| `add_port(..., extent=...)` wire port | `Simulation.forward(port_s11_freqs=...)` | `ForwardResult.s_params`, `ForwardResult.freqs` (S11 vectors only) | E0/E1 | `tests/test_wire_port_sparams_forward.py`; uniform single-device AD path; nonuniform is shadow only |
+| `add_msl_port(...)` | `Simulation.compute_msl_s_matrix(...)` | `MSLSMatrixResult.S`, `.freqs`, `.Z0`, `.beta`, `.port_names` | E5-narrow / eigenmode-blocked | M10 envelope report: thru-line `|S21|` / `Z0` slow gate, cv06b notch error `1.63%` and depth `-34.3 dB`, stored-openEMS smoke S11/S21 mean abs diffs `0.02502` / `0.02661`, M29 generic comparator artifact (`max_mag_abs_diff 0.05225`, `mean_mag_abs_diff 0.02664`, magnitude mode), and real raw 3-probe replay `max_abs_diff=0`; eigenmode/nonuniform remain blocked |
+| `add_waveguide_port(...)` | `Simulation.compute_waveguide_s_matrix(...)` | `WaveguideSMatrixResult.s_params`, `.freqs`, `.port_names`, `.port_directions`, `.reference_planes` | E5-narrow current port | M4 envelope report: `waveguide_ports` gate `37 passed`, cv11 WR-90 empty/PEC-short/slab analytic + external references, and M30 generic WR90/Palace magnitude comparator (`max_mag_abs_diff 0.0709`, `mean_mag_abs_diff 0.0440`); restricted to documented uniform-Yee rectangular-guide envelope |
+| `add_waveguide_port(...)` | `Simulation.run(...)` | `Result.waveguide_sparams[name]` (`WaveguideSParamResult`) | E2 diagnostic | single-port diagnostic/calibrated per-port output, not the full multi-port S-matrix API |
+| `add_coaxial_port(...)` | none promoted | none | E2-sweep/E3/E4-gap / no-sparam | M22 analytic TEM geometry sweep (4 cases, max `Z0` diff `1.94e-8`), M21 real-FDTD coaxial gap V/I replay (`max S diff 1.00e-7 <= 9.70e-7`), M35 narrow coaxial-gap/openEMS magnitude comparator (`max_mag_abs_diff 0.03310`, `mean_mag_abs_diff 0.02526`), M61 synthetic TEM reference-plane V/I extraction oracle (`max_s11_abs_diff 1.04e-8`), M62 synthetic Cartesian plane adapter oracle (`max_s11_abs_diff 8.29e-6`), M63 real-FDTD DFT-plane replay diagnostic (`blocked`: transverse TEM `V/I` below signal floor, plane/gap `S11` diff `4.996`), M64 axial plane sweep (`11/11` planes blocked; best plane/gap `S11` diff `0.628`), M65 structural audit (axial source component `ez` is normal to the TEM plane; outer shell PEC cells `0/32` before fix), M66 outer-shell fix audit (shell PEC cells `12/32`, axial source still blocked; post-fix sweep `0/11` planes passed), and M67 distributed TEM plane-source prototype (`max |S11| 0.168`, prototype-only); no real-FDTD calibrated TEM reference-plane extraction or broad external coax envelope |
+| `add_floquet_port(...)` | none promoted | none promoted | E2/E3-modal/slab-analytic / no-promoted-api | M18 synthetic specular-TE modal oracle, M20 real-FDTD Ex/Hy DFT-plane dump replay (`max S diff 2.23e-7`), M38 empty-space analytic-null comparison (`max_abs_diff 0.06067`, `mean_abs_diff 0.05306`), M44 homogeneous-slab analytic oracle (`8` cases x `3` frequencies, max power-balance error `4.44e-16`), and M49 rfx-FDTD slab/analytic magnitude comparison (`max_mag_abs_diff 0.06212`, `mean_mag_abs_diff 0.03209`); no RCWA/external crossval or promoted S-matrix API |
+| `add_source(...)`, `add_polarized_source(...)` | none | `Result.time_series`, Harminv and field observables | not a port | field/resonance evidence is separate from impedance-defined S-parameters |
+| `add_tfsf_source(...)` | none | field, flux, NTFF/RCS observables where supported | not a port | plane-wave observables, not port calibration |
+| probes, DFT plane probes, flux monitors | none | field/flux observables | not a port | no port impedance or reference plane |
+
+## Lane and validation boundaries
+
+### Lumped `add_port(..., extent=None)`
+
+- **Evidence status:** E2/E3/E4 partial. M13 covers closed-form extractor oracles
+  for open, short, matched, resistive, capacitor, inductor, series-RLC, and
+  parallel-RLC loads (`max_abs_diff 7.91e-8 <= 2.20e-6`). Existing tests cover
+  simple physical invariants such as full reflection in a PEC cavity, and M11
+  adds a real two-port raw V/I dump replay of the production extractor/sign
+  convention (`max_abs_diff 1.13e-7 <= 9.84e-7`). M14 adds a small
+  uniform-Yee replay/passivity/reciprocity sweep over three two-port
+  geometries (`max_column_power 0.971`, reciprocity diff `3.02e-7`). M33 adds
+  a narrow rfx/openEMS two-port PEC-box magnitude comparison (`S11
+  max_mag_abs_diff 0.11224`, `S21 max_mag_abs_diff 0.00373`). M47 extends that
+  external lane to three PEC-box port-position cases (`max case
+  max_mag_abs_diff 0.11835`, `max case mean_mag_abs_diff 0.06466`). M56
+  reruns those three cases as independent VESSL jobs (`3/3` completed) and
+  aggregates the remote case artifacts with the same aggregate metrics. This
+  proves the slow-sim parallel execution path, but it is still not broad
+  calibrated-port E5 evidence because matched/open/short/load external
+  coverage and a larger envelope remain missing. M50/M56 provide VESSL case
+  YAML generation, submission, and artifact aggregation for the M47
+  lumped/openEMS slow sweep; they do not widen the physics envelope beyond the
+  narrow PEC-box comparison.
+- **API:** `run(compute_s_params=True)` for a full S-matrix;
+  `forward(port_s11_freqs=...)` for differentiable S11 vectors.
+- **Promotion requirement:** broader external cross-solver evidence and a
+  mesh/frequency/geometry envelope report before broad E5 claims. The M13
+  analytic oracle covers extractor algebra only; M11 covers one real dump; M14
+  is an internal uniform-Yee sweep, and M33/M47/M56 are still narrow external
+  PEC-box comparisons.
+- **Known limits:** nonuniform lumped-port S-parameter extraction is not
+  promoted or wired as a supported calculation path.
+
+### Wire `add_port(..., extent=...)`
+
+- **Evidence status:** E2/E3/E4 partial for probe-fed resonance/field
+  workflows. M12 adds a real two-port midpoint V/I replay of the current wire
+  extractor convention (`max_abs_diff 7.82e-8 <= 9.80e-7`), and M15 adds a
+  small uniform-Yee replay/passivity/reciprocity sweep over three two-port
+  geometries (`max_column_power 0.979`, reciprocity diff `1.24e-6`). M32 adds
+  a narrow crossval05 patch/OpenEMS S11 magnitude comparison artifact
+  (`max_mag_abs_diff 0.05318`, `mean_mag_abs_diff 0.02750`, 1.5--3.4 GHz).
+  Absolute S-matrix calibration remains caveated.
+- **Shadow lane:** nonuniform wire-port extraction is retained and covered by
+  regression tests, but it is not the public physics-validated baseline.
+- **API:** `run(compute_s_params=True)` for a full S-matrix;
+  `forward(port_s11_freqs=...)` for differentiable S11 vectors on the uniform
+  single-device path.
+- **Known limits:** a wire port is a one-cell-transverse feed model. Use
+  `add_msl_port(...)` for the specialized full-strip microstrip-line
+  calculator when that model is appropriate. Promotion to broad calibrated
+  S-parameter claims requires external reference gates, broader
+  mesh/frequency/geometry sweeps, and a resolved or explicitly bounded wire
+  calibration convention. M15 is an internal sweep; M32 is external
+  E4-enabling evidence for the narrow patch resonance lane, not broad wire-port
+  E5.
+
+### Microstrip-line `add_msl_port(...)`
+
+- **API:** `compute_msl_s_matrix(...)`.
+- **Result:** `MSLSMatrixResult` with full `S`, frequency grid, extracted `Z0`,
+  extracted `beta`, and port names.
+- **Evidence status:** E5-narrow / eigenmode-blocked. The internal thru-line gate in
+  `tests/test_msl_port_integration.py` checks `Z0`, `|S11|`, and `|S21|`;
+  cv06b exercises an analytic quarter-wave notch (current VESSL metric:
+  notch error `1.63%`, depth `-34.3 dB`, median `Re(Z0)=48.6 Ω`); and the
+  stored-openEMS comparison report gives narrow thru-line magnitude smoke
+  evidence (`S11` / `S21` mean abs diffs `0.02502` / `0.02661`); and M10 real
+  raw 3-probe replay matches production with `max_abs_diff=0`. Broad all-mode
+  E5 remains blocked because the `mode="eigenmode"` source/extractor and
+  nonuniform MSL support remain blocked.
+- **Hard failures:** nonuniform profiles, SBP-SAT subgridding, ADI, TFSF, and
+  mixed port families are rejected instead of being silently included in
+  `Result.s_params`.
+
+### Rectangular `add_waveguide_port(...)`
+
+- **Full S-matrix API:** `compute_waveguide_s_matrix(...)`.
+- **Single-port run output:** `run(...)` can populate
+  `Result.waveguide_sparams[name]`; use the compute API for multi-port
+  scattering matrices.
+- **Evidence status:** E5-narrow for the documented uniform-Yee rectangular
+  waveguide envelope. Empty-guide, PEC-short, passivity, Airy/reference-plane,
+  field-dump, and external-solver artifacts exist. Current exact gates are:
+  - `tests/test_waveguide_port_validation_battery.py`: empty-guide max
+    `|S11| < 0.02`, passivity max column power `< 1.02`, symmetric-obstacle
+    reciprocity mean error `< 0.01`, PEC-short `0.99 <= min(|S11|)` and
+    `max(|S11|) < 1.03`.
+  - `examples/crossval/11_waveguide_port_wr90.py`: empty guide `|S11|`
+    gate `0.02`, empty `|S21|` gate `0.03`, PEC-short phase gate `15°`,
+    slab S11/S21 magnitude gates `0.10` / `0.07`, phase gate `60°` with
+    `|S_ref| >= 0.30` mask, and complex-S envelope `0.30`.
+- **Known limits:** full S-matrix extraction requires at least two waveguide
+  ports; nonuniform extraction is restricted to `normalize=True` and
+  single-mode ports; `normalize=True` is not implemented for multi-mode.
+
+### Coaxial and Floquet ports
+
+- `add_coaxial_port(...)` has low-level geometry/source helper coverage and
+  M17/M22 analytic lossless TEM reference helpers for `Z0`, `beta`, `L'/C'`,
+  matched/short/open/load reflection, and a small geometry/eps_r sweep. M21
+  adds one real-FDTD coaxial gap V/I replay, M35 adds a narrow
+  coaxial-gap/openEMS S11 magnitude comparison (`max_mag_abs_diff 0.03310`,
+  `mean_mag_abs_diff 0.02526`), M61 adds a synthetic TEM reference-plane
+  V/I extraction oracle (`max_s11_abs_diff 1.04e-8`), M62 adds a
+  synthetic Cartesian field-plane adapter oracle (`max_s11_abs_diff 8.29e-6`),
+  M63 wires that adapter to real FDTD DFT planes but remains blocked by
+  near-zero transverse TEM `V/I` at the sampled reference plane (`max_abs_voltage
+  4.05e-15`, `max_abs_current 5.98e-17`, plane/gap `S11` diff `4.996`),
+  M64 confirms this is not a single-plane selection issue (`11/11` axial
+  planes blocked; best plane/gap `S11` diff `0.628`), M65 identified two
+  structural blockers: the helper injected an axial/normal `ez` source for a
+  z-normal TEM plane, and the sampled default stamp had no PEC annular outer
+  shell cells near the nominal outer radius (`0/32`). M66 fixes the annular
+  outer-shell stamp (`12/32` shell-band cells now PEC), but the axial-source
+  blocker remains and the post-fix axial sweep still has `0/11` passing planes
+  (best plane/gap `S11` diff `0.996`). M67 demonstrates a distributed
+  transverse E/M plane-source prototype can produce nonzero TEM-plane V/I in
+  the replay path (`max |S11| 0.168`), but it is an internal prototype rather
+  than the public `add_coaxial_port(...)` API or an external reference.
+  These are still not calibrated real-FDTD TEM reference-plane extraction or a broad external coax
+  envelope. It still has no promoted high-level FDTD V/I extraction +
+  calibration contract. Do not present it as S-parameter
+  capable. Use `add_port(..., extent=...)` for the current probe-feed
+  S-parameter workflow, with the calibration caveats above.
+- `add_floquet_port(...)` is an experimental Floquet/Bloch excitation surface.
+  M18 adds a synthetic specular-TE modal bookkeeping oracle, and M20 adds
+  one small broadside real-FDTD Ex/Hy DFT-plane dump replay. M38 compares that
+  empty-space broadside diagnostic against the analytic null-reflection oracle
+  (`max_abs_diff 0.06067`, `mean_abs_diff 0.05306`). M44 adds a non-empty
+  homogeneous dielectric-slab analytic oracle for the broadside zero-order
+  Floquet limit (`8` cases x `3` frequencies, max lossless power-balance error
+  `4.44e-16`). M49 runs a narrow non-empty rfx-FDTD slab case, decomposes raw
+  Ex/Hy DFT-plane phasors with an independent NumPy post-processor, and
+  compares S11 magnitude against the analytic slab reflection (`max_mag_abs_diff
+  0.06212`, `mean_mag_abs_diff 0.03209` over three frequencies). M49 is still
+  only E2/E3-enabling: it is not RCWA/external full-wave evidence, not a
+  calibrated reference-plane envelope, and not E5. It is still not a promoted
+  S-parameter calculator in the public contract; no RCWA or external full-wave
+  reference is claimed.
+
+### Future generalized planar ports
+
+Stripline, coplanar waveguide (CPW), and microstrip-to-coax launch ports are
+planned surfaces, not promoted S-parameter APIs. The accepted implementation
+paths are either a generalized MSL-style quasi-TEM de-embedding flow or a true
+2-D eigenmode source/extractor. M39 adds quasi-TEM analytic planning oracles
+for representative microstrip, symmetric stripline, CPW, and
+microstrip-to-coax-launch proxy geometries (`Z0` range 54.04--61.94 Ω with
+finite positive `beta` checks). M45 extends that planning lane with an
+analytic quasi-TEM parameter-sweep envelope template (`8` sweeps / `24` sweep
+rows) across width, permittivity, and CPW strip-width trends. Promotion still
+requires implementation, independent raw V/I dump replay, external cross-solver
+evidence per family, and a stated mesh/frequency/substrate-cell envelope.
+
+The broad-E5 external/reference backlog is also machine-readable in
+`scripts/diagnostics/port_external_reference_requirements.json` and audited by
+`scripts/diagnostics/check_port_external_references.py`. That audit is a
+completion gate: it cross-checks this support matrix so every current or
+planned port family is tracked, and internal replay/oracle artifacts do not
+satisfy broad E5 until the relevant external/reference shard is present and
+marked broad-E5 complete. Each required family also has a VESSL shard YAML for
+parallel external-reference validation. The lumped, wire, and coaxial shards
+now run their narrow openEMS comparison builders before emitting the family
+blocker report; the Floquet shard runs its current modal oracle, real-FDTD
+empty-space analytic-null comparison, and M49 rfx-FDTD slab/analytic comparison
+before reporting the remaining RCWA/external blocker; the generalized-planar
+shard runs the M39 quasi-TEM planning oracles before reporting the remaining
+implementation/external blockers. None of these shard specs may be interpreted
+as completed broad-E5 evidence until the family manifest status is
+`broad_e5_passed`. The result
+JSONs from those shards are aggregated by
+`scripts/diagnostics/check_port_external_shard_results.py`, which is a separate
+execution-evidence gate from YAML/manifest coverage. M58/M60 exercised the
+non-lumped shard set on VESSL after the no-editable-install/bootstrap fixes;
+all seven required family result JSONs are now present in that execution root,
+but every family result is still `blocked` because broad-E4 and broad-E5
+envelope evidence is missing. The expected YAML, diagnostic pre-run command,
+output directory, and shard result JSON wiring is reported by
+`scripts/diagnostics/build_port_external_shard_execution_manifest.py`; that
+manifest is orchestration evidence only, not physics evidence. External
+solver S-matrices should be compared through `scripts/diagnostics/compare_sparameter_reference.py`
+where possible so family-specific shards share the same interpolation, term
+selection, tolerance, and report schema before any manifest promotion. The
+M47 lumped/openEMS sweep can also be split into per-case VESSL jobs with
+`scripts/diagnostics/build_lumped_openems_parallel_plan.py` and then aggregated
+with `scripts/diagnostics/build_lumped_openems_sweep_comparison.py
+--case-artifact-root`; M56 confirms this path on VESSL for three cases. This is
+a scheduling path for slow external simulations, not a physics-evidence
+shortcut or a broad-E5 promotion. The remaining broad-E5 blockers are also
+decomposed by `scripts/diagnostics/report_rf_e5_blocker_ladder.py`, which
+orders missing API, raw-dump replay, solver dependency, external-reference,
+broad-E4, and E5-envelope stages per family. That ladder is planning/audit
+evidence only; it must not be used to promote a family without the referenced
+physics artifacts. The
+external-reference manifest has an `external_comparison_artifacts` list per
+family; `broad_e5_passed` entries are rejected unless at least one listed
+comparison artifact exists and reports `status=passed` with an E4/E4-enabling
+evidence level, and at least one listed comparison artifact is a **broad E4**
+external comparison rather than an E4-enabling/narrow fixture. The manifest also
+has a `broad_e5_envelope_artifacts` list per
+family; `broad_e5_passed` is rejected unless at least one listed envelope
+artifact exists, reports `status=passed`, uses an unblocked E5 evidence level
+not labeled narrow/enabling/partial/experimental/shadow, and states a broad
+mesh/frequency/geometry scope. Solver availability is audited separately by
+`scripts/diagnostics/check_external_solver_dependencies.py`; the audit checks
+both executable discovery and real Python importability so ABI-broken modules
+are blockers. Availability reports are blocker diagnostics only and must not be
+counted as E4/E5 physics evidence.
+
+### Non-port observables
+
+`add_source(...)`, polarized sources, TFSF, point probes, DFT plane probes, and
+flux monitors are valid observables/excitations, but they do not define a port
+impedance or S-matrix reference. They must not be documented as substitutes for
+ports.
+
+## Loud rejection policy
+
+Explicit S-parameter requests outside the table must fail with actionable
+errors. In particular:
+
+- `run(compute_s_params=True)` is only for `add_port(...)` lumped/wire ports.
+- `compute_msl_s_matrix(...)` is only for `add_msl_port(...)` simulations.
+- `compute_waveguide_s_matrix(...)` is only for waveguide-port simulations.
+- `forward(port_s11_freqs=...)` is only for `add_port(...)` lumped/wire ports
+  on the uniform single-device differentiable path.
+- Coaxial, Floquet, sources, TFSF, probes, and flux monitors must not return
+  `None` as if S-parameters were optional output after the user explicitly
+  requested S-parameters.
+
+Before an expensive run, use the port-family routing preflight:
+
+```python
+sim.preflight_sparameters(calculator="run")        # run(compute_s_params=True)
+sim.preflight_sparameters(calculator="forward")    # forward(port_s11_freqs=...)
+sim.preflight_sparameters(calculator="msl")        # compute_msl_s_matrix(...)
+sim.preflight_sparameters(calculator="waveguide")  # compute_waveguide_s_matrix(...)
+```
+
+The method returns actionable issue strings without running FDTD. Use
+`strict=True` when a setup script should fail immediately instead of collecting
+warnings.

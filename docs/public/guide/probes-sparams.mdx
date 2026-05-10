@@ -77,6 +77,21 @@ plane = result.dft_planes["ez_cross_section"]
 
 ## S-parameter extraction
 
+Use the calculator that matches the port family:
+
+| Primitive | Calculator | Result | Evidence framing |
+|---|---|---|---|
+| `add_port(..., extent=None)` | `run(compute_s_params=True)` | `Result.s_params`, `Result.freqs` | E2/E3-limited |
+| `add_port(..., extent=...)` | `run(compute_s_params=True)` | `Result.s_params`, `Result.freqs` | E2/E3/E4 partial, calibration caveated |
+| lumped/wire `add_port(...)` in AD objectives | `forward(port_s11_freqs=...)` | S11 vectors in `ForwardResult.s_params` | E0/E1 AD contract |
+| `add_msl_port(...)` | `compute_msl_s_matrix()` | `MSLSMatrixResult.S`, `.freqs`, `.Z0`, `.beta` | E5-narrow / eigenmode-blocked under uniform-Yee gates |
+| `add_waveguide_port(...)` | `compute_waveguide_s_matrix()` | `WaveguideSMatrixResult.s_params`, `.freqs`, metadata | E5-narrow under rectangular-guide gates |
+
+Sources, TFSF, probes, DFT plane probes, and flux monitors are non-port
+observables. They do not define a port impedance or S-matrix reference.
+See `docs/guides/sparameter_support_matrix.md` for the artifact, metric, and
+envelope attached to each claim.
+
 ### Lumped port S-matrix
 
 When one or more lumped ports are added with `add_port()`, pass `compute_s_params=True`:
@@ -112,9 +127,32 @@ result = sim.run(n_steps=5000, compute_s_params=True)
 s11 = result.s_params[0, 0, :]  # complex, shape (n_freqs,)
 ```
 
+### Microstrip-line S-matrix
+
+MSL ports use their own calculator and result object:
+
+```python
+msl = sim.compute_msl_s_matrix(n_freqs=101, num_periods=20)
+S = msl.S          # (n_ports, n_ports, n_freqs)
+freqs = msl.freqs  # (n_freqs,) Hz
+Z0 = msl.Z0        # extracted characteristic impedance
+```
+
+Do not expect `run(compute_s_params=True)` to include MSL ports in
+`Result.s_params`.
+
 ### Waveguide S-parameters
 
-See [Sources & Ports](./sources-ports/) for the waveguide-port setup workflow. After running:
+See [Sources & Ports](./sources-ports/) for the waveguide-port setup workflow.
+Use `compute_waveguide_s_matrix(...)` for the full multi-port matrix:
+
+```python
+wg = sim.compute_waveguide_s_matrix(num_periods=30, normalize=True)
+S = wg.s_params      # (n_ports, n_ports, n_freqs)
+freqs = wg.freqs
+```
+
+`run(...)` can also expose per-port waveguide diagnostics:
 
 ```python
 sp = result.waveguide_sparams["port1"]

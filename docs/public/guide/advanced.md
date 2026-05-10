@@ -133,7 +133,10 @@ Current non-uniform hard-fail combinations include:
 - NTFF + non-uniform z mesh
 - DFT planes + non-uniform z mesh
 - TFSF + non-uniform z mesh
-- waveguide ports + non-uniform z mesh
+- waveguide ports + non-uniform z mesh except the documented restricted `compute_waveguide_s_matrix(normalize=True)` single-mode shadow path
+- single-cell lumped-port S-parameters + non-uniform z mesh
+- `compute_msl_s_matrix()` + non-uniform z mesh
+- coaxial ports + non-uniform z mesh
 - lumped RLC + non-uniform z mesh
 
 ### Lumped RLC elements

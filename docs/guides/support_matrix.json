@@ -4,34 +4,73 @@
   "lanes": {
     "uniform_yee_rf": {
       "status": "supported",
-      "boundaries": ["pec", "cpml", "upml"],
-      "sources": ["point_current", "lumped_port", "wire_port", "waveguide_port"],
-      "observables": ["probe", "flux_monitor", "s_parameters", "harminv_resonance", "benchmarked_ntff"],
-      "materials": ["isotropic_linear", "conductive", "validated_dispersive_subsets"]
+      "boundaries": [
+        "pec",
+        "cpml",
+        "upml"
+      ],
+      "sources": [
+        "point_current",
+        "lumped_port",
+        "wire_port",
+        "waveguide_port",
+        "microstrip_line_port"
+      ],
+      "observables": [
+        "probe",
+        "flux_monitor",
+        "s_parameters",
+        "harminv_resonance",
+        "benchmarked_ntff"
+      ],
+      "materials": [
+        "isotropic_linear",
+        "conductive",
+        "validated_dispersive_subsets"
+      ],
+      "sparameter_contract": "docs/guides/sparameter_support_matrix.json"
     },
     "nonuniform_graded_z": {
       "status": "shadow",
       "role": "preserved_thin_substrate_lane",
-      "supported_subset": ["probe", "current_source", "selected_dispersive_smoke_coverage"],
+      "supported_subset": [
+        "probe",
+        "current_source",
+        "selected_dispersive_smoke_coverage"
+      ],
       "unsupported_combinations": {
         "floquet": "hard_fail",
         "ntff": "hard_fail",
         "dft_plane": "hard_fail",
         "tfsf": "hard_fail",
-        "waveguide_port": "hard_fail",
-        "lumped_rlc": "hard_fail"
+        "waveguide_port": "restricted_shadow_normalize_true_single_mode_otherwise_hard_fail",
+        "lumped_rlc": "hard_fail",
+        "lumped_port_sparameters": "hard_fail",
+        "msl_s_matrix": "hard_fail",
+        "coaxial_port": "hard_fail"
       }
     },
-    "sbp_sat_subgridding": {"status": "experimental"},
-    "adi": {"status": "experimental"},
-    "distributed": {"status": "experimental"},
-    "floquet_bloch": {"status": "experimental"}
+    "sbp_sat_subgridding": {
+      "status": "experimental"
+    },
+    "adi": {
+      "status": "experimental"
+    },
+    "distributed": {
+      "status": "experimental"
+    },
+    "floquet_bloch": {
+      "status": "experimental"
+    }
   },
   "promotion_rule": [
     "support_matrix_entry",
     "explicit_contract",
     "unit_and_integration_evidence",
-    "benchmark_or_convergence_evidence",
+    "analytic_dump_external_or_benchmark_evidence",
     "docs_examples_api_alignment"
-  ]
+  ],
+  "sparameter_support_matrix": "docs/guides/sparameter_support_matrix.json",
+  "physics_evidence_rule": "docs/guides/physics_validation_evidence_rule.md",
+  "sparameter_dump_replay_schema": "docs/guides/sparameter_dump_replay.md"
 }

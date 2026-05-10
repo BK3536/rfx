@@ -25,10 +25,11 @@ from __future__ import annotations
 from typing import NamedTuple
 
 import jax.numpy as jnp
+import numpy as np
 
 from rfx.grid import Grid
 from rfx.core.yee import EPS_0
-from rfx.geometry.csg import Cylinder, Box
+from rfx.geometry.csg import Cylinder
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ SMA_PIN_RADIUS   = 0.635e-3   # m — center pin radius (1.27 mm OD)
 SMA_OUTER_RADIUS = 2.055e-3   # m — outer conductor radius (4.11 mm OD)
 PTFE_EPS_R       = 2.1        # PTFE relative permittivity
 PEC_SIGMA        = 1e10       # S/m — effective PEC conductivity
+MU_0             = 1.25663706212e-6  # H/m
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +93,452 @@ class CoaxialPort(NamedTuple):
     outer_radius: float   # outer conductor radius (m), default 2.055 mm (SMA)
     impedance: float      # port impedance, default 50 ohm
     excitation: object    # waveform (GaussianPulse etc.)
+
+
+class CoaxialTEMReferencePlaneVI(NamedTuple):
+    """Calibrated TEM V/I extracted from a coaxial reference plane.
+
+    ``voltage`` is the radial electric-field line integral from the inner
+    conductor to the outer conductor. ``current`` is the azimuthal magnetic
+    field loop integral around the center conductor.  Both quantities use the
+    public port convention: positive current flows into the device under test.
+    """
+
+    voltage: np.ndarray
+    current: np.ndarray
+    radial_positions_m: np.ndarray
+    h_sample_radius_m: float
+    inner_radius_m: float
+    outer_radius_m: float
+
+
+class CoaxialTEMCartesianPlaneVI(NamedTuple):
+    """TEM V/I extracted from tangential Cartesian field-plane samples.
+
+    The plane-local coordinates are ``u`` and ``v``.  ``e_u/e_v`` and
+    ``h_u/h_v`` are tangential field samples on that plane, with arbitrary
+    leading axes such as frequency.  This is the adapter needed between a
+    frequency-domain FDTD plane dump and :func:`coaxial_tem_reference_plane_vi`.
+    """
+
+    vi: CoaxialTEMReferencePlaneVI
+    radial_positions_m: np.ndarray
+    azimuthal_angles_rad: np.ndarray
+    center_uv_m: tuple[float, float]
+
+
+def coaxial_tem_capacitance_per_m(
+    inner_radius: float,
+    outer_radius: float,
+    eps_r: float = PTFE_EPS_R,
+) -> float:
+    """Analytic capacitance per metre for a lossless coaxial TEM line."""
+
+    import math
+
+    _validate_coaxial_tem_geometry(inner_radius, outer_radius, eps_r)
+    return 2.0 * math.pi * EPS_0 * float(eps_r) / math.log(outer_radius / inner_radius)
+
+
+def coaxial_tem_inductance_per_m(
+    inner_radius: float,
+    outer_radius: float,
+    mu_r: float = 1.0,
+) -> float:
+    """Analytic inductance per metre for a lossless coaxial TEM line."""
+
+    import math
+
+    _validate_coaxial_tem_geometry(inner_radius, outer_radius, eps_r=1.0, mu_r=mu_r)
+    return MU_0 * float(mu_r) * math.log(outer_radius / inner_radius) / (2.0 * math.pi)
+
+
+def coaxial_tem_characteristic_impedance(
+    inner_radius: float,
+    outer_radius: float,
+    eps_r: float = PTFE_EPS_R,
+    mu_r: float = 1.0,
+) -> float:
+    """Analytic characteristic impedance ``Z0 = sqrt(L'/C')`` for coax TEM."""
+
+    import math
+
+    c_per_m = coaxial_tem_capacitance_per_m(inner_radius, outer_radius, eps_r)
+    l_per_m = coaxial_tem_inductance_per_m(inner_radius, outer_radius, mu_r)
+    return math.sqrt(l_per_m / c_per_m)
+
+
+def coaxial_tem_phase_constant(
+    freqs_hz,
+    eps_r: float = PTFE_EPS_R,
+    mu_r: float = 1.0,
+):
+    """Analytic lossless TEM phase constant ``beta`` for frequency array."""
+
+    from rfx.grid import C0
+
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    return 2.0 * np.pi * freqs * np.sqrt(float(eps_r) * float(mu_r)) / C0
+
+
+def coaxial_load_reflection(load_impedance, reference_impedance: float):
+    """Closed-form reflection coefficient for a coaxial load."""
+
+    z_load = np.asarray(load_impedance, dtype=np.complex128)
+    z0 = complex(reference_impedance)
+    if not np.isfinite(z0) or z0.real <= 0.0 or abs(z0.imag) > 0.0:
+        raise ValueError(
+            "reference_impedance must be a positive real finite impedance, got "
+            f"{reference_impedance}"
+        )
+    with np.errstate(invalid="ignore"):
+        gamma = (z_load - z0) / (z_load + z0)
+    return np.where(np.isinf(z_load), 1.0 + 0.0j, gamma)
+
+
+def coaxial_tem_reference_plane_vi(
+    radial_positions_m,
+    e_radial_samples,
+    h_phi_samples,
+    *,
+    h_sample_radius_m: float,
+    inner_radius: float,
+    outer_radius: float,
+    eps_r: float = PTFE_EPS_R,
+    voltage_sign: float = 1.0,
+    current_sign: float = 1.0,
+) -> CoaxialTEMReferencePlaneVI:
+    """Extract calibrated coaxial TEM voltage/current from field samples.
+
+    Parameters
+    ----------
+    radial_positions_m:
+        1-D sample positions on a radial line from inner to outer conductor.
+    e_radial_samples:
+        Radial electric field samples.  The last axis must match
+        ``radial_positions_m``. Leading axes (for example frequency) are
+        preserved in the returned voltage.
+    h_phi_samples:
+        Azimuthal magnetic field samples around a circular loop at
+        ``h_sample_radius_m``. The last axis is averaged over azimuthal sample
+        angle. Leading axes are preserved in the returned current.
+    h_sample_radius_m:
+        Radius of the magnetic-field sampling loop.
+    inner_radius, outer_radius, eps_r:
+        Coax geometry. ``eps_r`` is validated for consistency with the other
+        TEM helpers even though it is not needed by the field integrals.
+    voltage_sign, current_sign:
+        Optional convention flips for callers whose field orientation differs
+        from the public port convention.
+
+    Notes
+    -----
+    This helper is the calibration primitive for a coaxial reference-plane
+    TEM extractor.  It does not run FDTD and does not by itself promote
+    ``add_coaxial_port(...)`` to a high-level S-parameter API.
+    """
+
+    _validate_coaxial_tem_geometry(inner_radius, outer_radius, eps_r=eps_r)
+    radial_positions = np.asarray(radial_positions_m, dtype=np.float64)
+    if radial_positions.ndim != 1 or radial_positions.size < 2:
+        raise ValueError("radial_positions_m must be a 1-D array with at least two samples")
+    if np.any(~np.isfinite(radial_positions)):
+        raise ValueError("radial_positions_m must be finite")
+    if np.any(np.diff(radial_positions) <= 0.0):
+        raise ValueError("radial_positions_m must be strictly increasing")
+    if radial_positions[0] < inner_radius or radial_positions[-1] > outer_radius:
+        raise ValueError(
+            "radial_positions_m must lie within [inner_radius, outer_radius], got "
+            f"{radial_positions[0]}..{radial_positions[-1]} outside "
+            f"{inner_radius}..{outer_radius}"
+        )
+    if not np.isfinite(h_sample_radius_m):
+        raise ValueError("h_sample_radius_m must be finite")
+    if h_sample_radius_m < inner_radius or h_sample_radius_m > outer_radius:
+        raise ValueError(
+            "h_sample_radius_m must lie within [inner_radius, outer_radius], got "
+            f"{h_sample_radius_m}"
+        )
+
+    e_radial = np.asarray(e_radial_samples, dtype=np.complex128)
+    if e_radial.shape[-1:] != (radial_positions.size,):
+        raise ValueError(
+            "last axis of e_radial_samples must match radial_positions_m length; "
+            f"got {e_radial.shape} vs {radial_positions.size}"
+        )
+    h_phi = np.asarray(h_phi_samples, dtype=np.complex128)
+    if h_phi.ndim == 0:
+        raise ValueError("h_phi_samples must have at least one azimuthal sample")
+    if h_phi.shape[-1] < 1:
+        raise ValueError("h_phi_samples must have at least one azimuthal sample")
+
+    trapezoid = getattr(np, "trapezoid", np.trapz)
+    voltage = float(voltage_sign) * trapezoid(
+        e_radial,
+        radial_positions,
+        axis=-1,
+    )
+    current = (
+        float(current_sign)
+        * 2.0
+        * np.pi
+        * float(h_sample_radius_m)
+        * np.mean(h_phi, axis=-1)
+    )
+    return CoaxialTEMReferencePlaneVI(
+        voltage=np.asarray(voltage, dtype=np.complex128),
+        current=np.asarray(current, dtype=np.complex128),
+        radial_positions_m=radial_positions,
+        h_sample_radius_m=float(h_sample_radius_m),
+        inner_radius_m=float(inner_radius),
+        outer_radius_m=float(outer_radius),
+    )
+
+
+def coaxial_tem_reference_plane_vi_from_cartesian_plane(
+    u_coords_m,
+    v_coords_m,
+    e_u_samples,
+    e_v_samples,
+    h_u_samples,
+    h_v_samples,
+    *,
+    center_u_m: float,
+    center_v_m: float,
+    inner_radius: float,
+    outer_radius: float,
+    eps_r: float = PTFE_EPS_R,
+    radial_positions_m=None,
+    h_sample_radius_m: float | None = None,
+    azimuthal_angles_rad=None,
+    voltage_sign: float = 1.0,
+    current_sign: float = 1.0,
+) -> CoaxialTEMCartesianPlaneVI:
+    """Extract coaxial TEM V/I from Cartesian tangential field-plane samples.
+
+    Parameters
+    ----------
+    u_coords_m, v_coords_m:
+        Strictly increasing coordinate arrays for the two tangential plane
+        axes.  Field arrays must use these as their last two dimensions.
+    e_u_samples, e_v_samples:
+        Tangential electric-field DFT samples on the plane.
+    h_u_samples, h_v_samples:
+        Tangential magnetic-field DFT samples on the same plane.
+    center_u_m, center_v_m:
+        Coax center on the sampled plane.
+    inner_radius, outer_radius:
+        Coax conductor radii in metres.
+    radial_positions_m:
+        Optional radial integration points.  By default, all available
+        positive-``u`` grid coordinates that lie inside ``[inner, outer]`` are
+        used.  The caller may pass a denser grid for synthetic or interpolated
+        data.
+    h_sample_radius_m:
+        Optional radius for the azimuthal H-loop.  Defaults to the geometric
+        mean of the inner and outer conductor radii.
+    azimuthal_angles_rad:
+        Optional loop sample angles.  Defaults to 16 equiangular samples.
+
+    Notes
+    -----
+    This adapter performs bilinear interpolation and then delegates the actual
+    TEM V/I integration to :func:`coaxial_tem_reference_plane_vi`.  It does not
+    run FDTD and is not a promoted coaxial S-parameter API.
+    """
+
+    _validate_coaxial_tem_geometry(inner_radius, outer_radius, eps_r=eps_r)
+    u_coords = _validate_monotone_axis(u_coords_m, name="u_coords_m")
+    v_coords = _validate_monotone_axis(v_coords_m, name="v_coords_m")
+    center_u = float(center_u_m)
+    center_v = float(center_v_m)
+    if not np.isfinite(center_u) or not np.isfinite(center_v):
+        raise ValueError("center_u_m and center_v_m must be finite")
+
+    e_u = _validate_plane_field(e_u_samples, u_coords, v_coords, name="e_u_samples")
+    e_v = _validate_plane_field(e_v_samples, u_coords, v_coords, name="e_v_samples")
+    h_u = _validate_plane_field(h_u_samples, u_coords, v_coords, name="h_u_samples")
+    h_v = _validate_plane_field(h_v_samples, u_coords, v_coords, name="h_v_samples")
+    if not (e_u.shape == e_v.shape == h_u.shape == h_v.shape):
+        raise ValueError(
+            "e_u/e_v/h_u/h_v samples must have identical shapes, got "
+            f"{e_u.shape}, {e_v.shape}, {h_u.shape}, {h_v.shape}"
+        )
+
+    if radial_positions_m is None:
+        radial_positions = u_coords - center_u
+        radial_positions = radial_positions[
+            (radial_positions >= inner_radius) & (radial_positions <= outer_radius)
+        ]
+        if radial_positions.size < 2:
+            radial_positions = np.linspace(inner_radius, outer_radius, 33)
+    else:
+        radial_positions = np.asarray(radial_positions_m, dtype=np.float64)
+
+    if h_sample_radius_m is None:
+        h_radius = float(np.sqrt(float(inner_radius) * float(outer_radius)))
+    else:
+        h_radius = float(h_sample_radius_m)
+    if azimuthal_angles_rad is None:
+        angles = np.linspace(0.0, 2.0 * np.pi, 16, endpoint=False, dtype=np.float64)
+    else:
+        angles = np.asarray(azimuthal_angles_rad, dtype=np.float64)
+        if angles.ndim != 1 or angles.size < 4:
+            raise ValueError("azimuthal_angles_rad must be a 1-D array with at least 4 samples")
+        if np.any(~np.isfinite(angles)):
+            raise ValueError("azimuthal_angles_rad must be finite")
+
+    # Voltage line integral along the +u radial ray.  On this ray
+    # e_radial == e_u.
+    e_radial = _interp_bilinear_plane(
+        e_u,
+        u_coords,
+        v_coords,
+        center_u + radial_positions,
+        np.full_like(radial_positions, center_v),
+    )
+
+    # Current loop integral around radius h_radius.  In plane-local
+    # coordinates, r_hat=(cosθ, sinθ), phi_hat=(-sinθ, cosθ).
+    loop_u = center_u + h_radius * np.cos(angles)
+    loop_v = center_v + h_radius * np.sin(angles)
+    h_u_loop = _interp_bilinear_plane(h_u, u_coords, v_coords, loop_u, loop_v)
+    h_v_loop = _interp_bilinear_plane(h_v, u_coords, v_coords, loop_u, loop_v)
+    h_phi = -h_u_loop * np.sin(angles) + h_v_loop * np.cos(angles)
+
+    vi = coaxial_tem_reference_plane_vi(
+        radial_positions,
+        e_radial,
+        h_phi,
+        h_sample_radius_m=h_radius,
+        inner_radius=inner_radius,
+        outer_radius=outer_radius,
+        eps_r=eps_r,
+        voltage_sign=voltage_sign,
+        current_sign=current_sign,
+    )
+    return CoaxialTEMCartesianPlaneVI(
+        vi=vi,
+        radial_positions_m=radial_positions,
+        azimuthal_angles_rad=angles,
+        center_uv_m=(center_u, center_v),
+    )
+
+
+def coaxial_tem_reference_plane_s11(voltage, current, reference_impedance: float):
+    """Convert calibrated TEM V/I phasors to one-port S11.
+
+    The convention is the same power-wave split used by the raw V/I replay
+    helpers: ``a = (V + Z0 I) / 2`` and ``b = (V - Z0 I) / 2``.
+    """
+
+    voltage = np.asarray(voltage, dtype=np.complex128)
+    current = np.asarray(current, dtype=np.complex128)
+    z0 = complex(reference_impedance)
+    if not np.isfinite(z0) or z0.real <= 0.0 or abs(z0.imag) > 0.0:
+        raise ValueError(
+            "reference_impedance must be a positive real finite impedance, got "
+            f"{reference_impedance}"
+        )
+    incident = 0.5 * (voltage + z0 * current)
+    reflected = 0.5 * (voltage - z0 * current)
+    return reflected / incident
+
+
+def _validate_monotone_axis(values, *, name: str) -> np.ndarray:
+    axis = np.asarray(values, dtype=np.float64)
+    if axis.ndim != 1 or axis.size < 2:
+        raise ValueError(f"{name} must be a 1-D array with at least two samples")
+    if np.any(~np.isfinite(axis)):
+        raise ValueError(f"{name} must be finite")
+    if np.any(np.diff(axis) <= 0.0):
+        raise ValueError(f"{name} must be strictly increasing")
+    return axis
+
+
+def _validate_plane_field(
+    values,
+    u_coords: np.ndarray,
+    v_coords: np.ndarray,
+    *,
+    name: str,
+) -> np.ndarray:
+    field = np.asarray(values, dtype=np.complex128)
+    if field.shape[-2:] != (u_coords.size, v_coords.size):
+        raise ValueError(
+            f"last two axes of {name} must match u/v coordinate lengths; "
+            f"got {field.shape[-2:]} vs {(u_coords.size, v_coords.size)}"
+        )
+    return field
+
+
+def _interp_bilinear_plane(
+    field: np.ndarray,
+    u_coords: np.ndarray,
+    v_coords: np.ndarray,
+    sample_u: np.ndarray,
+    sample_v: np.ndarray,
+) -> np.ndarray:
+    sample_u = np.asarray(sample_u, dtype=np.float64)
+    sample_v = np.asarray(sample_v, dtype=np.float64)
+    if sample_u.shape != sample_v.shape:
+        raise ValueError(
+            "sample_u and sample_v must have identical shapes, got "
+            f"{sample_u.shape} vs {sample_v.shape}"
+        )
+    if np.any(~np.isfinite(sample_u)) or np.any(~np.isfinite(sample_v)):
+        raise ValueError("sample coordinates must be finite")
+    if (
+        sample_u.min(initial=u_coords[0]) < u_coords[0]
+        or sample_u.max(initial=u_coords[-1]) > u_coords[-1]
+        or sample_v.min(initial=v_coords[0]) < v_coords[0]
+        or sample_v.max(initial=v_coords[-1]) > v_coords[-1]
+    ):
+        raise ValueError("sample coordinates must lie inside the field plane bounds")
+
+    iu1 = np.searchsorted(u_coords, sample_u, side="right")
+    iv1 = np.searchsorted(v_coords, sample_v, side="right")
+    iu1 = np.clip(iu1, 1, u_coords.size - 1)
+    iv1 = np.clip(iv1, 1, v_coords.size - 1)
+    iu0 = iu1 - 1
+    iv0 = iv1 - 1
+
+    u0 = u_coords[iu0]
+    u1 = u_coords[iu1]
+    v0 = v_coords[iv0]
+    v1 = v_coords[iv1]
+    wu = (sample_u - u0) / (u1 - u0)
+    wv = (sample_v - v0) / (v1 - v0)
+
+    f00 = field[..., iu0, iv0]
+    f10 = field[..., iu1, iv0]
+    f01 = field[..., iu0, iv1]
+    f11 = field[..., iu1, iv1]
+    return (
+        f00 * (1.0 - wu) * (1.0 - wv)
+        + f10 * wu * (1.0 - wv)
+        + f01 * (1.0 - wu) * wv
+        + f11 * wu * wv
+    )
+
+
+def _validate_coaxial_tem_geometry(
+    inner_radius: float,
+    outer_radius: float,
+    eps_r: float = 1.0,
+    mu_r: float = 1.0,
+) -> None:
+    if inner_radius <= 0.0:
+        raise ValueError(f"inner_radius must be positive, got {inner_radius}")
+    if outer_radius <= inner_radius:
+        raise ValueError(
+            "outer_radius must be larger than inner_radius, got "
+            f"{outer_radius} <= {inner_radius}"
+        )
+    if eps_r <= 0.0:
+        raise ValueError(f"eps_r must be positive, got {eps_r}")
+    if mu_r <= 0.0:
+        raise ValueError(f"mu_r must be positive, got {mu_r}")
 
 
 def _coaxial_port_geometry(grid: Grid, port: CoaxialPort):
@@ -161,7 +609,21 @@ def setup_coaxial_port(grid: Grid, port: CoaxialPort, materials):
     axis, direction, component, pin_center, pin_tip, gap_idx = \
         _coaxial_port_geometry(grid, port)
 
-    # ---- 1. Outer PEC conductor (full outer cylinder, then overwrite inside) ----
+    _validate_coaxial_tem_geometry(port.pin_radius, port.outer_radius, PTFE_EPS_R)
+
+    # ---- 1. Outer PEC conductor shell ----
+    #
+    # The original helper painted the full outer cylinder as PEC and then
+    # overwrote all non-pin cells inside that cylinder as PTFE, leaving no
+    # annular outer-conductor shell at the nominal outer radius.  Keep an
+    # explicit one-cell-ish shell while preserving dielectric fill between the
+    # center pin and the shell.  This is still a probe-style helper, not a
+    # promoted TEM S-parameter API.
+    shell_thickness = min(
+        float(grid.dx),
+        0.5 * (float(port.outer_radius) - float(port.pin_radius)),
+    )
+    shell_inner_radius = float(port.outer_radius) - shell_thickness
     outer_cyl = Cylinder(
         center=pin_center,
         radius=port.outer_radius,
@@ -169,18 +631,24 @@ def setup_coaxial_port(grid: Grid, port: CoaxialPort, materials):
         axis=axis,
     )
     outer_mask = outer_cyl.mask(grid)
-    eps_r  = jnp.where(outer_mask, 1.0,         materials.eps_r)
-    sigma  = jnp.where(outer_mask, PEC_SIGMA,   materials.sigma)
+    shell_inner_mask = Cylinder(
+        center=pin_center,
+        radius=shell_inner_radius,
+        height=port.pin_length,
+        axis=axis,
+    ).mask(grid)
+    outer_shell_mask = outer_mask & ~shell_inner_mask
+    eps_r  = jnp.where(outer_shell_mask, 1.0,         materials.eps_r)
+    sigma  = jnp.where(outer_shell_mask, PEC_SIGMA,   materials.sigma)
 
-    # ---- 2. PTFE fill (overwrite inside outer conductor) ----
-    # PTFE region = outer cylinder body minus the pin radius
+    # ---- 2. PTFE fill between the pin and outer shell ----
     pin_cyl_mask = Cylinder(
         center=pin_center,
         radius=port.pin_radius,
         height=port.pin_length,
         axis=axis,
     ).mask(grid)
-    ptfe_mask = outer_mask & ~pin_cyl_mask
+    ptfe_mask = shell_inner_mask & ~pin_cyl_mask
     eps_r  = jnp.where(ptfe_mask, PTFE_EPS_R,  eps_r)
     sigma  = jnp.where(ptfe_mask, 0.0,          sigma)
 

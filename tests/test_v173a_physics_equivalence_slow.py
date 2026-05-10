@@ -37,6 +37,13 @@ def test_v173a_baseline_bit_identity():
     """Re-run the V173-A harness on current HEAD and assert Δf_res and
     Δ|S11| dip are both exactly zero relative to the committed pre-T7
     Phase 2 baseline."""
+    jax = pytest.importorskip("jax")
+    if jax.default_backend() != "cpu":
+        pytest.xfail(
+            "V173-A bit-identity baseline is CPU/JAX-backend specific; "
+            "GPU VESSL release shards need a separately justified baseline "
+            "before this can be claims-bearing."
+        )
     if str(SCRIPTS_DIR) not in sys.path:
         sys.path.insert(0, str(SCRIPTS_DIR))
     import v173a_physics_equivalence as v173a  # type: ignore[import-not-found]

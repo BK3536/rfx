@@ -17,7 +17,7 @@ concepts are familiar -- the API surface is different.
 | Grid setup | `Simulation(resolution=N)` | `InitCSX()` + `InitFDTD()` | `Simulation(freq_max=...)` or `Simulation.auto(...)` |
 | Cell size | `resolution` (cells/unit) | `SetDeltaUnit(1e-3)` | `dx=` in metres (auto-calculated from `freq_max`) |
 | Source | `EigenModeSource`, `Source` | `AddExcitation` | `add_port()`, `add_source()` |
-| S-parameters | `add_flux()` + post-processing | `CalcPort` | `compute_s_params=True` in `run()` |
+| S-parameters | `add_flux()` + post-processing | `CalcPort` | port-family-specific: lumped/wire `run(compute_s_params=True)`, MSL `compute_msl_s_matrix()`, waveguide `compute_waveguide_s_matrix()` |
 | Resonance finding | `harminv(...)` | Manual FFT | `result.find_resonances()` |
 | Auto-stop | `stop_when_fields_decayed` | `EndCriteria` | `run(until_decay=1e-3)` |
 | Materials | `Medium(epsilon=...)` | `AddMaterial` | `sim.add(shape, material="fr4")` or `sim.add_material(...)` |
@@ -79,19 +79,21 @@ s11 = port{1}.uf.ref ./ port{1}.uf.inc;
 ```
 
 ```python
-# rfx equivalent
+# rfx equivalent (waveguide port family)
 from rfx import Simulation, Box
 
 sim = Simulation(freq_max=15e9, domain=(0.04, 0.02, 0.01), boundary="cpml")
 sim.add(Box((0, 0, 0), (0.04, 0.02, 0.01)), material="pec")
-sim.add_port(
-    position=(0.005, 0.01, 0.005),
-    component="ez",
-    waveform=GaussianPulse(f0=10e9),
-)
-result = sim.run(until_decay=1e-5, compute_s_params=True)
+sim.add_waveguide_port(0.005, direction="+x", f0=10e9, name="in")
+sim.add_waveguide_port(0.035, direction="-x", f0=10e9, name="out")
+result = sim.compute_waveguide_s_matrix(num_periods=30, normalize=True)
 s11 = result.s_params[0, 0, :]
 ```
+
+The waveguide path is E5-narrow only within the documented
+rectangular-guide gates. Do not treat `run(compute_s_params=True)` as a
+universal OpenEMS `CalcPort` equivalent; it is the lumped/wire `add_port(...)`
+calculator only.
 
 ### Meep Adjoint -> rfx Inverse Design
 

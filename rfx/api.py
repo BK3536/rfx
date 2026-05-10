@@ -53,6 +53,7 @@ from rfx.simulation import (
     SnapshotSpec,
 )
 from rfx.adi import ADIState2D, run_adi_2d
+from rfx.boundaries.spec import BoundarySpec
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +506,7 @@ class Simulation:
         freq_max: float,
         domain: tuple[float, float, float],
         *,
-        boundary: "str | BoundarySpec | dict" = "cpml",
+        boundary: str | BoundarySpec | dict = "cpml",
         cpml_layers: int = 16,
         cpml_kappa_max: float = 1.0,
         pec_faces: set[str] | list[str] | None = None,
@@ -518,7 +519,7 @@ class Simulation:
         solver: str = "yee",
         adi_cfl_factor: float = 5.0,
     ):
-        from rfx.boundaries.spec import BoundarySpec, Boundary, normalize_boundary
+        from rfx.boundaries.spec import normalize_boundary
 
         # T7-B: accept BoundarySpec directly or normalise a legacy scalar
         # boundary=<str>. A BoundarySpec provided here is authoritative;
@@ -2816,6 +2817,7 @@ class Simulation:
         num_periods: float = 40.0,
         freqs: jnp.ndarray | None = None,
         n_freqs: int = 100,
+        raw_3probe_dump_path: str | None = None,
     ) -> "MSLSMatrixResult":
         """Compute the MSL S-matrix using 3-probe numerical de-embedding.
 
@@ -2838,6 +2840,13 @@ class Simulation:
             ``linspace(freq_max / 10, freq_max, n_freqs)``.
         n_freqs : int
             Number of frequencies if ``freqs`` is None.
+        raw_3probe_dump_path : str or None
+            Optional ``.npz`` path. When provided, write the real
+            simulation-derived 3-probe voltage/current phasors used by the
+            extractor, together with the production S-matrix, so
+            ``scripts/diagnostics/replay_msl_3probe_dump.py`` can independently
+            replay the de-embedding without rerunning FDTD. This is intended
+            for E3 validation evidence.
 
         Returns
         -------
@@ -2965,6 +2974,10 @@ class Simulation:
             S = np.zeros((n_ports, n_ports, n_freqs_used), dtype=complex)
             Z0_per_run = np.zeros((n_ports, n_freqs_used), dtype=complex)
             beta_first = np.zeros(n_freqs_used, dtype=complex)
+            raw_v123 = np.zeros((n_ports, n_ports, 3, n_freqs_used), dtype=complex)
+            raw_i1 = np.zeros((n_ports, n_ports, n_freqs_used), dtype=complex)
+            raw_z0 = np.zeros((n_ports, n_ports, n_freqs_used), dtype=complex)
+            raw_q = np.zeros((n_ports, n_ports, n_freqs_used), dtype=complex)
 
             for driven in range(n_ports):
                 # Re-instantiate a clean simulation by mutating in place:
@@ -3057,6 +3070,18 @@ class Simulation:
                     if mp_p.direction == "+x":
                         i_f = -i_f
                     i_first_per_port.append(i_f)
+                    raw_v123[driven, p_idx, 0, :] = v_per_port[p_idx][0]
+                    raw_v123[driven, p_idx, 1, :] = v_per_port[p_idx][1]
+                    raw_v123[driven, p_idx, 2, :] = v_per_port[p_idx][2]
+                    raw_i1[driven, p_idx, :] = i_f
+                    _, z0_p, q_p = extract_msl_s_params(
+                        v_per_port[p_idx][0],
+                        v_per_port[p_idx][1],
+                        v_per_port[p_idx][2],
+                        i_f,
+                    )
+                    raw_z0[driven, p_idx, :] = z0_p
+                    raw_q[driven, p_idx, :] = q_p
 
                 # Driven port: full 3-probe extraction → S[driven, driven].
                 v1d, v2d, v3d = v_per_port[driven]
@@ -3078,6 +3103,71 @@ class Simulation:
                     v1p, v2p, v3p = v_per_port[j]
                     alpha_p, _ = msl_forward_amplitude(v1p, v2p, v3p)
                     S[j, driven, :] = compute_s21(alpha_p, alpha_d)
+
+            if raw_3probe_dump_path is not None:
+                import json
+                from pathlib import Path
+
+                path = Path(raw_3probe_dump_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                metadata = {
+                    "schema": "rfx.msl_3probe_dump",
+                    "schema_version": 1,
+                    "production_smatrix_schema": "S[receiver_port, driven_port, frequency_index]",
+                    "raw_v123_shape": "(n_driven, n_ports, 3, n_freqs)",
+                    "raw_i1_shape": "(n_driven, n_ports, n_freqs)",
+                    "phase_convention": "DFT accumulator convention from add_dft_plane_probe",
+                    "current_convention": (
+                        "line current sign normalized so +x and -x MSL ports "
+                        "produce positive characteristic impedance on the "
+                        "validated thru-line envelope"
+                    ),
+                    "deembedding": (
+                        "three equally spaced voltage probes plus current at "
+                        "probe 1; replay computes q, alpha, gamma, S11, Sij "
+                        "from raw phasors without calling compute_msl_s_matrix"
+                    ),
+                    "grid": {
+                        "dx_m": float(grid.dx),
+                        "dt_s": float(grid.dt),
+                        "nx": int(grid.nx),
+                        "ny": int(grid.ny),
+                        "nz": int(grid.nz),
+                    },
+                    "simulation": {
+                        "freq_max_hz": float(self._freq_max),
+                        "num_periods": float(num_periods),
+                        "n_steps": None if n_steps is None else int(n_steps),
+                    },
+                    "port_definitions": [
+                        {
+                            "name": str(pe.name),
+                            "position_m": [float(x) for x in pe.position],
+                            "width_m": float(pe.width),
+                            "height_m": float(pe.height),
+                            "direction": pe.direction,
+                            "impedance_ohm": float(pe.impedance),
+                            "n_probe_offset": int(pe.n_probe_offset),
+                            "n_probe_spacing": int(pe.n_probe_spacing),
+                            "mode": pe.mode,
+                        }
+                        for pe in entries
+                    ],
+                }
+                np.savez(
+                    path,
+                    metadata_json=np.asarray(json.dumps(metadata)),
+                    freqs_hz=np.asarray(freqs_arr, dtype=np.float64),
+                    raw_v123=raw_v123,
+                    raw_i1=raw_i1,
+                    raw_z0=raw_z0,
+                    raw_q=raw_q,
+                    production_smatrix=S,
+                    production_z0=Z0_per_run,
+                    production_beta=beta_first,
+                    port_names=np.asarray(tuple(pe.name for pe in entries), dtype=object),
+                    driven_port_indices=np.arange(n_ports, dtype=np.int64),
+                )
 
             return MSLSMatrixResult(
                 S=S,
@@ -3911,7 +4001,6 @@ class Simulation:
         inv_sq = sum(1.0 / di ** 2 for di in d)
         dt_cfl = 0.99 / (C0 * math.sqrt(inv_sq))
         omega = 2.0 * math.pi * self._freq_max
-        k0 = omega / C0
 
         errors = {}
         sin_wdt2 = math.sin(omega * dt_cfl / 2.0)
@@ -4171,6 +4260,213 @@ class Simulation:
             print("  [PREFLIGHT] All checks passed.")
 
         return issues
+
+    def preflight_sparameters(
+        self,
+        *,
+        calculator: str = "run",
+        strict: bool = False,
+        normalize: bool | str | None = None,
+        include_general: bool = False,
+    ) -> list[str]:
+        """Preflight the selected S-parameter calculator without running FDTD.
+
+        This is a routing/contract check for the port-family-specific
+        S-parameter APIs.  It answers "which calculator should this simulation
+        use?" before an expensive run starts:
+
+        - ``calculator="run"`` checks ``run(compute_s_params=True)`` for
+          lumped/wire ``add_port(...)`` families.
+        - ``calculator="forward"`` checks ``forward(port_s11_freqs=...)`` for
+          uniform single-device S11 vectors.
+        - ``calculator="msl"`` checks ``compute_msl_s_matrix(...)``.
+        - ``calculator="waveguide"`` checks ``compute_waveguide_s_matrix(...)``.
+
+        Parameters
+        ----------
+        calculator:
+            One of ``"run"``, ``"forward"``, ``"msl"``, or ``"waveguide"``
+            (the corresponding method names are accepted as aliases).
+        strict:
+            If True, raise the underlying ``ValueError`` /
+            ``NotImplementedError`` instead of returning it as an issue string.
+        normalize:
+            Waveguide non-uniform preflight uses this to mirror
+            ``compute_waveguide_s_matrix(normalize=...)``.  ``None`` means the
+            method default, currently ``False``.
+        include_general:
+            If True, append the ordinary geometry/material ``preflight()``
+            issues after the S-parameter routing check.
+
+        Returns
+        -------
+        list of str
+            Empty when the selected calculator is valid for the registered
+            port families.  Otherwise contains actionable issue messages.
+        """
+
+        aliases = {
+            "run": "run",
+            "result": "run",
+            "compute_s_params": "run",
+            "forward": "forward",
+            "forward_s11": "forward",
+            "port_s11_freqs": "forward",
+            "msl": "msl",
+            "compute_msl_s_matrix": "msl",
+            "waveguide": "waveguide",
+            "compute_waveguide_s_matrix": "waveguide",
+        }
+        key = aliases.get(calculator.lower())
+        if key is None:
+            allowed = ", ".join(sorted(set(aliases.values())))
+            raise ValueError(
+                f"Unknown S-parameter calculator {calculator!r}. "
+                f"Choose one of: {allowed}."
+            )
+
+        issues: list[str] = []
+
+        try:
+            if key == "run":
+                self._validate_run_sparameter_request(
+                    compute_s_params=True,
+                    s_param_freqs=None,
+                    s_param_n_steps=None,
+                    devices=None,
+                )
+            elif key == "forward":
+                self._validate_forward_sparameter_request()
+                is_nonuniform = (
+                    self._dz_profile is not None
+                    or self._dx_profile is not None
+                    or self._dy_profile is not None
+                )
+                if is_nonuniform:
+                    raise NotImplementedError(
+                        "forward(port_s11_freqs=...) is currently wired only "
+                        "on the uniform single-device forward path. Drop "
+                        "port_s11_freqs or use a uniform mesh."
+                    )
+            elif key == "msl":
+                self._validate_msl_sparameter_request_for_preflight()
+            elif key == "waveguide":
+                wg_normalize = False if normalize is None else normalize
+                self._validate_waveguide_sparameter_request_for_preflight(
+                    normalize=wg_normalize,
+                )
+        except (ValueError, NotImplementedError) as exc:
+            if strict:
+                raise
+            issues.append(f"{type(exc).__name__}: {exc}")
+
+        if include_general:
+            issues.extend(self.preflight(strict=strict))
+
+        if issues:
+            for issue in issues:
+                print(f"  [SPARAM PREFLIGHT] {issue}")
+        else:
+            print(f"  [SPARAM PREFLIGHT] {key}: all checks passed.")
+        return issues
+
+    def _validate_msl_sparameter_request_for_preflight(self) -> None:
+        """Mirror ``compute_msl_s_matrix`` family-routing checks."""
+
+        if not self._msl_ports:
+            raise ValueError("No MSL ports registered. Call add_msl_port() first.")
+        if self._ports or self._waveguide_ports or self._floquet_ports:
+            raise NotImplementedError(
+                "compute_msl_s_matrix() is defined only for add_msl_port(...) "
+                "families in the current simulation. Use separate simulations "
+                "for add_port(...), add_waveguide_port(...), or "
+                "add_floquet_port(...) S-parameter workflows."
+            )
+        if self._tfsf is not None:
+            raise NotImplementedError(
+                "compute_msl_s_matrix() is not supported together with TFSF; "
+                "TFSF is a plane-wave source, not an MSL port."
+            )
+        if self._coaxial_ports:
+            raise NotImplementedError(
+                "compute_msl_s_matrix() does not include add_coaxial_port(...); "
+                "coaxial-port S-parameters need a separate validated V/I "
+                "extraction and calibration contract."
+            )
+        if (
+            self._dz_profile is not None
+            or self._dx_profile is not None
+            or self._dy_profile is not None
+        ):
+            raise NotImplementedError(
+                "compute_msl_s_matrix() currently supports the uniform Yee "
+                "lane only. Drop dx_profile/dy_profile/dz_profile or use a "
+                "documented diagnostic path."
+            )
+        if self._refinement is not None:
+            raise NotImplementedError(
+                "compute_msl_s_matrix() is not supported with SBP-SAT "
+                "subgridding."
+            )
+        if self._solver == "adi":
+            raise NotImplementedError(
+                "compute_msl_s_matrix() is not supported with solver='adi'; "
+                "use the uniform Yee solver."
+            )
+
+    def _validate_waveguide_sparameter_request_for_preflight(
+        self,
+        *,
+        normalize: bool | str,
+    ) -> None:
+        """Mirror ``compute_waveguide_s_matrix`` family-routing checks."""
+
+        if not self._waveguide_ports:
+            raise ValueError(
+                "No waveguide ports registered. Call add_waveguide_port() first."
+            )
+        if self._ports or self._tfsf:
+            raise ValueError(
+                "compute_waveguide_s_matrix() is not supported together with "
+                "lumped ports or TFSF"
+            )
+        if self._periodic_axes:
+            raise ValueError(
+                "compute_waveguide_s_matrix() is not supported with manual "
+                "periodic-axis overrides"
+            )
+        if len(self._waveguide_ports) < 2:
+            raise ValueError(
+                "compute_waveguide_s_matrix() requires at least two "
+                "waveguide ports"
+            )
+
+        entries = list(self._waveguide_ports)
+        if any(entry.probe_plane is not None for entry in entries):
+            raise ValueError(
+                "compute_waveguide_s_matrix() does not use per-port "
+                "probe_plane; use reference_plane only or leave probe_plane unset"
+            )
+        if any(entry.calibration_preset not in (None, "measured") for entry in entries):
+            raise ValueError(
+                "compute_waveguide_s_matrix() currently supports only "
+                "measured/default reference planes or explicit reference_plane "
+                "overrides"
+            )
+        if self._dx_profile is not None or self._dy_profile is not None:
+            unsupported = []
+            if normalize is not True:
+                unsupported.append("normalize=True is required")
+            if any(entry.n_modes > 1 for entry in entries):
+                unsupported.append("multi-mode ports (n_modes>1) are not supported")
+            if unsupported:
+                raise NotImplementedError(
+                    "compute_waveguide_s_matrix() on a non-uniform mesh "
+                    "(dx_profile / dy_profile) supports normalize=True "
+                    "and single-mode ports. "
+                    + "; ".join(unsupported)
+                    + ". Drop the dx/dy profile to use the uniform lane."
+                )
 
     def _auto_preflight(self, *, skip: bool = False, context: str = "forward") -> None:
         """Emit a UserWarning if preflight finds issues (issue #66).
@@ -4515,12 +4811,6 @@ class Simulation:
 
         cpml_thick_lo = [_face_thickness(ax, "lo") for ax in range(3)]
         cpml_thick_hi = [_face_thickness(ax, "hi") for ax in range(3)]
-        # Legacy symmetric scalar kept for readers that treat it as
-        # "nominal CPML thickness on this axis"; per-side checks below
-        # use cpml_thick_lo / cpml_thick_hi.
-        cpml_thick_xyz = [
-            max(cpml_thick_lo[i], cpml_thick_hi[i]) for i in range(3)
-        ]
 
         # P1.1: Floquet + non-uniform mesh — no silent fallback allowed
         if self._floquet_ports and self._dz_profile is not None:
@@ -5493,7 +5783,6 @@ class Simulation:
 
         from rfx.simulation import (
             run as _run,
-            make_source,
             make_probe,
             make_port_source,
             make_wire_port_sources,

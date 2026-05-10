@@ -27,7 +27,9 @@ REFERENCE DATA
 --------------
 `06_openems_ref/openems_msl_notch_ref.npz` contains (f, s11, s21)
 from running the upstream tutorial verbatim. rfx aims to reproduce
-the notch frequency within 5 % and the overall S11/S21 shape.
+the notch frequency within the script gate and report the overall S11/S21
+shape. This script uses the non-uniform wire-port shadow lane; it is a
+crossval reporter, not the source of a broad claims-bearing MSL-port envelope.
 
 MESH
 ----
@@ -156,7 +158,7 @@ x_shift = -dom_x_lo       # physical x → rfx x: add x_shift
 y_shift = -dom_y_lo
 
 # =============================================================================
-# rfx simulation — proper 2-port S-matrix via new port direction API
+# rfx simulation — nonuniform wire-port 2-port S-matrix reporter
 # =============================================================================
 # Now that rfx's nonuniform wire-port S-matrix supports off-diagonal
 # entries (S21/S12) via direction-aware wave decomposition, we can do

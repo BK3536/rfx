@@ -78,8 +78,16 @@ def run_openems_cavity() -> float:
 
     Uses the same cavity dimensions and comparable resolution to rfx.
     """
-    from CSXCAD.CSXCAD import ContinuousStructure
-    from openEMS.openEMS import openEMS
+    csxcad = pytest.importorskip(
+        "CSXCAD.CSXCAD",
+        reason="CSXCAD/openEMS is required for this external cross-validation gate.",
+    )
+    openems_mod = pytest.importorskip(
+        "openEMS.openEMS",
+        reason="openEMS is required for this external cross-validation gate.",
+    )
+    ContinuousStructure = csxcad.ContinuousStructure
+    openEMS = openems_mod.openEMS
 
     unit = 1e-3  # mm
     a_mm = CAVITY_A / unit  # 100 mm
@@ -150,6 +158,14 @@ def run_openems_cavity() -> float:
 @pytest.mark.slow
 def test_rfx_vs_openems_cavity():
     """rfx and openEMS should agree on TM110 resonance within 0.5%."""
+    pytest.importorskip(
+        "CSXCAD.CSXCAD",
+        reason="CSXCAD/openEMS is required for this external cross-validation gate.",
+    )
+    pytest.importorskip(
+        "openEMS.openEMS",
+        reason="openEMS is required for this external cross-validation gate.",
+    )
     f_rfx = run_rfx_cavity()
     f_oems = run_openems_cavity()
 

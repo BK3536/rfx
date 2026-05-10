@@ -46,6 +46,9 @@ it exposes.
 
 - The current claims-bearing reference lane is the **uniform Cartesian Yee RF
   workflow**.
+- S-parameter APIs are port-family-specific: lumped/wire ports use
+  `run(compute_s_params=True)`, MSL ports use `compute_msl_s_matrix()`, and
+  waveguide ports use `compute_waveguide_s_matrix()`.
 - Non-uniform graded-z, distributed, Floquet/Bloch, ADI, and subgridding paths
   need to be read through the support-boundary lens, not as blanket guarantees.
 - Prefer the newest validated crossval-backed workflow pages when choosing a

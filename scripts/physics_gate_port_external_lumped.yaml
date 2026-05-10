@@ -1,0 +1,82 @@
+name: rfx-physics-gate-port-external-lumped
+description: "Broad-E5 external-reference shard: lumped_port narrow openEMS comparison + readiness"
+tags: [rfx, physics-gate, port-external, lumped, sparameter-validation]
+resources:
+  cluster: remilab-c0
+  preset: gpu-rtx4090
+image: nvcr.io/nvidia/jax:24.10-py3
+env:
+  PYTHONUNBUFFERED: "1"
+  XLA_PYTHON_CLIENT_PREALLOCATE: "false"
+  HDF5_USE_FILE_LOCKING: "FALSE"
+  LANG: "C.UTF-8"
+mount:
+  /root/workspace/: volume://remilab-fs/personal-workspaces/
+run: |-
+  set -euo pipefail
+  cd /root/workspace/byungkwan-workspace/research/rfx
+  git config --global --add safe.directory /root/workspace/byungkwan-workspace/research/rfx || true
+  echo "=== rfx port external-reference shard: lumped_port ==="
+  echo "=== expected state ==="
+  echo "This shard fails until the broad-E5 external/reference evidence is present and marked broad_e5_passed."
+  echo "=== working tree ==="
+  git status --short || true
+  echo "=== install runtime dependencies (openEMS + repo path, no editable install) ==="
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -qq openems python3-openems
+  python -m pip install -q "scipy>=1.11" "h5py>=3.8" "matplotlib>=3.7"
+  export RFX_REPO_ROOT="/root/workspace/byungkwan-workspace/research/rfx"
+  export RFX_SYSTEM_SITE_DIR="/usr/lib/python3/dist-packages"
+  export RFX_SITECUSTOMIZE_DIR="/tmp/rfx-openems-sitecustomize"
+  mkdir -p "$RFX_SITECUSTOMIZE_DIR"
+  python -c "from pathlib import Path; import os; Path(os.environ['RFX_SITECUSTOMIZE_DIR'], 'sitecustomize.py').write_text('import os\nimport sys\n\nsystem_site = os.environ.get(\"RFX_SYSTEM_SITE_DIR\")\nif system_site and system_site not in sys.path:\n    sys.path.append(system_site)\n')"
+  export PYTHONPATH="$RFX_SITECUSTOMIZE_DIR:$RFX_REPO_ROOT:${PYTHONPATH:-}"
+  python -c "import numpy, rfx; from CSXCAD.CSXCAD import ContinuousStructure; from openEMS.openEMS import openEMS; print('dependency_probe=passed', 'numpy', numpy.__version__, 'rfx', getattr(rfx, '__version__', 'unknown')); _ = (ContinuousStructure, openEMS)"
+  output_root="${RFX_PORT_EXTERNAL_OUTPUT_ROOT:-.omx/physics-gate/vessl-2026-05-09-port-external}"
+  out="$output_root/port_external_lumped"
+  mkdir -p "$out"
+  echo "=== dependency audit ==="
+  set +e
+  python scripts/diagnostics/check_external_solver_dependencies.py \
+    --output-dir "$out/dependencies"
+  dependency_audit_rc=$?
+  set -e
+  echo "external_solver_dependency_audit_rc=$dependency_audit_rc"
+  echo "=== narrow rfx/openEMS comparison ==="
+  set +e
+  timeout "${RFX_LUMPED_OPENEMS_TIMEOUT:-900}" \
+    python scripts/diagnostics/build_lumped_openems_sparameter_comparison.py \
+      --output-dir "$out/lumped_openems_generic_comparison"
+  comparison_rc=$?
+  set -e
+  echo "lumped_openems_comparison_rc=$comparison_rc"
+  if [ "$comparison_rc" -eq 0 ]; then
+    cat "$out/lumped_openems_generic_comparison/lumped_openems_generic_sparameter_comparison.json"
+  else
+    echo "narrow lumped/openEMS comparison failed or timed out; broad-E5 shard remains blocked"
+  fi
+  echo "=== multi-case rfx/openEMS PEC-box sweep ==="
+  set +e
+  timeout "${RFX_LUMPED_OPENEMS_SWEEP_TIMEOUT:-1500}" \
+    python scripts/diagnostics/build_lumped_openems_sweep_comparison.py \
+      --output-dir "$out/lumped_openems_sweep_comparison"
+  sweep_rc=$?
+  set -e
+  echo "lumped_openems_sweep_rc=$sweep_rc"
+  if [ "$sweep_rc" -eq 0 ]; then
+    cat "$out/lumped_openems_sweep_comparison/lumped_openems_sweep_sparameter_comparison.json"
+  else
+    echo "multi-case lumped/openEMS sweep failed or timed out; broad-E5 shard remains blocked"
+  fi
+  echo "=== broad-E5 readiness report ==="
+  set +e
+  python scripts/diagnostics/report_port_external_reference_shard.py \
+    --family lumped_port \
+    --output-dir "$out" \
+    --require-complete
+  rc=$?
+  set -e
+  echo "=== shard result ==="
+  cat "$out/lumped_port_external_reference_shard.json"
+  exit "$rc"

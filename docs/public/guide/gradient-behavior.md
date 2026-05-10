@@ -138,7 +138,7 @@ def fd_check(objective, eps_r, cell=(10, 5, 5), h=1e-2):
 
 ## Supported Gradient Paths
 
-| Physics path | Gradient flows? | Validated? |
+| Physics path | Gradient flows? | Evidence framing |
 |-------------|----------------|------------|
 | Yee E/H update | Yes | FD < 2% |
 | CPML absorber | Yes (but not useful) | — |
@@ -150,5 +150,5 @@ def fd_check(objective, eps_r, cell=(10, 5, 5), h=1e-2):
 | Lorentz/Drude dispersion | Yes | Needs validation |
 | Lossy conductors (sigma) | Yes | Needs validation |
 | Magnetic materials (mu_r) | Yes | Needs validation |
-| S-parameter extraction | Yes | Verified via optimizer convergence |
+| S-parameter extraction | Yes | AD contract only unless paired with the port-family E-level envelope in the S-parameter support matrix |
 | Subpixel smoothing | No (precomputed, not in AD graph) | N/A |

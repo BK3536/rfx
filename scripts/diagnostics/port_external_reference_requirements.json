@@ -1,0 +1,204 @@
+{
+  "version": 1,
+  "created_at": "2026-05-09",
+  "purpose": "Machine-readable external-reference backlog for broad E5 RF port/S-parameter validation. This is separate from the release slow-shard manifest: it tracks which port families still need external solver/reference evidence, preferably as independent VESSL jobs.",
+  "completion_rule": "Broad all-port E5 requires every required family to have current_status=broad_e5_passed, required_scope=broad_e5, existing reference/YAML paths present, at least one passed E4/E4-enabling external S-parameter comparison artifact, at least one passed broad E4 external S-parameter comparison artifact that is not merely E4-enabling/narrow, and at least one passed broad-E5 mesh/frequency/geometry envelope artifact.",
+  "requirements": [
+    {
+      "family": "lumped_port",
+      "primitive": "add_port(extent=None)",
+      "required_for_e5": true,
+      "required_scope": "broad_e5",
+      "current_status": "narrow_external_reference_broad_blocked",
+      "recommended_vessl_shard_id": "port_external_lumped",
+      "recommended_reference": "openEMS or equivalent full-wave two-port lumped/cavity reference with matched/open/short/load cases",
+      "existing_artifacts": [
+        ".omx/physics-gate/2026-05-09-m14-lumped-replay-sweep/lumped_replay_sweep_report.json",
+        ".omx/physics-gate/2026-05-09-m33-lumped-openems-generic-comparison/lumped_openems_generic_sparameter_comparison.json",
+        ".omx/physics-gate/2026-05-10-m47-lumped-openems-sweep-comparison/lumped_openems_sweep_sparameter_comparison.json",
+        ".omx/physics-gate/vessl-2026-05-10-lumped-openems-parallel-v5/lumped_openems_sweep_aggregate/lumped_openems_sweep_sparameter_comparison.json"
+      ],
+      "missing_evidence": [
+        "broad external full-wave calibrated lumped-port S11/S21 reference over matched/open/short/load cases",
+        "mesh/frequency/geometry envelope against the external reference"
+      ],
+      "notes": "M13/M14 provide analytic extractor and internal replay/passivity evidence. M33 adds one narrow rfx/openEMS two-port PEC-box magnitude comparison, and M47 adds a three-case rfx/openEMS PEC-box position sweep. M56 reran those three M47 PEC-box cases as independent VESSL jobs and aggregated their passed case artifacts; this validates the slow-sim parallel path but does not broaden the physics envelope beyond narrow PEC-box E4-enabling evidence. Broad calibrated-port E5 still requires matched/open/short/load external fixtures and a larger mesh/frequency/geometry envelope.",
+      "existing_vessl_yamls": [
+        "scripts/physics_gate_port_external_lumped.yaml"
+      ],
+      "external_comparison_artifacts": [
+        ".omx/physics-gate/2026-05-09-m33-lumped-openems-generic-comparison/lumped_openems_generic_sparameter_comparison.json",
+        ".omx/physics-gate/2026-05-10-m47-lumped-openems-sweep-comparison/lumped_openems_sweep_sparameter_comparison.json",
+        ".omx/physics-gate/vessl-2026-05-10-lumped-openems-parallel-v5/lumped_openems_sweep_aggregate/lumped_openems_sweep_sparameter_comparison.json"
+      ],
+      "broad_e5_envelope_artifacts": []
+    },
+    {
+      "family": "wire_port",
+      "primitive": "add_port(extent=...)",
+      "required_for_e5": true,
+      "required_scope": "broad_e5",
+      "current_status": "blocked_absolute_external_reference",
+      "recommended_vessl_shard_id": "port_external_wire",
+      "recommended_reference": "openEMS/HFSS/Meep probe-fed patch or two-probe reference with absolute S11/S21 calibration",
+      "existing_artifacts": [
+        ".omx/physics-gate/2026-05-09-m15-wire-replay-sweep/wire_replay_sweep_report.json",
+        ".omx/physics-gate/2026-05-09-m32-patch-wire-openems/patch_wire_openems_generic_sparameter_comparison.json"
+      ],
+      "missing_evidence": [
+        "external absolute S-matrix calibration reference",
+        "nonuniform/shadow path promotion evidence if public claims include it"
+      ],
+      "notes": "M12/M15 replay the current midpoint-cell convention. M32 adds a narrow probe-fed patch OpenEMS S11 magnitude comparison, but broad absolute wire-port calibration remains blocked.",
+      "existing_vessl_yamls": [
+        "scripts/physics_gate_port_external_wire.yaml"
+      ],
+      "external_comparison_artifacts": [
+        ".omx/physics-gate/2026-05-09-m32-patch-wire-openems/patch_wire_openems_generic_sparameter_comparison.json"
+      ],
+      "broad_e5_envelope_artifacts": []
+    },
+    {
+      "family": "microstrip_line_port",
+      "primitive": "add_msl_port(...)",
+      "required_for_e5": true,
+      "required_scope": "broad_e5",
+      "current_status": "narrow_e5_passed_broad_blocked",
+      "recommended_vessl_shard_id": "port_external_msl_broad",
+      "recommended_reference": "openEMS/Palace MSL thru/notch/eigenmode/nonuniform envelope",
+      "existing_artifacts": [
+        ".omx/physics-gate/2026-05-09-m10-msl-e5-narrow-envelope/msl_envelope_report.json",
+        ".omx/physics-gate/vessl-2026-05-09-m3/msl_openems_reference/msl_openems_comparison.json"
+      ],
+      "existing_vessl_yamls": [
+        "scripts/vessl_physics_gate_m3-msl-openems-reference.yaml",
+        "scripts/vessl_physics_gate_m5-msl-envelope.yaml",
+        "scripts/physics_gate_port_external_msl_broad.yaml"
+      ],
+      "missing_evidence": [
+        "eigenmode MSL source/extractor validation",
+        "nonuniform MSL S-parameter validation",
+        "broader substrate/mesh/frequency envelope"
+      ],
+      "notes": "Existing openEMS evidence supports the narrow laplace/quasi-TEM lane only.",
+      "external_comparison_artifacts": [
+        ".omx/physics-gate/2026-05-09-m29-msl-openems-generic-comparison/msl_openems_generic_sparameter_comparison.json"
+      ],
+      "broad_e5_envelope_artifacts": []
+    },
+    {
+      "family": "rectangular_waveguide_port",
+      "primitive": "add_waveguide_port(...)",
+      "required_for_e5": true,
+      "required_scope": "broad_e5",
+      "current_status": "narrow_e5_passed_broad_blocked",
+      "recommended_vessl_shard_id": "port_external_waveguide_broad",
+      "recommended_reference": "MEEP/OpenEMS/Palace branch, multimode, and nonuniform waveguide reference set",
+      "existing_artifacts": [
+        ".omx/physics-gate/2026-05-09-m4-waveguide-envelope/waveguide_envelope_report.json"
+      ],
+      "missing_evidence": [
+        "branch/T-junction or arbitrary multiport waveguide reference geometry",
+        "multi-mode normalize=True envelope",
+        "broad nonuniform waveguide-port S-parameters"
+      ],
+      "notes": "Existing M4 evidence is E5-narrow for the rectangular-guide envelope with external MEEP/OpenEMS/Palace references.",
+      "existing_vessl_yamls": [
+        "scripts/physics_gate_port_external_waveguide_broad.yaml"
+      ],
+      "external_comparison_artifacts": [
+        ".omx/physics-gate/2026-05-09-m30-waveguide-wr90-generic-comparison/wr90_external_generic_sparameter_comparison.json"
+      ],
+      "broad_e5_envelope_artifacts": []
+    },
+    {
+      "family": "coaxial_port",
+      "primitive": "add_coaxial_port(...)",
+      "required_for_e5": true,
+      "required_scope": "broad_e5",
+      "current_status": "narrow_gap_external_reference_broad_blocked",
+      "recommended_vessl_shard_id": "port_external_coaxial",
+      "recommended_reference": "openEMS/HFSS coaxial matched/short/open/load reference at a calibrated TEM reference plane",
+      "existing_artifacts": [
+        ".omx/physics-gate/2026-05-09-m22-coaxial-tem-geometry-sweep/coaxial_tem_oracle_report.json",
+        ".omx/physics-gate/2026-05-09-m21-coaxial-gap-vi-dump/coaxial_gap_vi_replay.json",
+        ".omx/physics-gate/2026-05-10-m35-coaxial-gap-openems-generic-comparison/coaxial_gap_openems_generic_sparameter_comparison.json",
+        ".omx/physics-gate/2026-05-10-m61-coaxial-tem-reference-plane-oracle/coaxial_tem_oracle_report.json",
+        ".omx/physics-gate/2026-05-10-m62-coaxial-cartesian-plane-adapter-oracle/coaxial_tem_oracle_report.json",
+        ".omx/physics-gate/2026-05-10-m63-coaxial-real-dft-plane-replay/coaxial_reference_plane_dft_replay.json",
+        ".omx/physics-gate/2026-05-10-m63-coaxial-real-dft-plane-replay/coaxial_reference_plane_dft_dump.npz",
+        ".omx/physics-gate/2026-05-10-m64-coaxial-reference-plane-sweep/coaxial_reference_plane_dft_sweep.json",
+        ".omx/physics-gate/2026-05-10-m65-coaxial-tem-signal-path-audit/coaxial_tem_signal_path_audit.json",
+        ".omx/physics-gate/2026-05-10-m66-coaxial-outer-shell-fix/coaxial_tem_signal_path_audit.json",
+        ".omx/physics-gate/2026-05-10-m66-coaxial-outer-shell-fix/coaxial_reference_plane_dft_sweep.json",
+        ".omx/physics-gate/2026-05-10-m67-coaxial-tem-plane-source-prototype/coaxial_tem_plane_source_prototype.json",
+        ".omx/physics-gate/2026-05-10-m67-coaxial-tem-plane-source-prototype/coaxial_tem_plane_source_prototype_dump.npz"
+      ],
+      "missing_evidence": [
+        "usable real-FDTD calibrated TEM V/I extraction at a coaxial reference plane for the public add_coaxial_port API; M67 is only a distributed TEM plane-source prototype",
+        "broad external full-wave coax reference over matched/short/open/load cases",
+        "mesh/frequency/geometry envelope against the external reference"
+      ],
+      "notes": "M21 is gap replay only. M35 adds a narrow rfx/openEMS coaxial-gap magnitude comparison, but it is not calibrated TEM reference-plane evidence and does not promote add_coaxial_port(...) S-parameters. M61 adds a synthetic TEM reference-plane V/I extraction oracle with max_s11_abs_diff 1.04e-8, reducing the calibration-helper layer. M62 adds a synthetic Cartesian field-plane adapter oracle with max_s11_abs_diff 8.29e-6, reducing the DFT-plane adapter layer. M63 captures real FDTD DFT planes and routes them through the M61/M62 replay path, but it is blocked by near-zero transverse TEM V/I at the sampled plane and plane/gap S11 max_abs_diff 4.996. M64 sweeps 11 z-planes from pin tip to gap and finds 0 passed planes; best plane/gap S11 max_abs_diff is 0.628 and best signal score is 1.25e-16, so the blocker is not just a single-plane selection issue. M65 identifies structural causes: axial/normal source component and no PEC annular outer-shell cells in the sampled default stamp. M66 fixes the annular outer-shell stamp (12/32 shell-band cells now PEC), but the axial source blocker remains and the post-fix sweep still has 0/11 passing planes with best plane/gap S11 max_abs_diff 0.996. M67 demonstrates a distributed transverse E/M plane-source prototype can produce nonzero TEM-plane V/I with max |S11| 0.168, but it is not the public add_coaxial_port API, not an external full-wave reference, and not a broad E5 envelope.",
+      "existing_vessl_yamls": [
+        "scripts/physics_gate_port_external_coaxial.yaml"
+      ],
+      "external_comparison_artifacts": [
+        ".omx/physics-gate/2026-05-10-m35-coaxial-gap-openems-generic-comparison/coaxial_gap_openems_generic_sparameter_comparison.json"
+      ],
+      "broad_e5_envelope_artifacts": []
+    },
+    {
+      "family": "floquet_port",
+      "primitive": "add_floquet_port(...)",
+      "required_for_e5": true,
+      "required_scope": "broad_e5",
+      "current_status": "analytic_slab_fdtd_passed_external_blocked",
+      "recommended_vessl_shard_id": "port_external_floquet",
+      "recommended_reference": "RCWA and/or external full-wave FSS/RIS reference over scan angle and polarization",
+      "existing_artifacts": [
+        ".omx/physics-gate/2026-05-09-m18-floquet-modal-oracles/floquet_modal_oracle_report.json",
+        ".omx/physics-gate/2026-05-09-m20-floquet-field-dump/floquet_modal_replay.json",
+        ".omx/physics-gate/2026-05-10-m38-floquet-empty-space-analytic-comparison/floquet_empty_space_analytic_sparameter_comparison.json",
+        ".omx/physics-gate/2026-05-10-m44-floquet-periodic-slab-oracles/floquet_periodic_slab_oracle_report.json",
+        ".omx/physics-gate/2026-05-10-m49-floquet-slab-analytic-comparison/floquet_slab_analytic_sparameter_comparison.json"
+      ],
+      "missing_evidence": [
+        "RCWA or external full-wave FSS/RIS reference",
+        "scan-angle/polarization/frequency envelope",
+        "promoted modal S-parameter API if public claim is desired"
+      ],
+      "notes": "M18/M20 cover modal bookkeeping and one small FDTD DFT-plane replay. M38 adds an empty-space analytic-null S11 comparison. M44 adds a non-empty homogeneous dielectric-slab analytic oracle. M49 adds a narrow non-empty rfx-FDTD slab/raw-DFT-plane vs analytic reflection magnitude comparison (E2/E3-enabling only). RCWA/external periodic-cell evidence remains blocked.",
+      "existing_vessl_yamls": [
+        "scripts/physics_gate_port_external_floquet.yaml"
+      ],
+      "external_comparison_artifacts": [],
+      "broad_e5_envelope_artifacts": []
+    },
+    {
+      "family": "generalized_planar_ports",
+      "primitive": "planned stripline/CPW/microstrip-coax launch",
+      "required_for_e5": true,
+      "required_scope": "broad_e5",
+      "current_status": "analytic_quasitem_oracles_only_planned",
+      "recommended_vessl_shard_id": "port_external_generalized_planar",
+      "recommended_reference": "openEMS/Palace quasi-TEM planar-port reference set per family",
+      "existing_artifacts": [
+        ".omx/physics-gate/2026-05-10-m39-generalized-planar-quasitem-oracles/generalized_planar_quasitem_oracle_report.json",
+        ".omx/physics-gate/2026-05-10-m45-generalized-planar-quasitem-sweeps/generalized_planar_quasitem_oracle_report.json"
+      ],
+      "missing_evidence": [
+        "implemented generalized planar-port API",
+        "raw V/I dump replay",
+        "external cross-solver reference",
+        "mesh/frequency/substrate-cell envelope"
+      ],
+      "notes": "M39/M45 add quasi-TEM analytic Z0/beta point checks plus parameter-sweep envelope templates for representative stripline/CPW/microstrip-launch families. The API is still planned and not promoted; raw V/I replay, external references, and E5 envelopes remain blocked.",
+      "existing_vessl_yamls": [
+        "scripts/physics_gate_port_external_generalized_planar.yaml"
+      ],
+      "external_comparison_artifacts": [],
+      "broad_e5_envelope_artifacts": []
+    }
+  ]
+}

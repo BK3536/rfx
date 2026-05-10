@@ -10,6 +10,8 @@ The canonical contracts live in:
 
 - `docs/guides/support_matrix.md`
 - `docs/guides/reference_lane_contract.md`
+- `docs/guides/physics_validation_evidence_rule.md`
+- `docs/guides/sparameter_support_matrix.md`
 
 ## Status legend
 
@@ -26,10 +28,27 @@ The canonical contracts live in:
 |---|---|
 | grid / runner | uniform Cartesian Yee |
 | boundaries | PEC, CPML, bounded UPML |
-| sources | point/current, lumped port, wire port, waveguide port |
-| observables | probes, flux, calibrated S-parameters, Harminv resonance, benchmarked NTFF |
+| sources | point/current, lumped port, wire port, specialized microstrip-line port, waveguide port |
+| observables | probes, flux, Harminv resonance, benchmarked NTFF, and S-parameters only through the evidence envelopes below |
 | materials | isotropic linear, conductive, validated dispersive subsets |
 | workflows | cavity, waveguide, patch antenna, simple scattering, resonance, de-embedding, selected differentiable proxy objectives |
+
+## S-parameter calculation surfaces
+
+| Primitive | Calculation API | Result schema | Evidence / status |
+|---|---|---|---|
+| `add_port(..., extent=None)` | `run(compute_s_params=True)` | `Result.s_params`, `Result.freqs` | E2/E3-limited on uniform Yee; M13 analytic open/short/matched/RLC extractor oracles, M11 real raw V/I replay, and M14 internal replay/passivity sweep; no broad E5 envelope |
+| `add_port(..., extent=...)` | `run(compute_s_params=True)` | `Result.s_params`, `Result.freqs` | E2/E3/E4 partial for probe-fed resonance plus M12 midpoint V/I replay and M15 internal replay/passivity sweep; absolute S-matrix calibration caveated; nonuniform is shadow |
+| lumped/wire `add_port(...)` | `forward(port_s11_freqs=...)` | `ForwardResult.s_params`, `ForwardResult.freqs` S11 vectors | E0/E1 uniform single-device AD contract |
+| `add_msl_port(...)` | `compute_msl_s_matrix()` | `MSLSMatrixResult.S`, `.freqs`, `.Z0`, `.beta` | E5-narrow / eigenmode-blocked; thru-line + cv06b + stored-openEMS smoke + real raw 3-probe replay evidence; eigenmode/nonuniform remain blocked |
+| `add_waveguide_port(...)` | `compute_waveguide_s_matrix()` | `WaveguideSMatrixResult.s_params`, `.freqs`, metadata | E5-narrow strongest current port; battery + cv11 gates only within documented rectangular-guide envelope |
+| `add_coaxial_port(...)` | none promoted | none | E2-sweep/E3-gap / no-sparam: M22 analytic TEM geometry sweep plus M21 diagnostic coaxial-gap V/I replay; unsupported for high-level S-parameters |
+| `add_floquet_port(...)` | none promoted | none promoted | E2/E3-modal / no-promoted-api: M18 synthetic modal oracle plus M20 real-FDTD DFT-plane replay; no RCWA/external crossval or promoted modal S-parameter calculator |
+| sources, TFSF, probes, flux monitors | none | field/flux/time observables | not ports; no impedance or reference plane |
+
+`run(compute_s_params=True)` is intentionally narrow: it populates
+`Result.s_params` only for lumped/wire `add_port(...)` families. Use the
+specialized calculator for MSL or waveguide ports.
 
 ## Shadow lane
 
@@ -40,7 +59,10 @@ Current shadow surface:
 - current-main finite-ground-plane patch crossval evidence
 
 Shadow means the code is real and may be tested, but the lane is not yet the
-public claims-bearing baseline.
+public claims-bearing baseline. For S-parameters, finite arrays or successful
+pytest runs are not sufficient evidence by themselves; claims must cite an
+E-level, command/script, numeric gate, artifact path, external-reference
+status, and mesh/frequency/geometry envelope.
 
 ## Experimental lanes
 
@@ -49,7 +71,7 @@ public claims-bearing baseline.
 | SBP-SAT / subgridding | research lane, not a claims-bearing baseline |
 | ADI | separate accuracy/stability envelope |
 | distributed | scaling lane |
-| Floquet/Bloch | promotion pending explicit benchmark ladder |
+| Floquet/Bloch | M18 synthetic modal oracle and M20 real-FDTD DFT-plane replay exist; promotion pending analytic/RCWA/external benchmark ladder |
 
 ## Unsupported combinations
 
@@ -61,7 +83,10 @@ Unsupported combinations must hard-fail.
 | NTFF + nonuniform | hard-fail |
 | DFT planes + nonuniform | hard-fail |
 | TFSF + nonuniform | hard-fail |
-| Waveguide ports + nonuniform | hard-fail |
+| Waveguide ports + nonuniform | shadow / restricted: only documented `compute_waveguide_s_matrix(normalize=True)` single-mode path; otherwise hard-fail |
+| Lumped-port S-parameters + nonuniform | hard-fail |
+| `compute_msl_s_matrix()` + nonuniform | hard-fail |
+| Coaxial port + nonuniform | hard-fail |
 | Lumped RLC + nonuniform | hard-fail |
 
 ## Promotion rule
@@ -72,6 +97,5 @@ present:
 1. support-matrix entry
 2. explicit source / observable contract where relevant
 3. unit and integration tests
-4. benchmark or convergence evidence
+4. analytic, dump-replay, external-solver, benchmark, or convergence evidence
 5. docs, examples, and API wording aligned to the promoted scope
-

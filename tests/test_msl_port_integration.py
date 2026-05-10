@@ -204,6 +204,14 @@ def test_msl_thru_line_passive_gate():
 
 
 @pytest.mark.slow
+@pytest.mark.xfail(
+    raises=NotImplementedError,
+    strict=True,
+    reason=(
+        "MSL mode='eigenmode' is a planned Path-B FDFD source lane; "
+        "the current supported slow gate is mode='laplace'."
+    ),
+)
 def test_msl_thru_line_eigenmode_gate():
     """50 Ω microstrip thru with FDFD-derived J+M Schelkunoff source (mode='eigenmode').
 

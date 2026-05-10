@@ -91,7 +91,10 @@ def run_rfx_cavity() -> float:
 
 def run_meep_cavity() -> float:
     """Run Meep PEC cavity and return resonant frequency via Harminv."""
-    import meep as mp
+    mp = pytest.importorskip(
+        "meep",
+        reason="Meep is required for this external cross-validation gate.",
+    )
 
     unit = 0.01  # 1 meep unit = 1 cm
     Lx = CAVITY_A / unit
@@ -136,6 +139,10 @@ def run_meep_cavity() -> float:
 @pytest.mark.slow
 def test_rfx_vs_meep_cavity():
     """rfx and Meep should agree on TM110 resonance within 0.5%."""
+    pytest.importorskip(
+        "meep",
+        reason="Meep is required for this external cross-validation gate.",
+    )
     f_rfx = run_rfx_cavity()
     f_meep = run_meep_cavity()
 
@@ -164,7 +171,10 @@ def test_rfx_vs_meep_dielectric_loaded():
     Insert εr=4 slab in center third of x-axis.
     Both simulators should find the same shifted resonance.
     """
-    import meep as mp
+    mp = pytest.importorskip(
+        "meep",
+        reason="Meep is required for this external cross-validation gate.",
+    )
 
     eps_slab = 4.0
 

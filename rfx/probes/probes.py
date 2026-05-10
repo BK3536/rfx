@@ -11,6 +11,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
+from rfx.core.dft_utils import dft_window_weight as _dft_window_weight
 from rfx.grid import Grid
 from rfx.sources.sources import LumpedPort
 
@@ -206,6 +207,45 @@ class SParamProbe(NamedTuple):
     total_steps: int
     window: str
     window_alpha: float
+
+
+class PortVIReplayBundle(NamedTuple):
+    """Raw V/I phasors captured alongside a production S-matrix.
+
+    ``voltages`` and ``currents`` use shape
+    ``(n_driven, n_ports, n_freqs)`` and follow the public
+    ``rfx.port_vi_dump`` replay convention: voltage is positive into the DUT,
+    current is positive into the DUT, and
+    ``S[receiver_port, driven_port, frequency_index]``.
+    """
+
+    s_params: jnp.ndarray
+    freqs: jnp.ndarray
+    voltages: object
+    currents: object
+    port_impedances: object
+    port_names: tuple[str, ...]
+    driven_port_indices: tuple[int, ...]
+
+
+class WirePortVIReplayBundle(NamedTuple):
+    """Raw wire-port V/I phasors captured with a production S-matrix.
+
+    Wire ports currently use a legacy midpoint-cell calibration convention:
+    diagonal S11 is referenced to the total port impedance, while off-diagonal
+    wave decomposition uses per-cell impedance.  The raw fields are therefore
+    stored in the FDTD-sign convention consumed by the independent wire replay
+    diagnostic, not the generic ``rfx.port_vi_dump`` convention.
+    """
+
+    s_params: jnp.ndarray
+    freqs: jnp.ndarray
+    raw_voltages_fdt: object
+    raw_currents: object
+    port_impedances: object
+    port_cell_counts: object
+    port_names: tuple[str, ...]
+    driven_port_indices: tuple[int, ...]
 
 
 def init_sparam_probe(
@@ -418,9 +458,6 @@ def update_dft_plane_probe(
     weight = _dft_window_weight(state.step, probe.total_steps, probe.window, probe.window_alpha)
     new_acc = probe.accumulator + plane[None, :, :] * phase[:, None, None] * dt * weight
     return probe._replace(accumulator=new_acc)
-
-
-from rfx.core.dft_utils import dft_window_weight as _dft_window_weight
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +745,8 @@ def extract_s_matrix(
     debye_spec: tuple[list, list[jnp.ndarray]] | None = None,
     lorentz_spec: tuple[list, list[jnp.ndarray]] | None = None,
     pec_mask: object | None = None,
-) -> jnp.ndarray:
+    return_vi_dump: bool = False,
+) -> jnp.ndarray | PortVIReplayBundle:
     """Extract full N-port S-parameter matrix.
 
     Runs N simulations (one per excitation port).  All port impedances
@@ -728,12 +766,17 @@ def extract_s_matrix(
     debye_spec, lorentz_spec : optional ``(poles, masks)`` tuples
         Used to rebuild dispersive coefficients after port loading is
         folded into ``materials``.
+    return_vi_dump : bool
+        When True, return a :class:`PortVIReplayBundle` containing the
+        production S-matrix plus raw V/I phasors in the public replay
+        convention.
 
     Returns
     -------
-    S : (n_ports, n_ports, n_freqs) complex array
-        ``S[i, j, :]`` is S_{i+1, j+1} (response at port *i* when
-        exciting port *j*).
+    S or PortVIReplayBundle
+        By default, ``S[i, j, :]`` is S_{i+1, j+1} (response at port *i*
+        when exciting port *j*). With ``return_vi_dump=True``, the bundle also
+        carries replayable raw phasors.
     """
     import numpy as np
     from rfx.core.yee import init_state, update_h
@@ -771,6 +814,14 @@ def extract_s_matrix(
         lorentz = init_lorentz(lorentz_poles, mats, dt, mask=lorentz_masks)
 
     S = np.zeros((n_ports, n_ports, n_freqs), dtype=np.complex64)
+    raw_v = (
+        np.zeros((n_ports, n_ports, n_freqs), dtype=np.complex128)
+        if return_vi_dump else None
+    )
+    raw_i = (
+        np.zeros((n_ports, n_ports, n_freqs), dtype=np.complex128)
+        if return_vi_dump else None
+    )
 
     for j in range(n_ports):
         state = init_state(grid.shape)
@@ -833,10 +884,30 @@ def extract_s_matrix(
 
         # Response at each receiving port i
         for i in range(n_ports):
+            if return_vi_dump:
+                # ``port_voltage`` returns the FDTD-sign voltage used by the
+                # legacy extractor (V = -E·dx).  The portable dump schema uses
+                # voltage positive into the DUT, so store ``-V``.  With current
+                # positive into the DUT, the independent replay formula
+                # a=(V+ZI)/2√Z, b=(V−ZI)/2√Z reproduces the production
+                # decomposition below exactly.
+                raw_v[j, i, :] = np.asarray(-sprobes[i].v_dft, dtype=np.complex128)
+                raw_i[j, i, :] = np.asarray(sprobes[i].i_dft, dtype=np.complex128)
             z0_i = ports[i].impedance
             b_i = (-sprobes[i].v_dft - z0_i * sprobes[i].i_dft) / (
                 2.0 * np.sqrt(z0_i))
             S[i, j, :] = np.array(b_i / safe_a)
+
+    if return_vi_dump:
+        return PortVIReplayBundle(
+            s_params=S,
+            freqs=jnp.asarray(freqs),
+            voltages=raw_v,
+            currents=raw_i,
+            port_impedances=np.asarray([p.impedance for p in ports], dtype=np.float64),
+            port_names=tuple(f"port_{idx}" for idx in range(n_ports)),
+            driven_port_indices=tuple(range(n_ports)),
+        )
 
     return S
 
@@ -917,7 +988,8 @@ def extract_s_matrix_wire(
     debye_spec: tuple[list, list[jnp.ndarray]] | None = None,
     lorentz_spec: tuple[list, list[jnp.ndarray]] | None = None,
     pec_mask: object | None = None,
-) -> jnp.ndarray:
+    return_vi_dump: bool = False,
+) -> jnp.ndarray | WirePortVIReplayBundle:
     """Extract full N-port S-parameter matrix for WirePort objects.
 
     Runs N simulations (one per excitation port).  All port impedances
@@ -935,10 +1007,16 @@ def extract_s_matrix_wire(
     boundary : "pec" or "cpml"
     cpml_axes : axes string for CPML (default "xyz")
     debye_spec, lorentz_spec : optional dispersion specs
+    return_vi_dump : bool
+        When True, return a :class:`WirePortVIReplayBundle` containing the
+        production S-matrix plus raw midpoint-cell V/I phasors for independent
+        replay of the current wire-port convention.
 
     Returns
     -------
-    S : (n_ports, n_ports, n_freqs) complex array
+    S or WirePortVIReplayBundle
+        By default, returns an S-matrix. With ``return_vi_dump=True``, the
+        bundle also carries raw phasors and per-port wire cell counts.
     """
     import numpy as np
     from rfx.core.yee import init_state, update_h
@@ -946,7 +1024,7 @@ def extract_s_matrix_wire(
     from rfx.materials.debye import init_debye
     from rfx.materials.lorentz import init_lorentz
     from rfx.simulation import _update_e_with_optional_dispersion
-    from rfx.sources.sources import setup_wire_port, apply_wire_port
+    from rfx.sources.sources import setup_wire_port, apply_wire_port, _wire_port_cells
 
     n_ports = len(ports)
     n_freqs = len(freqs)
@@ -976,6 +1054,18 @@ def extract_s_matrix_wire(
         lorentz = init_lorentz(lorentz_poles, mats, dt, mask=lorentz_masks)
 
     S = np.zeros((n_ports, n_ports, n_freqs), dtype=np.complex64)
+    raw_v = (
+        np.zeros((n_ports, n_ports, n_freqs), dtype=np.complex128)
+        if return_vi_dump else None
+    )
+    raw_i = (
+        np.zeros((n_ports, n_ports, n_freqs), dtype=np.complex128)
+        if return_vi_dump else None
+    )
+    port_cell_counts = np.asarray(
+        [max(len(_wire_port_cells(grid, p)), 1) for p in ports],
+        dtype=np.int64,
+    )
 
     for j in range(n_ports):
         state = init_state(grid.shape)
@@ -1032,6 +1122,9 @@ def extract_s_matrix_wire(
         z_in_j = -sprobes[j].v_dft / safe_i  # measured input impedance
 
         for i in range(n_ports):
+            if return_vi_dump:
+                raw_v[j, i, :] = np.asarray(sprobes[i].v_dft, dtype=np.complex128)
+                raw_i[j, i, :] = np.asarray(sprobes[i].i_dft, dtype=np.complex128)
             z0_i = ports[i].impedance
             if i == j:
                 # S11: reflection from input impedance
@@ -1040,16 +1133,27 @@ def extract_s_matrix_wire(
                 )
             else:
                 # Sij: wave decomposition with negated V (FDTD sign)
-                from rfx.sources.sources import _wire_port_cells
-                n_cells_i = len(_wire_port_cells(grid, ports[i]))
+                n_cells_i = int(port_cell_counts[i])
                 z0_cell_i = z0_i / max(n_cells_i, 1)
                 b_i = (-sprobes[i].v_dft - z0_cell_i * sprobes[i].i_dft) / (
                     2.0 * np.sqrt(z0_cell_i))
-                n_cells_j = len(_wire_port_cells(grid, ports[j]))
+                n_cells_j = int(port_cell_counts[j])
                 z0_cell_j = z0_j / max(n_cells_j, 1)
                 a_j = (-sprobes[j].v_dft + z0_cell_j * sprobes[j].i_dft) / (
                     2.0 * np.sqrt(z0_cell_j))
                 safe_a = jnp.where(jnp.abs(a_j) > 0, a_j, jnp.ones_like(a_j))
                 S[i, j, :] = np.array(b_i / safe_a)
+
+    if return_vi_dump:
+        return WirePortVIReplayBundle(
+            s_params=S,
+            freqs=jnp.asarray(freqs),
+            raw_voltages_fdt=raw_v,
+            raw_currents=raw_i,
+            port_impedances=np.asarray([p.impedance for p in ports], dtype=np.float64),
+            port_cell_counts=port_cell_counts,
+            port_names=tuple(f"wire_{idx}" for idx in range(n_ports)),
+            driven_port_indices=tuple(range(n_ports)),
+        )
 
     return S

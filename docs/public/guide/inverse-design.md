@@ -50,7 +50,8 @@ def objective(eps_r):
 ### 1) Post-processed S-parameter objectives
 
 These are convenient when you already have a completed simulation result with
-S-parameters:
+S-parameters. They do not upgrade the physics claim of that result; use the
+port-family evidence envelope before treating the objective as claims-bearing.
 
 ```python
 from rfx import minimize_s11, maximize_s21, target_impedance, maximize_bandwidth

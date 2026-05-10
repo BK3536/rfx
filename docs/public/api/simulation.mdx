@@ -48,7 +48,7 @@ Key constructor arguments:
 | `add(shape, material=...)` | fill geometry with a named material | geometry should stay explicit in public examples |
 | `add_material(...)` | register a named material | use this for custom dielectric / conductive / dispersive media |
 | `add_source(...)` | inject a soft point source | preferred for ringdown and Harminv work |
-| `add_port(...)` | add a lumped or wire port | use for impedance-normalized S-parameters |
+| `add_port(...)` | add a lumped or wire port | use for impedance-normalized S-parameters within the lumped/wire evidence envelope |
 | `add_probe(...)` | record a point observable | feeds `Result.find_resonances()` |
 | `add_ntff_box(...)` | accumulate far-field data | use only when the radiation workflow is benchmarked |
 | `preflight(strict=False)` | validate setup before a long run | use this when you want deterministic warnings/errors on unsupported combinations |
@@ -61,7 +61,9 @@ result = sim.run(n_steps=8000, compute_s_params=True)
 ```
 
 `run()` returns a tuple-like `Result` object with fields such as
-`time_series`, `s_params`, `freqs`, `ntff_data`, and `grid`.
+`time_series`, `s_params`, `freqs`, `ntff_data`, and `grid`. For S-parameter
+claims, use the port-family evidence levels in the support matrix rather than
+the presence of `s_params` alone.
 
 ## Automation entry points
 

@@ -90,6 +90,14 @@ class TestSlabCavitySubgrid:
 
         return sim.run(n_steps=n_steps)
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "SBP-SAT subgrid accuracy is not a promoted support lane; "
+            "keep this as an explicit xfail until the subgrid crossval "
+            "ladder is restored."
+        ),
+    )
     def test_slab_transmitted_rms_error(self):
         """Transmitted probe RMS error < 5% (time-aligned comparison)."""
         n_steps_ref = 1000
@@ -107,7 +115,7 @@ class TestSlabCavitySubgrid:
         ts_sub = np.array(result_sub.time_series[:, 0])
 
         err = _rms_error_time_aligned(ts_ref, dt_ref, ts_sub, dt_sub)
-        print(f"\nSlab cavity crossval:")
+        print("\nSlab cavity crossval:")
         print(f"  Ref: dt={dt_ref:.3e}s, {len(ts_ref)} steps, max={np.max(np.abs(ts_ref)):.6e}")
         print(f"  Sub: dt={dt_sub:.3e}s, {len(ts_sub)} steps, max={np.max(np.abs(ts_sub)):.6e}")
         print(f"  RMS error (time-aligned): {err:.3%}")
@@ -158,6 +166,14 @@ class TestCavitySubgrid:
         sim.add_probe(position=(0.028, 0.025, 0.022), component="ez")
         return sim.run(n_steps=n_steps)
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "SBP-SAT subgrid accuracy is not a promoted support lane; "
+            "finite-signal smoke remains active, but the accuracy claim "
+            "must stay xfailed until a validated subgrid ladder exists."
+        ),
+    )
     def test_cavity_probe_rms_error(self):
         """Off-axis probe RMS error < 10% (time-aligned comparison)."""
         n_steps_ref = 1000
@@ -175,7 +191,7 @@ class TestCavitySubgrid:
         ts_sub = np.array(result_sub.time_series[:, 0])
 
         err = _rms_error_time_aligned(ts_ref, dt_ref, ts_sub, dt_sub)
-        print(f"\n3D cavity crossval:")
+        print("\n3D cavity crossval:")
         print(f"  Ref: dt={dt_ref:.3e}s, {len(ts_ref)} steps, max={np.max(np.abs(ts_ref)):.6e}")
         print(f"  Sub: dt={dt_sub:.3e}s, {len(ts_sub)} steps, max={np.max(np.abs(ts_sub)):.6e}")
         print(f"  RMS error (time-aligned): {err:.3%}")

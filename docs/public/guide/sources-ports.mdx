@@ -125,6 +125,10 @@ Supported string shortcuts: `"ex"`, `"ey"`, `"ez"`, `"circular"` / `"rhcp"`, `"l
 ## Lumped port (`add_port`)
 
 A single-cell port with a resistive load equal to `impedance`. Enables S-parameter extraction referenced to that impedance.
+Its current public physics envelope is E2/E3-limited: analytic
+open/short/matched/RLC extractor oracles plus a narrow real raw V/I replay of
+the uniform-Yee extractor and a small internal replay/passivity sweep, not a
+broad calibrated RF-port E5 claim.
 
 ```python
 sim.add_port(
@@ -163,7 +167,7 @@ sim.add_port(
 )
 ```
 
-The `extent` parameter turns the lumped port into a `WirePort`. S-parameters are extracted using JIT-DFT voltage/current integrals over the wire span. Wire ports are more accurate for feed structures that are several cells long.
+The `extent` parameter turns the lumped port into a `WirePort`. S-parameters are extracted using voltage/current integrals over the wire span. The current evidence is strongest for probe-fed resonance workflows; M12 adds raw midpoint V/I replay and M15 adds an internal replay/passivity sweep of the current extractor convention, but absolute S-matrix calibration remains caveated until analytic/external gates and broader sweep envelopes define a narrower E5 claim.
 
 !!! warning
     `extent` must be aligned with the `component` direction. For `component="ez"`, `extent`
@@ -171,9 +175,51 @@ The `extent` parameter turns the lumped port into a `WirePort`. S-parameters are
 
 ---
 
+## Microstrip-line port (`add_msl_port`)
+
+`add_msl_port(...)` is the specialized full-strip microstrip-line port. It is
+not routed through `run(compute_s_params=True)`. Use the dedicated calculator:
+
+```python
+sim.add_msl_port(
+    position=(0.004, 0.003, 0.0),
+    width=0.5e-3,
+    height=0.25e-3,
+    direction="+x",
+    impedance=50.0,
+    name="in",
+)
+sim.add_msl_port(
+    position=(0.016, 0.003, 0.0),
+    width=0.5e-3,
+    height=0.25e-3,
+    direction="-x",
+    impedance=50.0,
+    name="out",
+)
+
+msl = sim.compute_msl_s_matrix(n_freqs=101, num_periods=20)
+S = msl.S          # (n_ports, n_ports, n_freqs)
+Z0 = msl.Z0        # (n_ports, n_freqs)
+```
+
+This path uses 3-probe numerical de-embedding. It is a uniform-lane
+specialized calculator; non-uniform, subgridded, ADI, TFSF, and mixed-port
+simulations are rejected instead of silently returning `None`.
+Current evidence is E5-narrow / eigenmode-blocked: the thru-line gate, cv06b
+notch gate, stored-openEMS smoke comparison, and real raw 3-probe replay define
+a narrow uniform-Yee envelope, but broad claims require eigenmode and
+nonuniform support.
+
+---
+
 ## Waveguide port (`add_waveguide_port`)
 
-Modal waveguide excitation for rectangular waveguide S-matrix extraction. Injects a specific TE/TM mode and decomposes the reflected/transmitted fields into the same modal basis.
+Modal waveguide excitation for rectangular waveguide S-matrix extraction.
+Injects a specific TE/TM mode and decomposes the reflected/transmitted fields
+into the same modal basis. Current evidence is E5-narrow within the documented
+rectangular-guide gates; branch/T-junction claims remain deferred until
+per-port reference geometry is validated.
 
 ```python
 sim.add_waveguide_port(
@@ -189,7 +235,25 @@ sim.add_waveguide_port(
 )
 ```
 
-After running, access calibrated S-parameters:
+For a full multi-port S-matrix, use `compute_waveguide_s_matrix(...)`:
+
+```python
+sim.add_waveguide_port(
+    x_position=0.09,
+    y_range=(0.0, 0.023),
+    z_range=(0.0, 0.010),
+    direction="-x",
+    f0=10e9,
+    bandwidth=0.5,
+    name="port2",
+)
+
+wg = sim.compute_waveguide_s_matrix(num_periods=30, normalize=True)
+S = wg.s_params    # (n_ports, n_ports, n_freqs)
+```
+
+For a single waveguide port, `run(...)` can expose per-port diagnostic
+calibrated quantities:
 
 ```python
 result = sim.run(n_steps=3000)
@@ -220,11 +284,14 @@ sim.add_tfsf_source(
 
 ## Summary table
 
-| Method | Use case | S-params |
+| Method | Use case | S-params / evidence framing |
 |---|---|---|
-| `add_source()` | Resonance, visualisation | No |
-| `add_polarized_source()` | Antenna radiation, polarimetry | No |
-| `add_port(extent=None)` | Lumped-port S-params | Yes |
-| `add_port(extent=...)` | Wire / probe-feed S-params | Yes |
-| `add_waveguide_port()` | Modal waveguide S-matrix | Yes |
-| `add_tfsf_source()` | RCS, scattering, plane-wave | No |
+| `add_source()` | Resonance, visualisation | No: not a port |
+| `add_polarized_source()` | Antenna radiation, polarimetry | No: not a port |
+| `add_port(extent=None)` | Lumped-port S-params | `run(compute_s_params=True)`; E2/E3-limited |
+| `add_port(extent=...)` | Wire / probe-feed S-params | `run(compute_s_params=True)`; E2/E3/E4 partial, calibration caveated |
+| `add_msl_port()` | Full-strip microstrip-line S-matrix | `compute_msl_s_matrix()`; E5-narrow / eigenmode-blocked under uniform-Yee gates |
+| `add_waveguide_port()` | Modal waveguide S-matrix | `compute_waveguide_s_matrix()`; E5-narrow under rectangular-guide gates |
+| `add_coaxial_port()` | Diagnostic coaxial geometry/source helper | E2-sweep/E3-gap / no-sparam: analytic TEM geometry sweep plus diagnostic coaxial-gap V/I replay only; unsupported for high-level S-params |
+| `add_floquet_port()` | Experimental periodic / unit-cell excitation | E2/E3-modal / no-promoted-api: synthetic modal oracle plus real-FDTD DFT-plane replay only; no promoted S-matrix calculator |
+| `add_tfsf_source()` | RCS, scattering, plane-wave | No: not a port |

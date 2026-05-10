@@ -40,3 +40,6 @@ logs/
 **/*.gif
 **/benchmark_results.json
 examples/*.json
+
+# VESSL cluster log mirrors (operational; not physics evidence)
+docs/vessl-logs/

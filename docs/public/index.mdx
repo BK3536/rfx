@@ -32,8 +32,8 @@ otherwise explicitly.
 | **Material fitting** | Debye/Lorentz fitting plus differentiable FDTD-based refinement from S-parameters |
 | **Non-uniform mesh + auto-config** | Graded z-profiles and `auto_configure()` for thin substrates and broadband setups (shadow lane) |
 | **Harminv resonance** | High-Q mode extraction with sub-bin frequency precision |
-| **Multi-mode + Floquet ports** | Rectangular TE/TM eigenmodes and phased-array unit-cell workflows with Bloch periodic BC (Floquet is experimental) |
-| **Cross-validated** | Published 5-case RF validation plus earlier cavity/waveguide cross-validation vs. Meep and OpenEMS |
+| **Multi-mode + Floquet ports** | Rectangular TE/TM eigenmodes and phased-array unit-cell workflows with Bloch periodic BC (Floquet has E2/E3-modal helper evidence only) |
+| **Cross-solver evidence** | Published 5-case RF validation plus earlier cavity/waveguide checks vs. Meep and OpenEMS; claim strength follows the evidence hierarchy |
 | **500+ tests** | Pytest suite with lint + CPU/GPU coverage and advanced-example validation scripts |
 
 ---
@@ -122,8 +122,8 @@ Simulation ──► add_material / add / add_port / add_probe / add_ntff_box
 - [Sources & Ports](guide/sources-ports/) — point sources, lumped/wire ports, multi-mode waveguide ports, Floquet ports
 - [Probes & S-Parameters](guide/probes-sparams/) — DFT probes, S-matrix, Harminv, de-embedding, Smith chart
 - [Non-Uniform Mesh](guide/nonuniform-mesh/) — graded z-profiles for thin-substrate structures (shadow qualification lane)
-- [Waveguide Ports](guide/waveguide-ports/) — multi-mode waveguide S-matrix with TE/TM eigenmodes
-- [Floquet Ports](guide/floquet-ports/) — phased-array unit-cell analysis with Bloch BC (experimental lane)
+- [Waveguide Ports](guide/waveguide-ports/) — TE/TM waveguide S-matrix with explicit evidence envelope
+- [Floquet Ports](guide/floquet-ports/) — phased-array unit-cell analysis with Bloch BC (experimental lane; E2/E3-modal helper evidence only)
 
 ### Analysis & Validation
 

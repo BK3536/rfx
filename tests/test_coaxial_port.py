@@ -16,6 +16,14 @@ from rfx.sources.coaxial_port import (
     PTFE_EPS_R,
     SMA_OUTER_RADIUS,
     SMA_PIN_RADIUS,
+    coaxial_load_reflection,
+    coaxial_tem_capacitance_per_m,
+    coaxial_tem_characteristic_impedance,
+    coaxial_tem_inductance_per_m,
+    coaxial_tem_phase_constant,
+    coaxial_tem_reference_plane_s11,
+    coaxial_tem_reference_plane_vi,
+    coaxial_tem_reference_plane_vi_from_cartesian_plane,
     make_coaxial_port_source,
     setup_coaxial_port,
 )
@@ -109,6 +117,7 @@ def test_setup_coaxial_port_stamps_pin_dielectric_and_gap_conductivity():
 
     pin_idx = grid.position_to_index((0.010, 0.010, 0.0125))
     ptfe_idx = grid.position_to_index((0.0110, 0.010, 0.0125))
+    shell_idx = grid.position_to_index((0.0120, 0.010, 0.0125))
     free_idx = grid.position_to_index((0.0140, 0.010, 0.0125))
     gap_idx = grid.position_to_index(port.position)
 
@@ -118,11 +127,173 @@ def test_setup_coaxial_port_stamps_pin_dielectric_and_gap_conductivity():
     assert float(stamped.eps_r[ptfe_idx]) == pytest.approx(PTFE_EPS_R)
     assert float(stamped.sigma[ptfe_idx]) == pytest.approx(0.0)
 
+    assert float(stamped.eps_r[shell_idx]) == pytest.approx(1.0)
+    assert float(stamped.sigma[shell_idx]) >= PEC_SIGMA
+
     assert float(stamped.eps_r[free_idx]) == pytest.approx(1.0)
     assert float(stamped.sigma[free_idx]) == pytest.approx(0.0)
 
     sigma_port = 1.0 / (port.impedance * grid.dx)
     assert float(stamped.sigma[gap_idx]) >= sigma_port
+
+
+def test_coaxial_tem_analytic_helpers_match_closed_form_identities():
+    z0 = coaxial_tem_characteristic_impedance(
+        SMA_PIN_RADIUS,
+        SMA_OUTER_RADIUS,
+        PTFE_EPS_R,
+    )
+    c_per_m = coaxial_tem_capacitance_per_m(
+        SMA_PIN_RADIUS,
+        SMA_OUTER_RADIUS,
+        PTFE_EPS_R,
+    )
+    l_per_m = coaxial_tem_inductance_per_m(SMA_PIN_RADIUS, SMA_OUTER_RADIUS)
+
+    assert z0 == pytest.approx((l_per_m / c_per_m) ** 0.5)
+    # Standard PTFE-filled SMA dimensions are close to a 50-ohm line.
+    assert z0 == pytest.approx(48.6, rel=0.03)
+
+
+def test_coaxial_tem_phase_and_load_reflection_oracles():
+    import numpy as np
+    from rfx.grid import C0
+
+    freqs = np.array([1.0e9, 2.0e9, 3.0e9])
+    beta = np.asarray(coaxial_tem_phase_constant(freqs, eps_r=PTFE_EPS_R))
+    expected_beta = 2.0 * np.pi * freqs * np.sqrt(PTFE_EPS_R) / C0
+    np.testing.assert_allclose(beta, expected_beta, rtol=2e-7, atol=0.0)
+
+    z0 = coaxial_tem_characteristic_impedance(
+        SMA_PIN_RADIUS,
+        SMA_OUTER_RADIUS,
+        PTFE_EPS_R,
+    )
+    gamma_matched = complex(coaxial_load_reflection(z0, z0))
+    gamma_short = complex(coaxial_load_reflection(0.0, z0))
+    gamma_open = complex(coaxial_load_reflection(np.inf, z0))
+    gamma_25 = complex(coaxial_load_reflection(25.0, z0))
+
+    assert gamma_matched == pytest.approx(0.0 + 0.0j, abs=1e-7)
+    assert gamma_short == pytest.approx(-1.0 + 0.0j, abs=1e-7)
+    assert gamma_open == pytest.approx(1.0 + 0.0j, abs=1e-7)
+    assert gamma_25.real < 0.0
+
+
+def test_coaxial_tem_reference_plane_vi_recovers_synthetic_tem_fields():
+    import numpy as np
+
+    inner = SMA_PIN_RADIUS
+    outer = SMA_OUTER_RADIUS
+    eps_r = PTFE_EPS_R
+    z0 = coaxial_tem_characteristic_impedance(inner, outer, eps_r)
+    radial_positions = np.linspace(inner, outer, 4097)
+    h_radius = 0.5 * (inner + outer)
+    phi = np.linspace(0.0, 2.0 * np.pi, 65, endpoint=False)
+    gamma = np.asarray([0.0 + 0.0j, -0.35 + 0.2j, 0.25 - 0.1j])
+    incident_voltage = np.asarray([1.0 + 0.0j, 0.8 - 0.1j, 0.7 + 0.2j])
+    voltage = incident_voltage * (1.0 + gamma)
+    current = incident_voltage * (1.0 - gamma) / z0
+    e_radial = voltage[:, None] / (
+        radial_positions[None, :] * np.log(outer / inner)
+    )
+    h_phi = np.broadcast_to(
+        (current / (2.0 * np.pi * h_radius))[:, None],
+        (current.size, phi.size),
+    )
+
+    extracted = coaxial_tem_reference_plane_vi(
+        radial_positions,
+        e_radial,
+        h_phi,
+        h_sample_radius_m=h_radius,
+        inner_radius=inner,
+        outer_radius=outer,
+        eps_r=eps_r,
+    )
+    s11 = coaxial_tem_reference_plane_s11(extracted.voltage, extracted.current, z0)
+
+    np.testing.assert_allclose(extracted.voltage, voltage, rtol=2e-7, atol=2e-7)
+    np.testing.assert_allclose(extracted.current, current, rtol=2e-15, atol=2e-15)
+    np.testing.assert_allclose(s11, gamma, rtol=3e-7, atol=3e-7)
+
+
+def test_coaxial_tem_reference_plane_cartesian_adapter_recovers_tem_fields():
+    import numpy as np
+
+    inner = SMA_PIN_RADIUS
+    outer = SMA_OUTER_RADIUS
+    eps_r = PTFE_EPS_R
+    z0 = coaxial_tem_characteristic_impedance(inner, outer, eps_r)
+    center_u = 0.0
+    center_v = 0.0
+    span = 2.35e-3
+    u = np.linspace(-span, span, 601)
+    v = np.linspace(-span, span, 601)
+    uu, vv = np.meshgrid(u, v, indexing="ij")
+    rr = np.hypot(uu - center_u, vv - center_v)
+    cos_phi = np.divide(uu - center_u, rr, out=np.zeros_like(rr), where=rr > 0.0)
+    sin_phi = np.divide(vv - center_v, rr, out=np.zeros_like(rr), where=rr > 0.0)
+    nonzero_r = rr > 0.0
+
+    gamma = np.asarray([0.0 + 0.0j, -0.2 + 0.35j])
+    incident_voltage = np.asarray([1.0 + 0.0j, 0.7 - 0.15j])
+    voltage = incident_voltage * (1.0 + gamma)
+    current = incident_voltage * (1.0 - gamma) / z0
+    e_radial = np.zeros((gamma.size,) + rr.shape, dtype=np.complex128)
+    h_phi = np.zeros_like(e_radial)
+    e_radial[:, nonzero_r] = voltage[:, None] / (
+        rr[nonzero_r][None, :] * np.log(outer / inner)
+    )
+    h_phi[:, nonzero_r] = current[:, None] / (2.0 * np.pi * rr[nonzero_r][None, :])
+    e_u = e_radial * cos_phi
+    e_v = e_radial * sin_phi
+    h_u = -h_phi * sin_phi
+    h_v = h_phi * cos_phi
+
+    extracted = coaxial_tem_reference_plane_vi_from_cartesian_plane(
+        u,
+        v,
+        e_u,
+        e_v,
+        h_u,
+        h_v,
+        center_u_m=center_u,
+        center_v_m=center_v,
+        inner_radius=inner,
+        outer_radius=outer,
+        eps_r=eps_r,
+        radial_positions_m=np.linspace(inner, outer, 257),
+        h_sample_radius_m=0.5 * (inner + outer),
+        azimuthal_angles_rad=np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False),
+    )
+    s11 = coaxial_tem_reference_plane_s11(
+        extracted.vi.voltage,
+        extracted.vi.current,
+        z0,
+    )
+
+    np.testing.assert_allclose(extracted.vi.voltage, voltage, rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(extracted.vi.current, current, rtol=5e-4, atol=5e-4)
+    np.testing.assert_allclose(s11, gamma, rtol=2e-3, atol=2e-3)
+
+
+def test_coaxial_tem_reference_plane_vi_validates_sampling_geometry():
+    import numpy as np
+
+    radial_positions = np.asarray([SMA_PIN_RADIUS, SMA_OUTER_RADIUS])
+    e_radial = np.ones((1, 2))
+    h_phi = np.ones((1, 4))
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        coaxial_tem_reference_plane_vi(
+            radial_positions[::-1],
+            e_radial,
+            h_phi,
+            h_sample_radius_m=1.0e-3,
+            inner_radius=SMA_PIN_RADIUS,
+            outer_radius=SMA_OUTER_RADIUS,
+        )
 
 
 @pytest.mark.parametrize(("face", "position", "component"), FACE_CASES)

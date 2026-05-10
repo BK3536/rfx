@@ -62,7 +62,10 @@ Run:
   python examples/crossval/05_patch_antenna.py
 """
 
-import os, sys, math, time
+import json
+import math
+import os
+import time
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -706,10 +709,11 @@ print(f"  S11 passivity (|S11| ≤ 1):        "
       f"(max|S11|={np.max(np.abs(S11)):.3f})")
 print(f"  Overall:                          {'PASS' if all_ok else 'FAIL'}")
 print()
-print("  FINDING: rfx and OpenEMS agree to within 1 % on the TM010")
-print("  patch resonance and both land within 2–3 % of the Balanis TL")
-print("  analytic value. This is the expected outcome for a well-set-up")
-print("  coarse-mesh FDTD crossval on a finite-GP patch antenna.")
+print(f"  FINDING: rfx and OpenEMS Harminv agree within the coarse-mesh")
+print(f"  gate on the TM010 patch resonance ({rfx_vs_oe_pct:.2f} %, limit")
+print("  20 %), and rfx remains within the Balanis TL analytic tolerance")
+print(f"  ({harminv_err_pct:.2f} %, limit 10 %). This is narrow patch")
+print("  resonance evidence, not broad absolute wire-port S-parameter E5.")
 print()
 print("  Root-cause history (see research note 2026-04-11_crossval12):")
 print("   • Before the ground-plane fix, rfx used `pec_faces={\"z_lo\"}`")
@@ -721,8 +725,8 @@ print("     reflected energy and made the effective cavity larger,")
 print("     shifting the resonance 8 % low (2.231 vs 2.424 GHz).")
 print("   • The two bugs pointed in opposite directions and gave a 17 %")
 print("     inter-tool gap. With both fixed (rfx = explicit finite PEC box")
-print("     BELOW substrate; OpenEMS = PML_8 + 50 mm margin) the gap is")
-print("     under 1 %.")
+print("     BELOW substrate; OpenEMS = PML_8 + 50 mm margin) the remaining")
+print(f"     Harminv gap in this run is {rfx_vs_oe_pct:.2f} %.")
 print()
 print("  NOTES:")
 print("   • Reference tool is OpenEMS (not Meep) because it is the")
@@ -732,3 +736,37 @@ print("     the single-cell port has parasitic reactance — use Harminv for")
 print("     the clean resonance frequency, the S11 dip only as a")
 print("     passivity / local-dip confirmation.")
 print(f"\n  Output: 05_patch_antenna.png")
+
+json_out = os.environ.get("RFX_CROSSVAL05_JSON")
+if json_out:
+    def _complex_pairs(values):
+        return [[float(v.real), float(v.imag)] for v in np.asarray(values).ravel()]
+
+    payload = {
+        "status": "passed" if all_ok else "failed",
+        "claim_scope": (
+            "probe-fed patch resonance cross-validation; useful wire/lumped "
+            "port evidence but not broad calibrated S-parameter E5"
+        ),
+        "analytic_resonance_hz": float(f_resonance_an),
+        "openems_harminv_hz": float(f_res_oe),
+        "openems_s11_dip_hz": float(f_res_oe_s11),
+        "rfx_harminv_hz": float(f_res_harminv),
+        "rfx_s11_dip_hz": float(f_res_rfx),
+        "rfx_vs_openems_harminv_pct": float(rfx_vs_oe_pct),
+        "rfx_internal_pct": float(rfx_internal_pct),
+        "rfx_vs_analytic_pct": float(harminv_err_pct),
+        "rfx_s11_passive": bool(passive),
+        "rfx_s11_max_abs": float(np.max(np.abs(S11))),
+        "rfx_s11_min_db": float(s11_min_dB),
+        "openems_s11_min_db": float(s11_oe_min_dB),
+        "rfx_freqs_hz": [float(v) for v in np.asarray(freqs_hz)],
+        "rfx_s11": _complex_pairs(S11),
+        "openems_freqs_hz": [float(v) for v in np.asarray(freqs_oe_hz)],
+        "openems_s11": _complex_pairs(s11_oe),
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(json_out)), exist_ok=True)
+    with open(json_out, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    print(f"  JSON output: {json_out}")

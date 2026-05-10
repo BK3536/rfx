@@ -1,10 +1,21 @@
 """Excitation sources for FDTD simulation."""
+# ruff: noqa: F401
 
 from rfx.sources.sources import GaussianPulse, add_point_source, add_lumped_port
 from rfx.sources.coaxial_port import (
     CoaxialPort,
+    CoaxialTEMCartesianPlaneVI,
     setup_coaxial_port,
     make_coaxial_port_source,
+    CoaxialTEMReferencePlaneVI,
+    coaxial_load_reflection,
+    coaxial_tem_capacitance_per_m,
+    coaxial_tem_characteristic_impedance,
+    coaxial_tem_inductance_per_m,
+    coaxial_tem_phase_constant,
+    coaxial_tem_reference_plane_vi_from_cartesian_plane,
+    coaxial_tem_reference_plane_s11,
+    coaxial_tem_reference_plane_vi,
     SMA_PIN_RADIUS,
     SMA_OUTER_RADIUS,
     PTFE_EPS_R,

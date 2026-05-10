@@ -188,8 +188,9 @@ automatic differentiation via `jax.grad` is the primary value proposition.
 ### 2.1 Rectangular Waveguide Filter / Coupler Design
 
 rfx has first-class waveguide port support with TE/TM modal excitation and
-S-parameter extraction. Axis-aligned rectangular waveguides map perfectly to
-the Yee grid (no stairstepping), making this the highest-accuracy use case.
+S-parameter extraction. Axis-aligned rectangular waveguides map cleanly to
+the Yee grid; claim strength is E5-narrow only inside the envelope documented
+in `docs/guides/sparameter_support_matrix.md`.
 
 ```python
 sim = Simulation(freq_max=15e9, domain=(0.08, 0.03, 0.015), boundary="cpml")
@@ -202,7 +203,10 @@ sim.add_waveguide_port(x_position=0.075, direction="-x", mode=(1, 0), mode_type=
 
 Lumped ports with configurable impedance and Gaussian pulse excitation allow
 rapid impedance sweep studies. The S-parameter extraction gives reflection
-coefficient (S11) directly.
+coefficient (S11) directly, but the current claim envelope is E2/E3-limited:
+analytic open/short/matched/RLC extractor oracles plus a narrow real raw V/I
+replay of the uniform Yee extractor and a small internal replay/passivity
+sweep. Broad calibrated-port E5 remains blocked.
 
 ```python
 sim.add_port((0.025, 0.025, 0.001), "ez", impedance=50,
@@ -250,7 +254,8 @@ ff = compute_far_field(result.ntff_data, result.ntff_box, ...)
 
 Single-mode TE/TM S-parameter extraction uses modal decomposition at
 waveguide port planes, with optional calibration presets for reference-plane
-de-embedding.
+de-embedding. Use `compute_waveguide_s_matrix(...)`; branch/T-junction claims
+remain deferred until per-port reference geometry is validated.
 
 ### 2.7 Microstrip / Stripline on Planar Substrates
 
@@ -391,7 +396,8 @@ Use `mode="3d"` when:
 
 - The structure varies in all three dimensions.
 - You need full vector field interactions (e.g., patch antenna radiation).
-- Accurate S-parameter extraction requires 3D modal decomposition.
+- S-parameter extraction requires 3D modal decomposition and a documented
+  E-level envelope for the chosen port family.
 
 ### 4.3 Choosing Cell Size (dx)
 
@@ -421,7 +427,8 @@ periods at `freq_max`). Good for quick checks.
 **Field decay criterion (recommended):** Use `until_decay=1e-4` (or `1e-3`
 for faster, coarser results). The solver monitors a field component and stops
 when it decays to the specified fraction of peak amplitude. This is essential
-for accurate frequency-domain quantities (S-parameters, DFT probes).
+for stable frequency-domain quantities (S-parameters, DFT probes), but it is
+not by itself physics validation.
 
 ```python
 result = sim.run(until_decay=1e-4, decay_max_steps=30000)

@@ -1377,7 +1377,13 @@ def apply_waveguide_port_e(state, cfg: WaveguidePortConfig,
     else:
         # "−axis" port emits toward −axis; TFSF boundary sits at x_src + 1.
         e_plane_index = cfg.x_index + 1
-        sign = +1.0
+        # The E-side correction has the same curl sign as the +axis case.
+        # The propagation-direction reversal is already represented by the
+        # mirrored correction plane and the opposite H-side correction above.
+        # Using +1 here launches a weaker negative-direction reference wave
+        # and breaks reciprocal two-port normalization (S12 ≠ S21) even in a
+        # geometrically symmetric guide.
+        sign = -1.0
 
     indexer_e = _plane_indexer(cfg, e_plane_index)
 

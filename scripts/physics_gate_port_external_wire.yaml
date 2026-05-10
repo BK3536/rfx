@@ -1,0 +1,83 @@
+name: rfx-physics-gate-port-external-wire
+description: "Broad-E5 external-reference shard: wire_port patch/openEMS comparison + readiness"
+tags: [rfx, physics-gate, port-external, wire, sparameter-validation]
+resources:
+  cluster: remilab-c0
+  preset: gpu-rtx4090
+image: nvcr.io/nvidia/jax:24.10-py3
+env:
+  PYTHONUNBUFFERED: "1"
+  XLA_PYTHON_CLIENT_PREALLOCATE: "false"
+  HDF5_USE_FILE_LOCKING: "FALSE"
+  LANG: "C.UTF-8"
+mount:
+  /root/workspace/: volume://remilab-fs/personal-workspaces/
+run: |-
+  set -euo pipefail
+  cd /root/workspace/byungkwan-workspace/research/rfx
+  git config --global --add safe.directory /root/workspace/byungkwan-workspace/research/rfx || true
+  echo "=== rfx port external-reference shard: wire_port ==="
+  echo "=== expected state ==="
+  echo "This shard fails until the broad-E5 external/reference evidence is present and marked broad_e5_passed."
+  echo "=== working tree ==="
+  git status --short || true
+  echo "=== install runtime dependencies (openEMS + repo path, no editable install) ==="
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -qq openems python3-openems
+  python -m pip install -q "scipy>=1.11" "h5py>=3.8" "matplotlib>=3.7"
+  export RFX_REPO_ROOT="/root/workspace/byungkwan-workspace/research/rfx"
+  export RFX_SYSTEM_SITE_DIR="/usr/lib/python3/dist-packages"
+  export RFX_SITECUSTOMIZE_DIR="/tmp/rfx-openems-sitecustomize"
+  mkdir -p "$RFX_SITECUSTOMIZE_DIR"
+  python -c "from pathlib import Path; import os; Path(os.environ['RFX_SITECUSTOMIZE_DIR'], 'sitecustomize.py').write_text('import os\nimport sys\n\nsystem_site = os.environ.get(\"RFX_SYSTEM_SITE_DIR\")\nif system_site and system_site not in sys.path:\n    sys.path.append(system_site)\n')"
+  export PYTHONPATH="$RFX_SITECUSTOMIZE_DIR:$RFX_REPO_ROOT:${PYTHONPATH:-}"
+  python -c "import numpy, rfx; from CSXCAD.CSXCAD import ContinuousStructure; from openEMS.openEMS import openEMS; print('dependency_probe=passed', 'numpy', numpy.__version__, 'rfx', getattr(rfx, '__version__', 'unknown')); _ = (ContinuousStructure, openEMS)"
+  output_root="${RFX_PORT_EXTERNAL_OUTPUT_ROOT:-.omx/physics-gate/vessl-2026-05-09-port-external}"
+  out="$output_root/port_external_wire"
+  mkdir -p "$out"
+  echo "=== dependency audit ==="
+  set +e
+  python scripts/diagnostics/check_external_solver_dependencies.py \
+    --output-dir "$out/dependencies"
+  dependency_audit_rc=$?
+  set -e
+  echo "external_solver_dependency_audit_rc=$dependency_audit_rc"
+  echo "=== crossval05 patch rfx/openEMS run ==="
+  crossval_json="$out/crossval05_patch_openems_rfx.json"
+  set +e
+  RFX_CROSSVAL05_JSON="$crossval_json" \
+    timeout "${RFX_WIRE_OPENEMS_TIMEOUT:-1800}" \
+    python examples/crossval/05_patch_antenna.py \
+      > "$out/crossval05.stdout.txt" \
+      2> "$out/crossval05.stderr.txt"
+  crossval_rc=$?
+  set -e
+  echo "$crossval_rc" > "$out/crossval05.rc"
+  echo "crossval05_rc=$crossval_rc"
+  if [ "$crossval_rc" -eq 0 ]; then
+    echo "=== generic patch/wire comparator ==="
+    set +e
+    python scripts/diagnostics/build_patch_openems_wire_sparameter_comparison.py \
+      --crossval-json "$crossval_json" \
+      --output-dir "$out/patch_wire_openems_generic_comparison"
+    comparison_rc=$?
+    set -e
+    echo "patch_wire_openems_comparison_rc=$comparison_rc"
+    if [ "$comparison_rc" -eq 0 ]; then
+      cat "$out/patch_wire_openems_generic_comparison/patch_wire_openems_generic_sparameter_comparison.json"
+    fi
+  else
+    echo "crossval05 failed or timed out; broad-E5 shard remains blocked"
+  fi
+  echo "=== broad-E5 readiness report ==="
+  set +e
+  python scripts/diagnostics/report_port_external_reference_shard.py \
+    --family wire_port \
+    --output-dir "$out" \
+    --require-complete
+  rc=$?
+  set -e
+  echo "=== shard result ==="
+  cat "$out/wire_port_external_reference_shard.json"
+  exit "$rc"

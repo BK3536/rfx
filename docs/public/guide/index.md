@@ -39,7 +39,7 @@ same structure in one place so you can jump directly to the right section.
 | [Sources & Ports](/rfx/guide/sources-ports/) | Soft sources, lumped/wire ports, waveguide ports, and Floquet workflows |
 | [Probes & S-Parameters](/rfx/guide/probes-sparams/) | DFT probes, S-matrix extraction, Harminv, de-embedding, and exports |
 | [Non-Uniform Mesh](/rfx/guide/nonuniform-mesh/) | `dz_profile`, `auto_configure()`, thin-substrate workflow |
-| [Waveguide Ports](/rfx/guide/waveguide-ports/) | Modal waveguide excitation and calibrated multi-mode S-matrix extraction |
+| [Waveguide Ports](/rfx/guide/waveguide-ports/) | Modal waveguide excitation and E-level-bounded S-matrix extraction |
 | [Floquet Ports](/rfx/guide/floquet-ports/) | Bloch-periodic unit-cell workflows for phased and periodic structures |
 
 ### Analysis & Validation

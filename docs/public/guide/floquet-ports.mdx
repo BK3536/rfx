@@ -13,11 +13,17 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Overview
 
-This guide will cover rfx's Floquet port implementation:
+This guide will cover rfx's Floquet port implementation. The surface is
+currently experimental: `add_floquet_port(...)` can configure Bloch-periodic
+unit-cell excitation. M18 adds synthetic specular-TE modal-oracle evidence and M20 adds a
+small real-FDTD DFT-plane replay, but rfx still does **not** promote a
+high-level
+`Simulation.compute_floquet_s_matrix(...)` or `run(compute_s_params=True)`
+Floquet S-parameter calculator.
 
 - **Bloch periodic boundaries** — phase-shifted periodicity for oblique incidence
 - **Floquet mode decomposition** — TE/TM mode expansion at port planes
-- **S-parameter extraction** — reflection and transmission coefficients per Floquet order
+- **Mode diagnostics** — synthetic specular-TE modal bookkeeping has an M18 oracle and one M20 real-FDTD DFT-plane replay; public modal coefficients remain experimental until a validation ladder promotes them
 - **Use cases** — phased-array unit cells, frequency-selective surfaces, metasurface analysis
 
 See [Sources & Ports](../sources-ports/) for the general port framework and [Waveguide Ports](../waveguide-ports/) for rectangular waveguide modes.

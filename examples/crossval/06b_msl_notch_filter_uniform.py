@@ -3,8 +3,10 @@
 This is a sibling to ``06_msl_notch_filter.py`` (which uses non-uniform mesh
 + wire ``add_port`` + graded-σ absorber + Z_probe=1kΩ workaround). 06b
 shows the same notch-filter physics using the **distributed MSL port**
-(``add_msl_port``, validated 2026-05-04 to OpenEMS-class accuracy) on a
-uniform mesh, with no graded-σ absorber.
+(``add_msl_port``) on a uniform mesh, with no graded-σ absorber. Under the
+physics-first evidence taxonomy this is E2-promising: it uses an analytic
+quarter-wave notch and internal MSL gates, but broad E5 claims still require
+raw V/I replay and an external cross-solver envelope.
 
 Rationale:
   - Wire ``add_port(extent=...)`` covers ONE cell transverse to the trace,
@@ -12,13 +14,14 @@ Rationale:
     at both ports sets up a Fabry-Perot comb that masks the stub notch.
   - ``add_msl_port`` covers the FULL trace cross-section with a Laplace-Ez
     source distribution + distributed-σ matched termination + 3-probe
-    de-embedding. F-P ripple is replaced by the simulator noise floor
-    (\|S11\|≈0.10 = -20dB, OpenEMS-class).
+    de-embedding. F-P ripple is reduced to the current narrow-envelope
+    floor (\|S11\|≈0.10 = -20dB); do not call this OpenEMS-class without
+    citing an external rerun or stored reference.
 
 Scope:
-  - Uniform mesh dx=80µm (matches today's validated mesh-conv at 3
-    substrate cells). cv06 uses non-uniform; ``add_msl_port`` is
-    uniform-mesh-validated — non-uniform support is a separate task.
+  - Uniform mesh dx=80µm (the current narrow gate at ~3 substrate cells).
+    cv06 uses non-uniform; ``add_msl_port`` promotion remains uniform-lane
+    only until a separate non-uniform evidence ladder exists.
   - Smaller domain than cv06 (line length 30mm vs 100mm) to keep
     runtime modest.
   - Stub length 12mm (same as cv06) → analytic notch ~3.69 GHz.
@@ -55,7 +58,7 @@ STUB_LEN = 12e-3
 L_LINE = 30e-3        # vs cv06's 100mm
 PORT_MARGIN = 2e-3
 F_MAX = 7e9
-DX = 80e-6            # validated mesh-conv at this cell size
+DX = 80e-6            # current narrow-gate cell size
 
 # Hammerstad-Jensen ε_eff for analytic notch frequency
 u = W_TRACE / H_SUB
