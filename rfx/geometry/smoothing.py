@@ -907,20 +907,25 @@ def kottke_inv_eps_from_occupancy(
         f, jnp.inf, eps_outside_z, n_x, n_y, n_z, is_pec=True,
     )
 
-    # Force-zero interior cells.  Kottke's `(1-f)/eps_out` perpendicular
-    # term remains finite at boundary cells (any f < 1) — for the strict
-    # PEC limit we instead want fully-occupied cells to act as a hard
-    # mirror.  The reference imperative path
-    # (``compute_inv_eps_tensor_diag``, line ~779) does exactly this:
-    # `inv_xx_c = jnp.where(e_inside, 0.0, inv_xx_c)` where
-    # `e_inside = (sdf <= 0.0)` marks cells *inside* the PEC.  For the
-    # occupancy path we don't have an SDF; use a soft sigmoid mask
-    # centered at occ=0.5 (Heaviside projection style — Wang/Lazarov/
-    # Sigmund 2011): cells with occ ≥ ~0.6 get ~zero inv (full PEC),
-    # cells with occ ≤ ~0.4 keep the Kottke output (boundary/vacuum).
-    # The sigmoid is differentiable everywhere so AD flows.
-    smooth_width = 0.01
-    interior_mask = jax.nn.sigmoid((f - 0.5) / smooth_width)
+    # Force-zero interior cells AND dilate the PEC by 1 cell so the
+    # boundary cell acts as a hard mirror.  The reference imperative
+    # path (``compute_inv_eps_tensor_diag``, line ~779) sets
+    # `inv = where(e_inside, 0, inv)` — interior cells are exactly 0;
+    # only the *single* boundary cell at the SDF crossing keeps the
+    # Kottke output.  For the occupancy path we don't have an SDF;
+    # we replicate this by applying a sigmoid Heaviside projection to
+    # the *neighbor-max* occupancy.  Cells whose own occ OR any 6-neighbor
+    # occ exceeds 0.5 get full PEC (interior + 1-cell dilation); cells
+    # with all neighbors at ≤ 0.5 keep their Kottke output.  This
+    # dilation is the AD-smooth analogue of the binary `apply_pec_mask`
+    # `pec_mask & (roll | roll)` rule (which is what the legacy
+    # imperative cross-solver uses for hard `Box(material="pec")`).
+    occ_dilated = f
+    for _axis in range(3):
+        occ_dilated = jnp.maximum(occ_dilated, jnp.roll(f, 1, axis=_axis))
+        occ_dilated = jnp.maximum(occ_dilated, jnp.roll(f, -1, axis=_axis))
+    smooth_width = 0.05
+    interior_mask = jax.nn.sigmoid((occ_dilated - 0.5) / smooth_width)
     inv_xx_c = (1.0 - interior_mask) * inv_xx_c
     inv_yy_c = (1.0 - interior_mask) * inv_yy_c
     inv_zz_c = (1.0 - interior_mask) * inv_zz_c
