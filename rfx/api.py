@@ -19,6 +19,7 @@ Usage
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 import os
 import jax
@@ -103,6 +104,114 @@ class AD_MemoryEstimate(NamedTuple):
     warning: str | None
     ad_segmented_gb: float | None = None
     checkpoint_every: int | None = None
+
+    def to_dict(self) -> dict[str, float | int | None | str]:
+        """Return a stable JSON-serializable AD memory artifact."""
+        return {
+            "forward_gb": float(self.forward_gb),
+            "ad_checkpointed_gb": float(self.ad_checkpointed_gb),
+            "ad_full_gb": float(self.ad_full_gb),
+            "ntff_dft_gb": float(self.ntff_dft_gb),
+            "available_gb": (
+                None if self.available_gb is None else float(self.available_gb)
+            ),
+            "warning": self.warning,
+            "ad_segmented_gb": (
+                None if self.ad_segmented_gb is None else float(self.ad_segmented_gb)
+            ),
+            "checkpoint_every": self.checkpoint_every,
+        }
+
+    def to_json(self, **kwargs: object) -> str:
+        """Serialize the estimate for research-note and CI artifacts."""
+        options = {"indent": 2, "sort_keys": True}
+        options.update(kwargs)
+        return json.dumps(self.to_dict(), **options)
+
+
+class ADMemoryPlan(NamedTuple):
+    """Checkpoint planning result for reverse-mode AD memory.
+
+    ``checkpoint_every`` is the smallest segmented-scan chunk length estimated
+    to fit under ``target_fraction * available_memory_gb``.  ``None`` means the
+    full reverse-mode estimate already fits and segmented checkpointing is not
+    required for memory.
+    """
+
+    n_steps: int
+    available_memory_gb: float
+    target_fraction: float
+    target_memory_gb: float
+    checkpoint_every: int | None
+    selected_estimate: AD_MemoryEstimate
+    full_ad_fits: bool
+    segmented_fits: bool
+    recommendation: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a stable JSON-serializable AD memory plan artifact."""
+        return {
+            "n_steps": int(self.n_steps),
+            "available_memory_gb": float(self.available_memory_gb),
+            "target_fraction": float(self.target_fraction),
+            "target_memory_gb": float(self.target_memory_gb),
+            "checkpoint_every": self.checkpoint_every,
+            "selected_estimate": self.selected_estimate.to_dict(),
+            "full_ad_fits": bool(self.full_ad_fits),
+            "segmented_fits": bool(self.segmented_fits),
+            "recommendation": self.recommendation,
+        }
+
+    def to_json(self, **kwargs: object) -> str:
+        """Serialize the plan for memory-budget and CI artifacts."""
+        options = {"indent": 2, "sort_keys": True}
+        options.update(kwargs)
+        return json.dumps(self.to_dict(), **options)
+
+
+class MeshIntelligenceReport(NamedTuple):
+    """Consolidated mesh/memory preflight summary.
+
+    This is a lightweight user-facing planning object for the
+    "subgrid-like" non-uniform lane: it combines existing preflight
+    advisories with cell-count and AD-memory estimates, including a
+    uniform-fine comparator for non-uniform meshes.
+    """
+    grid_shape: tuple[int, int, int]
+    cells: int
+    uniform_fine_shape: tuple[int, int, int]
+    uniform_fine_cells: int
+    cell_savings_factor: float
+    min_cell_size: float
+    nominal_dx: float
+    uses_nonuniform: bool
+    preflight_issues: tuple[str, ...]
+    ad_memory: AD_MemoryEstimate | None
+    recommendation: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a stable JSON-serializable mesh/memory planning artifact."""
+        return {
+            "grid_shape": list(self.grid_shape),
+            "cells": int(self.cells),
+            "uniform_fine_shape": list(self.uniform_fine_shape),
+            "uniform_fine_cells": int(self.uniform_fine_cells),
+            "cell_savings_factor": float(self.cell_savings_factor),
+            "min_cell_size": float(self.min_cell_size),
+            "nominal_dx": float(self.nominal_dx),
+            "uses_nonuniform": bool(self.uses_nonuniform),
+            "preflight_issues": list(self.preflight_issues),
+            "ad_memory": (
+                None if self.ad_memory is None else self.ad_memory.to_dict()
+            ),
+            "recommendation": self.recommendation,
+        }
+
+    def to_json(self, **kwargs: object) -> str:
+        """Serialize the report for memory-reduction evidence artifacts."""
+        options = {"indent": 2, "sort_keys": True}
+        options.update(kwargs)
+        return json.dumps(self.to_dict(), **options)
 
 
 class Result(NamedTuple):
@@ -5205,10 +5314,15 @@ class Simulation:
         warning = None
         if avail_gb is not None and primary_bytes * to_gb > avail_gb * 0.85:
             label = "segmented" if ad_seg_bytes is not None else "non-checkpointed"
+            action = (
+                "Increase checkpoint_every, reduce grid size, or reduce n_steps."
+                if ad_seg_bytes is not None
+                else "Use plan_ad_memory() to choose checkpoint_every, reduce grid size, or reduce n_steps."
+            )
             warning = (
                 f"AD memory estimate {primary_bytes*to_gb:.2f}GB ({label}) "
                 f"exceeds 85% of {avail_gb:.2f}GB available VRAM. "
-                f"Reduce grid size, reduce n_steps, or lower checkpoint_every."
+                f"{action}"
             )
         return AD_MemoryEstimate(
             forward_gb=forward_bytes * to_gb,
@@ -5219,6 +5333,249 @@ class Simulation:
             warning=warning,
             ad_segmented_gb=(ad_seg_bytes * to_gb) if ad_seg_bytes is not None else None,
             checkpoint_every=checkpoint_every,
+        )
+
+    def plan_ad_memory(
+        self,
+        n_steps: int,
+        available_memory_gb: float,
+        *,
+        target_fraction: float = 0.85,
+    ) -> ADMemoryPlan:
+        """Choose a segmented-AD ``checkpoint_every`` for a memory budget.
+
+        The planner reuses :meth:`estimate_ad_memory` and returns an artifact
+        rather than mutating the simulation.  If ordinary reverse-mode AD already
+        fits under ``target_fraction * available_memory_gb``, the returned
+        ``checkpoint_every`` is ``None``.  Otherwise it returns the smallest
+        chunk length estimated to fit the segmented scan-of-scan memory model.
+        If even ``checkpoint_every=n_steps`` is too large, ``segmented_fits`` is
+        false and the recommendation points back to mesh reduction.
+        """
+        if n_steps <= 0:
+            raise ValueError("n_steps must be positive")
+        if available_memory_gb <= 0:
+            raise ValueError("available_memory_gb must be positive")
+        if not (0.0 < target_fraction <= 1.0):
+            raise ValueError("target_fraction must be in the interval (0, 1]")
+
+        target_memory_gb = float(available_memory_gb) * float(target_fraction)
+        full_estimate = self.estimate_ad_memory(
+            n_steps,
+            available_memory_gb=available_memory_gb,
+        )
+        if full_estimate.ad_full_gb <= target_memory_gb:
+            return ADMemoryPlan(
+                n_steps=int(n_steps),
+                available_memory_gb=float(available_memory_gb),
+                target_fraction=float(target_fraction),
+                target_memory_gb=target_memory_gb,
+                checkpoint_every=None,
+                selected_estimate=full_estimate,
+                full_ad_fits=True,
+                segmented_fits=True,
+                recommendation=(
+                    f"full reverse-mode AD estimate ({full_estimate.ad_full_gb:.2f} GB) "
+                    f"fits within the {target_memory_gb:.2f} GB target; "
+                    "segmented checkpointing is optional for memory"
+                ),
+            )
+
+        best_checkpoint: int | None = None
+        best_estimate: AD_MemoryEstimate | None = None
+        lo, hi = 1, int(n_steps)
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            estimate = self.estimate_ad_memory(
+                n_steps,
+                available_memory_gb=available_memory_gb,
+                checkpoint_every=mid,
+            )
+            segmented_gb = estimate.ad_segmented_gb
+            if segmented_gb is not None and segmented_gb <= target_memory_gb:
+                best_checkpoint = mid
+                best_estimate = estimate
+                hi = mid - 1
+            else:
+                lo = mid + 1
+
+        if best_checkpoint is not None and best_estimate is not None:
+            return ADMemoryPlan(
+                n_steps=int(n_steps),
+                available_memory_gb=float(available_memory_gb),
+                target_fraction=float(target_fraction),
+                target_memory_gb=target_memory_gb,
+                checkpoint_every=best_checkpoint,
+                selected_estimate=best_estimate,
+                full_ad_fits=False,
+                segmented_fits=True,
+                recommendation=(
+                    f"use checkpoint_every={best_checkpoint}: segmented AD estimate "
+                    f"{best_estimate.ad_segmented_gb:.2f} GB fits within the "
+                    f"{target_memory_gb:.2f} GB target"
+                ),
+            )
+
+        largest_chunk_estimate = self.estimate_ad_memory(
+            n_steps,
+            available_memory_gb=available_memory_gb,
+            checkpoint_every=n_steps,
+        )
+        return ADMemoryPlan(
+            n_steps=int(n_steps),
+            available_memory_gb=float(available_memory_gb),
+            target_fraction=float(target_fraction),
+            target_memory_gb=target_memory_gb,
+            checkpoint_every=n_steps,
+            selected_estimate=largest_chunk_estimate,
+            full_ad_fits=False,
+            segmented_fits=False,
+            recommendation=(
+                f"even checkpoint_every={n_steps} is estimated at "
+                f"{largest_chunk_estimate.ad_segmented_gb:.2f} GB, above the "
+                f"{target_memory_gb:.2f} GB target; reduce mesh size, reduce "
+                "n_steps, or use a more aggressive memory-reduction lane"
+            ),
+        )
+
+    def mesh_intelligence_report(
+        self,
+        *,
+        n_steps: int | None = None,
+        checkpoint_every: int | None = None,
+        available_memory_gb: float | None = None,
+        check_ntff: bool = True,
+        check_resolution: bool = True,
+    ) -> MeshIntelligenceReport:
+        """Return a consolidated mesh-quality and memory-planning report.
+
+        The report is intentionally advisory: it reuses ``preflight()``
+        for physics/geometry warnings, reuses ``estimate_ad_memory()``
+        when ``n_steps`` is provided, and adds a uniform-fine comparator
+        that estimates how many cells a globally fine mesh would need if
+        it used the minimum cell size present in any non-uniform profile.
+
+        This is the Stage-1 production-near "subgrid-like" planning
+        surface: it helps users decide whether existing non-uniform mesh
+        plus segmented checkpointing is enough before attempting
+        research-only true subgridding.
+        """
+        import contextlib
+        import io
+
+        if any(
+            p is not None and is_tracer(p)
+            for p in (self._dx_profile, self._dy_profile, self._dz_profile)
+        ):
+            raise ValueError(
+                "mesh_intelligence_report requires concrete mesh profiles; "
+                "tracer-valued mesh-as-design-variable profiles cannot be "
+                "summarized host-side."
+            )
+
+        dx = self._dx or (C0 / self._freq_max / 20.0)
+
+        def _axis_cells(extent: float, profile) -> int:
+            if profile is not None:
+                return int(len(profile)) + 1 + 2 * self._cpml_layers
+            return int(math.ceil(extent / dx)) + 1 + 2 * self._cpml_layers
+
+        grid_shape = (
+            _axis_cells(self._domain[0], self._dx_profile),
+            _axis_cells(self._domain[1], self._dy_profile),
+            _axis_cells(self._domain[2], self._dz_profile),
+        )
+        cells = int(grid_shape[0] * grid_shape[1] * grid_shape[2])
+
+        axis_min = [
+            float(np.min(self._dx_profile)) if self._dx_profile is not None else dx,
+            float(np.min(self._dy_profile)) if self._dy_profile is not None else dx,
+            float(np.min(self._dz_profile)) if self._dz_profile is not None else dx,
+        ]
+        min_cell_size = min(axis_min)
+        uniform_fine_shape = tuple(
+            int(math.ceil(extent / min_cell_size)) + 1 + 2 * self._cpml_layers
+            for extent in self._domain
+        )
+        uniform_fine_cells = int(
+            uniform_fine_shape[0] * uniform_fine_shape[1] * uniform_fine_shape[2]
+        )
+        cell_savings_factor = (
+            float(uniform_fine_cells / cells) if cells > 0 else float("inf")
+        )
+
+        # preflight() prints a summary by design; suppress it so the
+        # report method remains a pure information-returning API.
+        with contextlib.redirect_stdout(io.StringIO()):
+            preflight_issues = tuple(
+                self.preflight(
+                    strict=False,
+                    check_ntff=check_ntff,
+                    check_resolution=check_resolution,
+                    check_ad_memory=False,
+                )
+            )
+
+        ad_memory = None
+        if n_steps is not None:
+            ad_memory = self.estimate_ad_memory(
+                n_steps,
+                available_memory_gb=available_memory_gb,
+                checkpoint_every=checkpoint_every,
+            )
+
+        uses_nonuniform = any(
+            p is not None
+            for p in (self._dx_profile, self._dy_profile, self._dz_profile)
+        )
+        recommendation_parts: list[str] = []
+        if preflight_issues:
+            recommendation_parts.append(
+                f"resolve {len(preflight_issues)} preflight issue(s) before "
+                "trusting physics results"
+            )
+        elif uses_nonuniform and cell_savings_factor >= 2.0:
+            recommendation_parts.append(
+                f"non-uniform mesh is useful here: ~{cell_savings_factor:.1f}x "
+                "fewer cells than a uniform mesh at the finest spacing"
+            )
+        elif uses_nonuniform:
+            recommendation_parts.append(
+                "non-uniform mesh gives limited cell savings; verify that "
+                "the refinement profile is worth the added validation burden"
+            )
+        else:
+            recommendation_parts.append(
+                "uniform mesh: use preflight/memory estimates as baseline; "
+                "consider non-uniform profiles before research-only subgrid"
+            )
+
+        if ad_memory is not None:
+            if checkpoint_every and ad_memory.ad_segmented_gb is not None:
+                recommendation_parts.append(
+                    f"use segmented AD estimate ({ad_memory.ad_segmented_gb:.2f} GB) "
+                    "rather than the legacy step-checkpoint heuristic"
+                )
+            elif ad_memory.warning:
+                recommendation_parts.append(ad_memory.warning)
+            else:
+                recommendation_parts.append(
+                    f"estimated full reverse-mode AD memory is "
+                    f"{ad_memory.ad_full_gb:.2f} GB"
+                )
+
+        return MeshIntelligenceReport(
+            grid_shape=grid_shape,
+            cells=cells,
+            uniform_fine_shape=uniform_fine_shape,
+            uniform_fine_cells=uniform_fine_cells,
+            cell_savings_factor=cell_savings_factor,
+            min_cell_size=float(min_cell_size),
+            nominal_dx=float(dx),
+            uses_nonuniform=uses_nonuniform,
+            preflight_issues=preflight_issues,
+            ad_memory=ad_memory,
+            recommendation="; ".join(recommendation_parts) + ".",
         )
 
     def _validate_simulation_config(self) -> None:
