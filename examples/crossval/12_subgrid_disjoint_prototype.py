@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Crossval 12: disjoint 3-D subgrid prototype diagnostic.
 
-This example exercises the current research-only disjoint subgrid prototype. It
-is not a public ``Simulation.add_refinement`` feature claim and it is not a
-Meep/openEMS cross-solver pass. Guarded one-sided production subgrid crossval
-evidence lives in ``scripts/subgrid_external_crossval_audit.py`` and related
-guarded-envelope artifacts; this disjoint prototype remains research-only.
+This example exercises the disjoint subgrid prototype, which is **research-only**
+and **not long-time energy-stable**. It is not a public
+``Simulation.add_refinement`` feature claim and it is not a Meep/openEMS
+cross-solver pass. The short-window gate below is a research diagnostic, *not* a
+"COMPLETE" or production-ready status: the disjoint topology still grows energy
+over long integration windows and remains outside the validated production
+envelope. Guarded one-sided production subgrid crossval evidence lives in
+``scripts/subgrid_external_crossval_audit.py`` and related guarded-envelope
+artifacts; this disjoint prototype remains research-only.
 
 Run:
     python examples/crossval/12_subgrid_disjoint_prototype.py
@@ -23,7 +27,11 @@ from scripts.stage2_disjoint_full_physics_gate import run_gate
 
 def main() -> int:
     result = run_gate(n_steps=100)
-    print("Crossval 12 disjoint subgrid prototype: PASS")
+    print(
+        "Crossval 12 disjoint subgrid prototype: short-window research gate "
+        "PASS (research-only; NOT a COMPLETE/production status — the disjoint "
+        "topology is not long-time energy-stable)"
+    )
     print(f"  energy max ratio:   {result.max_energy_ratio:.6f}x")
     print(f"  face signal min:    {result.face_signal_min:.6e}")
     print(f"  coarse hole max:    {result.coarse_hole_max:.6e}")
