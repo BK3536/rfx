@@ -766,25 +766,34 @@ def _z_slab_material_coupling_h_3d(
     mats_f,
     config,
     *,
-    use_exterior_z_interfaces: bool = False,
-    use_boundary_terminated_exterior_z_interfaces: bool = False,
-    material_sat_scale: float = 1.0,
-    material_sat_coarse_scale: float = 1.0,
-    material_sat_fine_scale: float = 1.0,
-    material_sat_h_coarse_scale: float = 1.0,
-    material_sat_h_fine_scale: float = 1.0,
-    material_sat_zlo_scale: float = 1.0,
-    material_sat_zhi_scale: float = 1.0,
-    material_sat_h_zlo_scale: float = 1.0,
-    material_sat_h_zhi_scale: float = 1.0,
-    material_sat_pair_a_zlo_scale: float = 1.0,
-    material_sat_pair_b_zlo_scale: float = 1.0,
-    material_sat_zlo_common_trace_projection: str = "dual",
-    material_sat_zhi_common_trace_projection: str = "dual",
-    material_sat_zhi_coarse_eps_blend: float = 0.0,
-    material_sat_face_projection: str = "node_adjoint",
+    opts: SubgridRunOptions = SubgridRunOptions(),
 ):
     """Material-weighted H correction for z-lo/z-hi artificial interfaces."""
+    # Unpack the relevant option fields into same-named locals so the body
+    # below is byte-unchanged from the historical keyword-argument signature.
+    use_exterior_z_interfaces = opts.use_exterior_z_interfaces
+    use_boundary_terminated_exterior_z_interfaces = (
+        opts.use_boundary_terminated_exterior_z_interfaces
+    )
+    material_sat_scale = opts.material_sat_scale
+    material_sat_coarse_scale = opts.material_sat_coarse_scale
+    material_sat_fine_scale = opts.material_sat_fine_scale
+    material_sat_h_coarse_scale = opts.material_sat_h_coarse_scale
+    material_sat_h_fine_scale = opts.material_sat_h_fine_scale
+    material_sat_zlo_scale = opts.material_sat_zlo_scale
+    material_sat_zhi_scale = opts.material_sat_zhi_scale
+    material_sat_h_zlo_scale = opts.material_sat_h_zlo_scale
+    material_sat_h_zhi_scale = opts.material_sat_h_zhi_scale
+    material_sat_pair_a_zlo_scale = opts.material_sat_pair_a_zlo_scale
+    material_sat_pair_b_zlo_scale = opts.material_sat_pair_b_zlo_scale
+    material_sat_zlo_common_trace_projection = (
+        opts.material_sat_zlo_common_trace_projection
+    )
+    material_sat_zhi_common_trace_projection = (
+        opts.material_sat_zhi_common_trace_projection
+    )
+    material_sat_zhi_coarse_eps_blend = opts.material_sat_zhi_coarse_eps_blend
+    material_sat_face_projection = opts.material_sat_face_projection
     ex_c, ey_c, _ez_c, hx_c, hy_c, hz_c = state_c_fields
     ex_f, ey_f, _ez_f, hx_f, hy_f, hz_f = state_f_fields
     ratio = config.ratio
@@ -1172,26 +1181,35 @@ def _z_slab_material_coupling_e_3d(
     mats_f,
     config,
     *,
-    use_exterior_z_interfaces: bool = False,
-    use_boundary_terminated_exterior_z_interfaces: bool = False,
-    material_sat_scale: float = 1.0,
-    material_sat_coarse_scale: float = 1.0,
-    material_sat_fine_scale: float = 1.0,
-    material_sat_e_coarse_scale: float = 1.0,
-    material_sat_e_fine_scale: float = 1.0,
-    material_sat_zlo_scale: float = 1.0,
-    material_sat_zhi_scale: float = 1.0,
-    material_sat_e_zlo_scale: float = 1.0,
-    material_sat_e_zhi_scale: float = 1.0,
-    material_sat_pair_a_zlo_scale: float = 1.0,
-    material_sat_pair_b_zlo_scale: float = 1.0,
-    material_sat_zlo_common_trace_projection: str = "dual",
-    material_sat_zhi_common_trace_projection: str = "dual",
-    material_sat_normal_e_scale: float = 0.0,
-    material_sat_zhi_coarse_eps_blend: float = 0.0,
-    material_sat_face_projection: str = "node_adjoint",
+    opts: SubgridRunOptions = SubgridRunOptions(),
 ):
     """Material-weighted E correction for z-lo/z-hi artificial interfaces."""
+    # Unpack the relevant option fields into same-named locals so the body
+    # below is byte-unchanged from the historical keyword-argument signature.
+    use_exterior_z_interfaces = opts.use_exterior_z_interfaces
+    use_boundary_terminated_exterior_z_interfaces = (
+        opts.use_boundary_terminated_exterior_z_interfaces
+    )
+    material_sat_scale = opts.material_sat_scale
+    material_sat_coarse_scale = opts.material_sat_coarse_scale
+    material_sat_fine_scale = opts.material_sat_fine_scale
+    material_sat_e_coarse_scale = opts.material_sat_e_coarse_scale
+    material_sat_e_fine_scale = opts.material_sat_e_fine_scale
+    material_sat_zlo_scale = opts.material_sat_zlo_scale
+    material_sat_zhi_scale = opts.material_sat_zhi_scale
+    material_sat_e_zlo_scale = opts.material_sat_e_zlo_scale
+    material_sat_e_zhi_scale = opts.material_sat_e_zhi_scale
+    material_sat_pair_a_zlo_scale = opts.material_sat_pair_a_zlo_scale
+    material_sat_pair_b_zlo_scale = opts.material_sat_pair_b_zlo_scale
+    material_sat_zlo_common_trace_projection = (
+        opts.material_sat_zlo_common_trace_projection
+    )
+    material_sat_zhi_common_trace_projection = (
+        opts.material_sat_zhi_common_trace_projection
+    )
+    material_sat_normal_e_scale = opts.material_sat_normal_e_scale
+    material_sat_zhi_coarse_eps_blend = opts.material_sat_zhi_coarse_eps_blend
+    material_sat_face_projection = opts.material_sat_face_projection
     ex_c, ey_c, ez_c, hx_c, hy_c, _hz_c = state_c_fields
     ex_f, ey_f, ez_f, hx_f, hy_f, _hz_f = state_f_fields
     ratio = config.ratio
@@ -1774,31 +1792,10 @@ def run_subgridded_jit(
     ghost_exterior_coarse_shadow_from_fine = (
         opts.ghost_exterior_coarse_shadow_from_fine
     )
-    material_sat_scale = opts.material_sat_scale
-    material_sat_coarse_scale = opts.material_sat_coarse_scale
-    material_sat_fine_scale = opts.material_sat_fine_scale
-    material_sat_e_coarse_scale = opts.material_sat_e_coarse_scale
-    material_sat_e_fine_scale = opts.material_sat_e_fine_scale
-    material_sat_h_coarse_scale = opts.material_sat_h_coarse_scale
-    material_sat_h_fine_scale = opts.material_sat_h_fine_scale
-    material_sat_zlo_scale = opts.material_sat_zlo_scale
-    material_sat_zhi_scale = opts.material_sat_zhi_scale
-    material_sat_e_zlo_scale = opts.material_sat_e_zlo_scale
-    material_sat_e_zhi_scale = opts.material_sat_e_zhi_scale
-    material_sat_h_zlo_scale = opts.material_sat_h_zlo_scale
-    material_sat_h_zhi_scale = opts.material_sat_h_zhi_scale
-    material_sat_pair_a_zlo_scale = opts.material_sat_pair_a_zlo_scale
-    material_sat_pair_b_zlo_scale = opts.material_sat_pair_b_zlo_scale
-    material_sat_zlo_common_trace_projection = (
-        opts.material_sat_zlo_common_trace_projection
-    )
-    material_sat_zhi_common_trace_projection = (
-        opts.material_sat_zhi_common_trace_projection
-    )
-    material_sat_normal_e_scale = opts.material_sat_normal_e_scale
-    material_sat_zhi_coarse_eps_blend = opts.material_sat_zhi_coarse_eps_blend
+    # The material_sat_* scale knobs are consumed directly from ``opts`` by
+    # the _z_slab_material_coupling_{h,e}_3d helpers, so the runner body no
+    # longer unpacks them here.
     defer_material_h_sat_until_after_e = opts.defer_material_h_sat_until_after_e
-    material_sat_face_projection = opts.material_sat_face_projection
     inject_sources_before_e_coupling = opts.inject_sources_before_e_coupling
     use_exterior_box_interfaces = opts.use_exterior_box_interfaces
     inject_sources_on_coarse_shadow = opts.inject_sources_on_coarse_shadow
@@ -2155,33 +2152,7 @@ def run_subgridded_jit(
                         mats_c,
                         mats_f,
                         config,
-                        use_exterior_z_interfaces=use_exterior_z_interfaces,
-                        use_boundary_terminated_exterior_z_interfaces=(
-                            use_boundary_terminated_exterior_z_interfaces
-                        ),
-                        material_sat_scale=material_sat_scale,
-                        material_sat_coarse_scale=material_sat_coarse_scale,
-                        material_sat_fine_scale=material_sat_fine_scale,
-                        material_sat_h_coarse_scale=material_sat_h_coarse_scale,
-                        material_sat_h_fine_scale=material_sat_h_fine_scale,
-                        material_sat_zlo_scale=material_sat_zlo_scale,
-                        material_sat_zhi_scale=material_sat_zhi_scale,
-                        material_sat_h_zlo_scale=material_sat_h_zlo_scale,
-                        material_sat_h_zhi_scale=material_sat_h_zhi_scale,
-                        material_sat_pair_a_zlo_scale=(
-                            material_sat_pair_a_zlo_scale
-                        ),
-                        material_sat_pair_b_zlo_scale=(
-                            material_sat_pair_b_zlo_scale
-                        ),
-                        material_sat_zlo_common_trace_projection=(
-                            material_sat_zlo_common_trace_projection
-                        ),
-                        material_sat_zhi_common_trace_projection=(
-                            material_sat_zhi_common_trace_projection
-                        ),
-                        material_sat_zhi_coarse_eps_blend=material_sat_zhi_coarse_eps_blend,
-                        material_sat_face_projection=material_sat_face_projection,
+                        opts=opts,
                     )
             else:
                 (hx_c_new, hy_c_new, hz_c_new), (hx_f_new, hy_f_new, hz_f_new) = \
@@ -2329,34 +2300,7 @@ def run_subgridded_jit(
                         mats_c,
                         mats_f,
                         config,
-                        use_exterior_z_interfaces=use_exterior_z_interfaces,
-                        use_boundary_terminated_exterior_z_interfaces=(
-                            use_boundary_terminated_exterior_z_interfaces
-                        ),
-                        material_sat_scale=material_sat_scale,
-                        material_sat_coarse_scale=material_sat_coarse_scale,
-                        material_sat_fine_scale=material_sat_fine_scale,
-                        material_sat_e_coarse_scale=material_sat_e_coarse_scale,
-                        material_sat_e_fine_scale=material_sat_e_fine_scale,
-                        material_sat_zlo_scale=material_sat_zlo_scale,
-                        material_sat_zhi_scale=material_sat_zhi_scale,
-                        material_sat_e_zlo_scale=material_sat_e_zlo_scale,
-                        material_sat_e_zhi_scale=material_sat_e_zhi_scale,
-                        material_sat_pair_a_zlo_scale=(
-                            material_sat_pair_a_zlo_scale
-                        ),
-                        material_sat_pair_b_zlo_scale=(
-                            material_sat_pair_b_zlo_scale
-                        ),
-                        material_sat_zlo_common_trace_projection=(
-                            material_sat_zlo_common_trace_projection
-                        ),
-                        material_sat_zhi_common_trace_projection=(
-                            material_sat_zhi_common_trace_projection
-                        ),
-                        material_sat_normal_e_scale=material_sat_normal_e_scale,
-                        material_sat_zhi_coarse_eps_blend=material_sat_zhi_coarse_eps_blend,
-                        material_sat_face_projection=material_sat_face_projection,
+                        opts=opts,
                     )
             else:
                 (ex_c_new, ey_c_new, ez_c_new), (ex_f_new, ey_f_new, ez_f_new) = \
