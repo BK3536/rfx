@@ -16,11 +16,10 @@ Scope (Phase B minimal):
   here. The public entry point in ``distributed_v2`` falls back when
   dispersion is active.
 
-Key helper: ``_build_sharded_inv_dx_arrays`` returns per-device
-slabs of ``inv_dx`` / ``inv_dx_h`` whose slab boundary entry of
-``inv_dx_h`` is derived from the global spacing straddling the slab
-seam (NOT from the local slab alone) so H-field mean-spacing math
-remains consistent across the shard boundary.
+Key helper: ``_build_sharded_inv_dx_arrays`` builds the x-axis
+inverse-spacing arrays on the global padded profile (E update: mean
+``2/(d[k-1]+d[k])``; H update: local ``1/d[k]`` — CORE-C2) so the
+per-device slabs stay correct across the shard boundary.
 """
 
 from __future__ import annotations
@@ -59,9 +58,9 @@ def _build_sharded_inv_dx_arrays(grid, n_devices, pad_x=0):
     ``inv_dx`` and ``inv_dx_h`` from the padded profile, then reshape to
     per-device slabs.
 
-    For ``inv_dx_h``, the last entry of each device's slab is the global
-    mean-spacing straddling the slab seam with the next device (or 0 at
-    the domain boundary), NOT derived from the local slab alone.
+    The two inverse-spacing arrays are built on the *global* padded
+    profile, so slicing them into per-device slabs (with ghosts) keeps
+    every entry — including the slab-boundary ones — globally correct.
 
     Parameters
     ----------
@@ -73,10 +72,12 @@ def _build_sharded_inv_dx_arrays(grid, n_devices, pad_x=0):
 
     Returns
     -------
-    inv_dx_global : (nx_padded,) np.ndarray
-        Replicated — every device sees the whole thing when used with
-        ``P("x")`` (see caller packing).
+    inv_dx_e_global : (nx_padded,) np.ndarray
+        E-update inverse spacing — mean ``2/(d[k-1]+d[k])`` (leading
+        ``1/d[0]``). Consumed by ``_update_e_local_nu``.
     inv_dx_h_global : (nx_padded,) np.ndarray
+        H-update inverse spacing — local ``1/d[k]`` (trailing ``0``).
+        Consumed by ``_update_h_local_nu``.
     dx_padded : (nx_padded,) np.ndarray
         The padded cell-size profile (float32) — useful for diagnostics
         and the unit test.
@@ -93,13 +94,21 @@ def _build_sharded_inv_dx_arrays(grid, n_devices, pad_x=0):
             f"After padding nx={nx} is not divisible by n_devices={n_devices}"
         )
 
-    inv_dx = 1.0 / dx_arr
-    # inv_dx_h[i] = 2 / (dx[i] + dx[i+1]) for i<N-1 ; 0 at end.
-    inv_dx_h_mean = 2.0 / (dx_arr[:-1] + dx_arr[1:])
-    inv_dx_h = np.concatenate([inv_dx_h_mean, np.zeros(1, dtype=np.float64)])
+    # CORE-C2: the E update needs the MEAN spacing 2/(d[k-1]+d[k]); the
+    # H update needs the LOCAL cell width 1/d[k]. (Mirrors the
+    # single-device rfx.nonuniform._profile_to_inv_arrays.) Built on the
+    # global padded profile, so each per-device slab is correct after
+    # the P("x") shard — the E-mean seam straddles the lower neighbour
+    # and is resolved here, globally, before sharding.
+    inv_local = 1.0 / dx_arr                          # 1/d[k]
+    inv_mean = 2.0 / (dx_arr[:-1] + dx_arr[1:])       # 2/(d[k]+d[k+1])
+    # First return -> E update: mean of (d[k-1], d[k]); leading 1/d[0].
+    inv_dx_e = np.concatenate([inv_local[:1], inv_mean])
+    # Second return -> H update: local cell width; trailing 0.
+    inv_dx_h = np.concatenate([inv_local[:-1], np.zeros(1, dtype=np.float64)])
 
     return (
-        inv_dx.astype(np.float32),
+        inv_dx_e.astype(np.float32),
         inv_dx_h.astype(np.float32),
         dx_arr.astype(np.float32),
     )
