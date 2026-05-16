@@ -9,6 +9,7 @@ from rfx.adi import ADIState2D, ADIState3D, thomas_solve, adi_step_2d, run_adi_2
 from rfx.api import (
     Simulation, Result, WaveguideSParamResult, WaveguideSMatrixResult,
     MSLSMatrixResult, CoaxialSMatrixResult, MATERIAL_LIBRARY,
+    AD_MemoryEstimate, ADMemoryPlan, MeshIntelligenceReport,
 )
 from rfx.geometry.csg import Box, Sphere, Cylinder, PolylineWire
 from rfx.geometry.curved import CurvedPatch
