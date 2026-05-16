@@ -4057,12 +4057,29 @@ class Simulation:
 
     # ---- subgridded run ----
 
-    def _run_subgridded(self, grid_coarse, base_materials_coarse, pec_mask_coarse,
-                        n_steps):
+    def _run_subgridded(
+        self,
+        grid_coarse,
+        base_materials_coarse,
+        pec_mask_coarse,
+        n_steps,
+        *,
+        compute_s_params=None,
+        s_param_freqs=None,
+        s_param_n_steps=None,
+    ):
         """Run simulation using SBP-SAT subgridding (JIT-compiled)."""
         from rfx.runners.subgridded import run_subgridded_path
-        return run_subgridded_path(self, grid_coarse, base_materials_coarse,
-                                   pec_mask_coarse, n_steps)
+        return run_subgridded_path(
+            self,
+            grid_coarse,
+            base_materials_coarse,
+            pec_mask_coarse,
+            n_steps,
+            compute_s_params=compute_s_params,
+            s_param_freqs=s_param_freqs,
+            s_param_n_steps=s_param_n_steps,
+        )
 
     # ---- non-uniform mesh run path ----
 
@@ -4282,11 +4299,20 @@ class Simulation:
                 "uniform S-parameter calculation."
             )
         if self._refinement is not None:
-            raise NotImplementedError(
-                "run(compute_s_params=True) is not supported with "
-                "SBP-SAT subgridding; drop the refinement or use a "
-                "documented reference-lane port workflow."
-            )
+            if source_only_entries:
+                raise NotImplementedError(
+                    "subgrid compute_s_params ignores ordinary "
+                    "add_source(...) entries like the uniform S-matrix "
+                    "extractor; remove source-only entries and drive through "
+                    "add_port(...) waveforms."
+                )
+            if any(pe.waveform is None for pe in port_entries):
+                raise ValueError(
+                    "subgrid compute_s_params needs a waveform "
+                    "on every impedance port so each port can be driven in "
+                    "turn. Pass waveform=... even for ports whose main-run "
+                    "excite flag is False."
+                )
 
         is_nonuniform = (
             self._dz_profile is not None
@@ -6134,12 +6160,6 @@ class Simulation:
         # P4: Subgridded path limitations
         # ================================================================
         if self._refinement is not None:
-            if self._ntff is not None:
-                _w.warn(
-                    "NTFF far-field is not supported with SBP-SAT subgridding. "
-                    "The NTFF box will be ignored.",
-                    stacklevel=3,
-                )
             if self._dft_planes:
                 _w.warn(
                     "DFT plane probes are not supported with SBP-SAT "
@@ -7859,24 +7879,6 @@ class Simulation:
         -------
         Result
         """
-        # ---- N-1 guard: the stage2_disjoint_3d runner lands in a later branch ----
-        # This branch carries the pre-existing ``overlap_z_slab`` SBP-SAT
-        # subgrid runner inherited from main, so refined runs on that topology
-        # dispatch normally. The ``stage2_disjoint_3d`` centered/two-interface
-        # runner is NOT in this branch (it lands with the disjoint runner
-        # files). Guard only that topology so a refined run on it fails clearly
-        # instead of silently dispatching to the wrong runner. A later branch
-        # replaces this guard with the real disjoint dispatch.
-        if (
-            self._refinement is not None
-            and self._refinement.get("topology") == "stage2_disjoint_3d"
-        ):
-            raise NotImplementedError(
-                "the stage2_disjoint_3d subgrid runner lands in a later "
-                "branch; add_refinement + validate_subgrid are available, "
-                "run() with topology='stage2_disjoint_3d' is not yet supported"
-            )
-
         # ---- P1: Auto mesh when dx not specified and geometry exists ----
         if self._dx is None and self._geometry:
             self._auto_configure_mesh()
@@ -8051,13 +8053,25 @@ class Simulation:
                 "snapshot": snapshot,
                 "until_decay": until_decay,
                 "conformal_pec": conformal_pec,
-                "compute_s_params": compute_s_params,
-                "s_param_freqs": s_param_freqs,
-                "s_param_n_steps": s_param_n_steps,
             })
+            subgrid_n_steps = n_steps
+            if subgrid_n_steps is None:
+                # The subgrid runner advances with the fine-grid CFL timestep
+                # (dx_coarse / ratio), while ``grid.num_timesteps`` is based
+                # on the coarse-grid timestep.  Preserve the user's requested
+                # physical duration by scaling the automatically computed
+                # coarse step count by the refinement ratio.  Explicit
+                # ``n_steps`` remains a low-level escape hatch and is passed
+                # through unchanged.
+                subgrid_n_steps = grid.num_timesteps(num_periods=num_periods) * int(
+                    self._refinement["ratio"]
+                )
             return self._run_subgridded(
                 grid, base_materials, pec_mask,
-                n_steps=n_steps or grid.num_timesteps(num_periods=num_periods),
+                n_steps=subgrid_n_steps,
+                compute_s_params=compute_s_params,
+                s_param_freqs=s_param_freqs,
+                s_param_n_steps=s_param_n_steps,
             )
 
         # ---- Uniform path ----
