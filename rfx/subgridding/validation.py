@@ -167,6 +167,12 @@ def build_subgrid_region(sim, grid) -> SubgridRegion | None:
             int(round((sim._domain[1] - margin) / dx_c)) + grid.pad_y_lo + 1,
             grid.ny - grid.pad_y_hi,
         )
+    # Fine-grid extent uses the cell-extent convention ``(hi - lo) * ratio``.
+    # This matches the actual runner path (``rfx.runners.subgridded`` and the
+    # ``SubgridConfig3D`` builder in ``rfx.subgridding.sbp_sat_3d``), which is
+    # what consumes this region. The node-aligned ``(hi - lo - 1) * ratio + 1``
+    # form previously used here disagreed with the runner by ``ratio - 1``
+    # points per axis.
     return SubgridRegion(
         fi_lo=fi_lo,
         fi_hi=fi_hi,
@@ -174,9 +180,9 @@ def build_subgrid_region(sim, grid) -> SubgridRegion | None:
         fj_hi=fj_hi,
         fk_lo=fk_lo,
         fk_hi=fk_hi,
-        nx_f=(fi_hi - fi_lo - 1) * ratio + 1,
-        ny_f=(fj_hi - fj_lo - 1) * ratio + 1,
-        nz_f=(fk_hi - fk_lo - 1) * ratio + 1,
+        nx_f=(fi_hi - fi_lo) * ratio,
+        ny_f=(fj_hi - fj_lo) * ratio,
+        nz_f=(fk_hi - fk_lo) * ratio,
         dx_c=dx_c,
         dx_f=dx_f,
         ratio=ratio,
