@@ -8,15 +8,7 @@ import jax.numpy as jnp
 
 from rfx.subgridding.disjoint_3d import (
     init_disjoint_subgrid_3d,
-    step_disjoint_z_slab_ghost_curl_3d,
-    step_disjoint_z_slab_ghost_curl_sat_3d,
-    step_disjoint_z_slab_leapfrog_sat_3d,
-    step_disjoint_z_slab_metric_curl_3d,
-    step_disjoint_z_slab_metric_curl_sat_3d,
-    step_disjoint_z_slab_metric_curl_split_upwind_pair_3d,
-    step_disjoint_z_slab_metric_curl_upwind_pair_3d,
     step_disjoint_z_slab_sat_3d,
-    step_disjoint_z_slab_upwind_pair_sat_3d,
 )
 from rfx.subgridding.disjoint_runner_contract import build_disjoint_runner_contract
 
@@ -78,30 +70,10 @@ def run_disjoint_stage2_path(
     stepper_name = str(ref.get("disjoint_stepper", "post_sat"))
     if stepper_name == "post_sat":
         stepper = step_disjoint_z_slab_sat_3d
-    elif stepper_name == "leapfrog_sat":
-        stepper = step_disjoint_z_slab_leapfrog_sat_3d
-    elif stepper_name == "upwind_pair_sat":
-        stepper = step_disjoint_z_slab_upwind_pair_sat_3d
-    elif stepper_name == "z_curl_ghost":
-        stepper = step_disjoint_z_slab_ghost_curl_3d
-    elif stepper_name == "z_curl_ghost_sat":
-        stepper = step_disjoint_z_slab_ghost_curl_sat_3d
-    elif stepper_name == "z_metric_curl":
-        stepper = step_disjoint_z_slab_metric_curl_3d
-    elif stepper_name == "z_metric_curl_sat":
-        stepper = step_disjoint_z_slab_metric_curl_sat_3d
-    elif stepper_name == "z_metric_curl_upwind_pair":
-        stepper = step_disjoint_z_slab_metric_curl_upwind_pair_3d
-    elif stepper_name == "z_metric_curl_split_upwind_pair":
-        stepper = step_disjoint_z_slab_metric_curl_split_upwind_pair_3d
     else:
         raise ValueError(
             "unknown Stage-2 disjoint stepper "
-            f"{stepper_name!r}; expected 'post_sat', 'leapfrog_sat', "
-            "'upwind_pair_sat', 'z_curl_ghost', 'z_curl_ghost_sat', "
-            "'z_metric_curl', 'z_metric_curl_sat', or "
-            "'z_metric_curl_upwind_pair', or "
-            "'z_metric_curl_split_upwind_pair'"
+            f"{stepper_name!r}; expected 'post_sat'"
         )
     source_timing = str(ref.get("disjoint_source_timing", "pre_step"))
     if source_timing not in {"pre_step", "post_step"}:
