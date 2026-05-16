@@ -871,11 +871,15 @@ class Simulation:
         ratio: int = 4,
         xy_margin: float | None = None,
         tau: float = 0.5,
+        validation: str = "production",
+        topology: str = "overlap_z_slab",
     ) -> "Simulation":
         """Add a z-axis refinement region for SBP-SAT subgridding.
 
-        The fine grid covers the specified z-range (plus xy_margin around
-        geometry) at dx_fine = dx_coarse / ratio.
+        The promoted production runner covers the specified z-range across the
+        full x/y interior at ``dx_fine = dx_coarse / ratio``.  ``xy_margin``
+        enables an experimental research-only local x/y window whose fine
+        region is inset from the physical x/y boundaries by that distance.
 
         Parameters
         ----------
@@ -884,15 +888,37 @@ class Simulation:
         ratio : int
             Refinement ratio (fine cells per coarse cell). Default 4.
         xy_margin : float or None
-            Extra xy margin around geometry for the fine region.
-            Default: 2 * dx_coarse.
+            Experimental x/y inset in metres.  ``None`` keeps the full x/y
+            interior.  A finite non-negative value creates a local window
+            spanning ``[xy_margin, Lx - xy_margin]`` and
+            ``[xy_margin, Ly - xy_margin]``.  Production validation still
+            rejects this lane until waveform gates and crossval pass.
         tau : float
             SAT penalty coefficient (default 0.5). Higher values give
             stronger coupling but more dissipation.
+        validation : {"production", "research", "off"}
+            Validation envelope for the run path. ``"production"`` rejects
+            unsupported material/interface/source configurations before FDTD
+            execution. ``"research"`` preserves the experimental legacy lane
+            for internal diagnostics. ``"off"`` is reserved for low-level
+            debugging and should not be used for claims-bearing results.
+        topology : {"overlap_z_slab", "stage2_disjoint_3d"}
+            Internal topology selector. ``"overlap_z_slab"`` is the current
+            public runner. ``"stage2_disjoint_3d"`` records the selected
+            centered/two-interface integration lane but remains a research-only
+            contract until its public runner wiring and waveform gates pass.
         """
         if self._refinement is not None:
             raise ValueError("Only one refinement region is supported")
-
+        if validation not in {"production", "research", "off"}:
+            raise ValueError(
+                "validation must be one of 'production', 'research', or 'off'"
+            )
+        if topology not in {"overlap_z_slab", "stage2_disjoint_3d"}:
+            raise ValueError(
+                "topology must be one of 'overlap_z_slab' or "
+                "'stage2_disjoint_3d'"
+            )
         # Warn if subgrid overlaps PML region.
         # PML operates on the coarse grid only; the fine grid has no PML.
         # Overlapping causes late-time energy growth (SAT coupling feeds
@@ -900,13 +926,28 @@ class Simulation:
         if self._boundary in ("cpml", "upml") and self._cpml_layers > 0:
             import warnings
             dx = self._dx or (2.998e8 / self._freq_max / 10)
-            pml_thickness = self._cpml_layers * dx
+            face_layers = self._resolve_face_layers()
+            z_lo_kind = self._boundary_spec.z.lo if self._boundary_spec else self._boundary
+            z_hi_kind = self._boundary_spec.z.hi if self._boundary_spec else self._boundary
+            pml_zlo_thickness = (
+                face_layers.get("z_lo", self._cpml_layers) * dx
+                if z_lo_kind in ("cpml", "upml")
+                else 0.0
+            )
+            pml_zhi_thickness = (
+                face_layers.get("z_hi", self._cpml_layers) * dx
+                if z_hi_kind in ("cpml", "upml")
+                else 0.0
+            )
             domain_z = self._domain[2] if len(self._domain) > 2 else 0
             z_lo, z_hi = z_range
-            if z_lo < pml_thickness or (domain_z > 0 and z_hi > domain_z - pml_thickness):
+            if z_lo < pml_zlo_thickness or (
+                domain_z > 0 and z_hi > domain_z - pml_zhi_thickness
+            ):
                 warnings.warn(
                     f"Subgrid z_range=({z_lo*1e3:.1f}, {z_hi*1e3:.1f})mm overlaps "
-                    f"PML region (thickness={pml_thickness*1e3:.1f}mm). "
+                    f"PML region (zlo={pml_zlo_thickness*1e3:.1f}mm, "
+                    f"zhi={pml_zhi_thickness*1e3:.1f}mm). "
                     f"This causes late-time energy growth. "
                     f"Move z_range inside the PML boundary for stable results.",
                     stacklevel=2,
@@ -917,8 +958,38 @@ class Simulation:
             "ratio": ratio,
             "xy_margin": xy_margin,
             "tau": tau,
+            "validation": validation,
+            "topology": topology,
         }
         return self
+
+    def validate_subgrid(self, *, mode: str | None = None):
+        """Return the production-envelope validation report for subgridding.
+
+        This is a physics-support report, not a numerical smoke test.  It checks
+        whether the configured refinement lies inside the currently derived
+        guarded one-sided z-slab support envelope: static materials,
+        source/probe or single-cell lumped-port observables, no
+        material/PEC discontinuity at artificial coarse/fine interfaces, and
+        no unsupported RF post-processing features.
+        """
+        if self._refinement is None:
+            from rfx.subgridding.validation import validate_subgrid_setup
+            grid = self._build_grid()
+            mats, _, _, pec_mask, *_ = self._assemble_materials(grid)
+            return validate_subgrid_setup(
+                self, grid, mats, pec_mask, mode=mode or "production",
+            )
+        grid = self._build_grid()
+        mats, _, _, pec_mask, *_ = self._assemble_materials(grid)
+        from rfx.subgridding.validation import validate_subgrid_setup
+        return validate_subgrid_setup(
+            self,
+            grid,
+            mats,
+            pec_mask,
+            mode=mode or self._refinement.get("validation", "production"),
+        )
 
     # ---- material registration ----
 
@@ -7788,6 +7859,24 @@ class Simulation:
         -------
         Result
         """
+        # ---- N-1 guard: the stage2_disjoint_3d runner lands in a later branch ----
+        # This branch carries the pre-existing ``overlap_z_slab`` SBP-SAT
+        # subgrid runner inherited from main, so refined runs on that topology
+        # dispatch normally. The ``stage2_disjoint_3d`` centered/two-interface
+        # runner is NOT in this branch (it lands with the disjoint runner
+        # files). Guard only that topology so a refined run on it fails clearly
+        # instead of silently dispatching to the wrong runner. A later branch
+        # replaces this guard with the real disjoint dispatch.
+        if (
+            self._refinement is not None
+            and self._refinement.get("topology") == "stage2_disjoint_3d"
+        ):
+            raise NotImplementedError(
+                "the stage2_disjoint_3d subgrid runner lands in a later "
+                "branch; add_refinement + validate_subgrid are available, "
+                "run() with topology='stage2_disjoint_3d' is not yet supported"
+            )
+
         # ---- P1: Auto mesh when dx not specified and geometry exists ----
         if self._dx is None and self._geometry:
             self._auto_configure_mesh()
