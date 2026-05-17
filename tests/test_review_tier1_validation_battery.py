@@ -140,15 +140,16 @@ def test_corec2_e_update_uses_mean_spacing():
 
 
 # ===========================================================================
-# GEO-C1 — Kerr ADE uses an explicit linearization
+# GEO-C1 — Kerr ADE exact implicit solve  (FIXED 2026-05-17, Stage 1)
 # ===========================================================================
 #
-# apply_kerr_ade implements  E <- E*(1-factor)  (explicit forward-Euler).
-# The docstring's stated discrete relation E^{n+1} -= f*E^{n+1} has the
-# exact solution E/(1+f). The two agree to O(f); they diverge for f≳0.1.
-# Verdict: the finding is factually correct but the code+docstring
-# already label this "explicit" — severity MEDIUM (use the exact /(1+f)
-# form, same cost), not CRITICAL.
+# apply_kerr_ade previously implemented  E <- E*(1-factor)  (explicit
+# linearization). The docstring's stated discrete relation
+# E^{n+1} -= factor*E^{n+1} has the exact solution E/(1+factor); the two
+# agree only to O(factor) and diverge for factor >~ 0.1. Stage 1 (GEO-C1)
+# switched apply_kerr_ade to the exact implicit form E/(1+factor) — same
+# cost, unconditionally stable for this term. This is an intentional,
+# reference-gated numerical change (NOT bit-identical to the old output).
 
 def _kerr_setup():
     shape = (2, 2, 2)
@@ -162,28 +163,24 @@ def _kerr_setup():
     return state, chi3_arr, dt, E0, factor
 
 
-def test_geoc1_kerr_ade_is_explicit_linearization():
-    """Characterization: confirms apply_kerr_ade returns E*(1-factor)."""
+def test_geoc1_kerr_ade_uses_exact_implicit_solve():
+    """GEO-C1 regression — apply_kerr_ade returns the exact implicit
+    E/(1+factor), not the old explicit E*(1-factor).
+
+    Was ``xfail(strict=True)`` pre-fix; passes post-fix (Stage 1,
+    2026-05-17). The reference is the analytic solution of the discrete
+    relation E^{n+1}(1+factor) = E^n stated in the apply_kerr_ade
+    docstring.
+    """
     state, chi3_arr, dt, E0, factor = _kerr_setup()
     out = apply_kerr_ade(state, chi3_arr, dt)
     got = float(np.asarray(out.ex)[0, 0, 0])
 
-    explicit = E0 * (1.0 - factor)
     implicit = E0 / (1.0 + factor)
-    assert got == pytest.approx(explicit, rel=1e-4)
-    # Explicit and exact-implicit are genuinely distinct at factor=0.3.
-    assert abs(got - implicit) > 0.01 * E0
-
-
-@pytest.mark.xfail(strict=True, reason=(
-    "GEO-C1: apply_kerr_ade uses the explicit E*(1-f); the exact solve "
-    "of its own documented implicit relation is E/(1+f) — same cost, "
-    "unconditionally stable for this term. nonlinear.py:82-84."))
-def test_geoc1_kerr_ade_should_use_exact_implicit_solve():
-    state, chi3_arr, dt, E0, factor = _kerr_setup()
-    out = apply_kerr_ade(state, chi3_arr, dt)
-    got = float(np.asarray(out.ex)[0, 0, 0])
-    assert got == pytest.approx(E0 / (1.0 + factor), rel=1e-4)
+    explicit = E0 * (1.0 - factor)
+    assert got == pytest.approx(implicit, rel=1e-4)
+    # The fix is a genuine change: explicit and implicit differ at factor=0.3.
+    assert abs(got - explicit) > 0.01 * E0
 
 
 # ===========================================================================
