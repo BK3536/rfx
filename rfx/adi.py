@@ -718,11 +718,20 @@ def adi_step_3d(ex, ey, ez, hx, hy, hz,
                 pec_mask=None):
     r"""Advance all 6 field components by one full 3D ADI timestep.
 
-    **EXPERIMENTAL**: Uses LOD (Locally One-Dimensional) splitting with
-    3 sequential sub-steps (x, y, z implicit). Each sub-step: E tridiagonal
-    along one axis, then H back-substitution using only the implicit-axis
-    derivative. Stable and dissipative across wide CFL range (tested 0.5-50x).
-    Over-dissipative at large CFL (splitting error); best for 2-10x CFL.
+    **EXPERIMENTAL — not a physically accurate scheme.** Uses LOD
+    (Locally One-Dimensional) splitting with 3 sequential sub-steps
+    (x, y, z implicit). Each sub-step: E tridiagonal along one axis, then
+    H back-substitution using only the implicit-axis derivative.
+
+    Accuracy caveat: this is NOT a valid ADI step — it applies implicit
+    diffusion to off-axis E-components, triple-applies the conductivity
+    loss (dt/3 applied in all 3 sub-steps), and time-skews the Faraday
+    update. It is stable/dissipative across a wide CFL range (0.5-50x),
+    but cavity-resonance error reaches ~42% at 5x CFL from the LOD
+    splitting (2D LOD by contrast holds <2% to 50x CFL). Only divergence
+    /stability tests cover it — there is no physics-accuracy validation.
+    Do not use for quantitative results.
+    See docs/agent-memory/rfx-known-issues.md (OPT-C1).
 
     Parameters
     ----------

@@ -522,8 +522,17 @@ def _extract_reflection(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Extract S11 reflection from a simulation result.
 
-    Tries Floquet S-params first; falls back to time-domain FFT
-    of the probe recording.
+    Tries Floquet S-params first — the only path here that returns a
+    physically valid S11.
+
+    WARNING: the time-domain FFT fallback below does NOT produce a valid
+    S11. It FFTs the raw probe time series (total field, with no
+    incident-field reference subtraction) and peak-normalizes the
+    magnitude. This violates the repo rule "never FFT-of-probe for R(f)"
+    (.claude/rules/rfx-feature-discovery.md) and yields a spectrum shaped
+    by the source, not a reflection coefficient. The fallback is kept
+    only so RIS demos run end-to-end; treat its output as a qualitative
+    placeholder, not a measured S-parameter.
 
     Returns
     -------
