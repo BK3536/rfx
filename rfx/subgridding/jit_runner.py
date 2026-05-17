@@ -1658,6 +1658,42 @@ _STEP_FN_CAPTURES = (
 )
 
 
+# Subset of _STEP_FN_CAPTURES verified to be assigned unconditionally in
+# run_subgridded_jit.  Every name here is bound on all run configurations, so
+# its absence from the _make_step_fn ctx signals a refactor regression rather
+# than a legitimately-skipped optional feature.  Conditionally-bound captures
+# (e.g. apply_cpml_e / apply_cpml_h, imported only under ``if use_cpml``) are
+# deliberately excluded -- their absence from ctx is expected.
+_STEP_FN_REQUIRED_CAPTURES = frozenset({
+    "config",
+    "cpml_axes",
+    "cpml_params",
+    "dt",
+    "dx_c",
+    "dx_f",
+    "grid_c",
+    "lumped_sparam_freqs_arr",
+    "lumped_sparam_meta",
+    "mats_c",
+    "mats_f",
+    "n_lumped_sparams",
+    "n_probes",
+    "n_probes_c",
+    "opts",
+    "pec_mask_c",
+    "pec_mask_f",
+    "prb_meta",
+    "prb_meta_c",
+    "src_meta",
+    "src_meta_c",
+    "use_cpml",
+    "use_material_sat",
+    "use_ntff",
+    "use_pec_mask_c",
+    "use_pec_mask_f",
+})
+
+
 def _make_step_fn(ctx):
     """Build the jax.lax.scan body for run_subgridded_jit.
 
@@ -2642,9 +2678,17 @@ def run_subgridded_jit(
     # Run scan
     xs = (jnp.arange(n_steps, dtype=jnp.int32), src_waveforms, src_waveforms_c)
     _step_locals = dict(locals())
-    step_fn = _make_step_fn(
-        {n: _step_locals[n] for n in _STEP_FN_CAPTURES if n in _step_locals}
-    )
+    _step_ctx = {n: _step_locals[n] for n in _STEP_FN_CAPTURES if n in _step_locals}
+    _missing_required = sorted(_STEP_FN_REQUIRED_CAPTURES - _step_ctx.keys())
+    if _missing_required:
+        raise RuntimeError(
+            "run_subgridded_jit: step_fn capture(s) verified to be "
+            f"unconditionally bound are absent from ctx: {_missing_required}. "
+            "A capture in _STEP_FN_REQUIRED_CAPTURES was renamed or became "
+            "conditionally bound -- ctx.get would otherwise mask it as None "
+            "inside step_fn."
+        )
+    step_fn = _make_step_fn(_step_ctx)
     final_carry, probe_series = jax.lax.scan(step_fn, carry_init, xs)
     time_series, time_series_c = probe_series
 
