@@ -1090,46 +1090,67 @@ class _PreflightMixin:
         NTFF precision, normalize defaults.
 
         Called from run() after _validate_mesh_quality().
+
+        Stage 1b refactor (2026-05-17): the original ~592-line body was
+        decomposed into per-check ``_validate_cfg_*`` helpers. This method
+        keeps its signature and remains the public entry point; its body
+        computes the shared local state (``dx``, CPML thicknesses,
+        ``absorber_label``) and then calls each helper IN THE SAME ORDER
+        as the original checks. No logic, ordering, or warning text
+        changed — pure readability decomposition.
         """
         import warnings as _w
 
         dx = self._dx or C0 / self._freq_max / 20.0
         cpml_thickness = self._cpml_layers * dx if self._boundary in ("cpml", "upml") else 0
 
-        # Warn about pec_faces + finite PEC objects co-existing.
-        # pec_faces creates an INFINITE PEC boundary face across the whole
-        # domain side. Users building antennas or finite-GP structures
-        # often use pec_faces thinking it's a "ground plane" — but it's
-        # a full-domain boundary condition, not a finite structure.
-        if self._pec_faces and self._geometry:
-            has_finite_pec = any(
-                entry.material_name == "pec"
-                for entry in self._geometry
-            )
-            if has_finite_pec:
-                pec_face_list = ", ".join(sorted(self._pec_faces))
-                _w.warn(
-                    f"pec_faces={{{pec_face_list}}} creates an INFINITE PEC "
-                    f"boundary AND the geometry contains finite PEC objects. "
-                    f"For antennas or finite-GP structures, the pec_faces "
-                    f"boundary makes the ground plane cover the entire domain "
-                    f"face, which changes the physics (cavity vs radiating "
-                    f"antenna). If you need a finite ground plane, remove "
-                    f"pec_faces and use an explicit PEC Box instead.",
-                    stacklevel=3,
-                )
+        cpml_thick_lo, cpml_thick_hi, _pmc_faces_set = (
+            self._validate_cfg_compute_cpml_thickness(cpml_thickness)
+        )
+        absorber_label = "UPML" if self._boundary == "upml" else "CPML"
 
-        if self._boundary == "upml" and self._refinement is not None:
-            raise ValueError("boundary='upml' does not support subgridding/refinement")
+        # --- checks in original order ---------------------------------
+        self._validate_cfg_pec_faces_with_finite_pec(_w)
+        self._validate_cfg_upml_refinement()
+        self._validate_cfg_floquet_nonuniform()
+        self._validate_cfg_absorber_placement(
+            _w, cpml_thickness, cpml_thick_lo, cpml_thick_hi, absorber_label
+        )
+        self._validate_cfg_source_on_reflector_plane(_w, dx, _pmc_faces_set)
+        self._validate_cfg_ntff_absorber_overlap(
+            _w, cpml_thickness, cpml_thick_lo, cpml_thick_hi, absorber_label
+        )
+        self._validate_cfg_ntff_min_steps(dx)
+        self._validate_cfg_geometry_in_cpml(
+            _w, dx, cpml_thickness, cpml_thick_lo, cpml_thick_hi, absorber_label
+        )
+        self._validate_cfg_port_inside_pec(_w, dx)
+        self._validate_cfg_floating_single_cell_port(_w)
+        self._validate_cfg_pec_boundary_open_structure(_w)
+        self._validate_cfg_no_sources(_w)
+        self._validate_cfg_nonuniform_limitations(_w, cpml_thickness)
+        self._validate_cfg_subgrid_limitations(_w)
+        self._validate_cfg_waveguide_reference_plane(
+            _w, cpml_thick_lo, cpml_thick_hi
+        )
 
-        # Per-face CPML thickness (v1.7.5). Mirrors Grid._face_pad:
-        # pec_faces / pmc_faces / periodic-axis faces consume 0 cells;
-        # remaining faces get the axis CPML thickness (non-uniform z
-        # aggregates the leading dz_profile entries). Under asymmetric
-        # composition (half-symmetric PMC + CPML, one-sided reflector)
-        # the lo and hi sides of a single axis can differ — the legacy
-        # symmetric scalar forced both sides to the max and produced
-        # false positives on the reflector face.
+        self._check_waveguide_port_evanescent()
+        self._check_msl_port_geometry(dx, cpml_thick_lo, cpml_thick_hi)
+
+    def _validate_cfg_compute_cpml_thickness(
+        self, cpml_thickness: float
+    ) -> tuple[list[float], list[float], set]:
+        """Per-face CPML thickness (v1.7.5). Mirrors Grid._face_pad:
+        pec_faces / pmc_faces / periodic-axis faces consume 0 cells;
+        remaining faces get the axis CPML thickness (non-uniform z
+        aggregates the leading dz_profile entries). Under asymmetric
+        composition (half-symmetric PMC + CPML, one-sided reflector)
+        the lo and hi sides of a single axis can differ — the legacy
+        symmetric scalar forced both sides to the max and produced
+        false positives on the reflector face.
+
+        Returns ``(cpml_thick_lo, cpml_thick_hi, _pmc_faces_set)``.
+        """
         _pmc_faces_set = set(self._boundary_spec.pmc_faces())
         _axis_thickness = [cpml_thickness, cpml_thickness, cpml_thickness]
         if (self._dz_profile is not None
@@ -1152,16 +1173,56 @@ class _PreflightMixin:
 
         cpml_thick_lo = [_face_thickness(ax, "lo") for ax in range(3)]
         cpml_thick_hi = [_face_thickness(ax, "hi") for ax in range(3)]
+        return cpml_thick_lo, cpml_thick_hi, _pmc_faces_set
 
-        # P1.1: Floquet + non-uniform mesh — no silent fallback allowed
+    def _validate_cfg_pec_faces_with_finite_pec(self, _w) -> None:
+        """Warn about pec_faces + finite PEC objects co-existing.
+
+        pec_faces creates an INFINITE PEC boundary face across the whole
+        domain side. Users building antennas or finite-GP structures
+        often use pec_faces thinking it's a "ground plane" — but it's
+        a full-domain boundary condition, not a finite structure.
+        """
+        if self._pec_faces and self._geometry:
+            has_finite_pec = any(
+                entry.material_name == "pec"
+                for entry in self._geometry
+            )
+            if has_finite_pec:
+                pec_face_list = ", ".join(sorted(self._pec_faces))
+                _w.warn(
+                    f"pec_faces={{{pec_face_list}}} creates an INFINITE PEC "
+                    f"boundary AND the geometry contains finite PEC objects. "
+                    f"For antennas or finite-GP structures, the pec_faces "
+                    f"boundary makes the ground plane cover the entire domain "
+                    f"face, which changes the physics (cavity vs radiating "
+                    f"antenna). If you need a finite ground plane, remove "
+                    f"pec_faces and use an explicit PEC Box instead.",
+                    stacklevel=3,
+                )
+
+    def _validate_cfg_upml_refinement(self) -> None:
+        """UPML boundary does not support subgridding/refinement."""
+        if self._boundary == "upml" and self._refinement is not None:
+            raise ValueError("boundary='upml' does not support subgridding/refinement")
+
+    def _validate_cfg_floquet_nonuniform(self) -> None:
+        """P1.1: Floquet + non-uniform mesh — no silent fallback allowed."""
         if self._floquet_ports and self._dz_profile is not None:
             raise ValueError(
                 "Floquet ports do not support non-uniform z mesh (dz_profile). "
                 "Use the uniform reference lane and set dx explicitly."
             )
 
-        # P1.2/P1.3: Probe or source inside absorber region
-        absorber_label = "UPML" if self._boundary == "upml" else "CPML"
+    def _validate_cfg_absorber_placement(
+        self,
+        _w,
+        cpml_thickness: float,
+        cpml_thick_lo: list[float],
+        cpml_thick_hi: list[float],
+        absorber_label: str,
+    ) -> None:
+        """P1.2/P1.3: Probe or source inside absorber region."""
         if cpml_thickness > 0:
             for pe in self._probes:
                 pos = pe.position
@@ -1197,29 +1258,33 @@ class _PreflightMixin:
                         )
                         break
 
-        # P1.6: Source / port placed ON a PEC or PMC face plane. Both
-        # reflectors zero specific field components at the plane every
-        # time step (PEC: tangential E; PMC: tangential H); a source
-        # that drives a zeroed component is silently discarded. A
-        # source that drives a component forced to zero by the mirror
-        # image (e.g. normal E on a PMC face) fights the symmetry and
-        # yields numerically inconsistent results.
-        #
-        # Component-specific rule:
-        #   PEC face (axis = ax_name): tangential E (Ex/Ey/Ez with
-        #     component axis != ax_name) is zeroed every E update.
-        #     Normal E (component axis == ax_name) is the legitimate
-        #     way to drive a PEC mirror.
-        #   PMC face (axis = ax_name): tangential H (Hx/Hy/Hz with
-        #     component axis != ax_name) is zeroed; the outgoing
-        #     wave from an on-plane tangential E source is killed via
-        #     this H zeroing. Normal E (component axis == ax_name) is
-        #     odd-symmetric and must be zero at the plane by image,
-        #     so injecting it fights the mirror.
-        #
-        # See docs/research_notes/2026-04-20_source_on_symmetry_plane_industry_survey.md
-        # for the industry survey behind this rule (Meep / OpenEMS /
-        # Tidy3D all follow the same convention).
+    def _validate_cfg_source_on_reflector_plane(
+        self, _w, dx: float, _pmc_faces_set: set
+    ) -> None:
+        """P1.6: Source / port placed ON a PEC or PMC face plane. Both
+        reflectors zero specific field components at the plane every
+        time step (PEC: tangential E; PMC: tangential H); a source
+        that drives a zeroed component is silently discarded. A
+        source that drives a component forced to zero by the mirror
+        image (e.g. normal E on a PMC face) fights the symmetry and
+        yields numerically inconsistent results.
+
+        Component-specific rule:
+          PEC face (axis = ax_name): tangential E (Ex/Ey/Ez with
+            component axis != ax_name) is zeroed every E update.
+            Normal E (component axis == ax_name) is the legitimate
+            way to drive a PEC mirror.
+          PMC face (axis = ax_name): tangential H (Hx/Hy/Hz with
+            component axis != ax_name) is zeroed; the outgoing
+            wave from an on-plane tangential E source is killed via
+            this H zeroing. Normal E (component axis == ax_name) is
+            odd-symmetric and must be zero at the plane by image,
+            so injecting it fights the mirror.
+
+        See docs/research_notes/2026-04-20_source_on_symmetry_plane_industry_survey.md
+        for the industry survey behind this rule (Meep / OpenEMS /
+        Tidy3D all follow the same convention).
+        """
         _all_reflector_faces = set(self._pec_faces) | set(_pmc_faces_set)
         if _all_reflector_faces:
             _dx_axis = [float(dx), float(dx), float(dx)]
@@ -1300,7 +1365,15 @@ class _PreflightMixin:
                     if msg is not None:
                         _w.warn(msg, stacklevel=3)
 
-        # P1.4: NTFF box overlap with absorber
+    def _validate_cfg_ntff_absorber_overlap(
+        self,
+        _w,
+        cpml_thickness: float,
+        cpml_thick_lo: list[float],
+        cpml_thick_hi: list[float],
+        absorber_label: str,
+    ) -> None:
+        """P1.4: NTFF box overlap with absorber."""
         if self._ntff is not None and cpml_thickness > 0:
             corner_lo, corner_hi, _ = self._ntff
             for ax in range(3):
@@ -1319,7 +1392,8 @@ class _PreflightMixin:
 
         # P1.5: (merged into P2.1 — non-uniform + NTFF is unsupported)
 
-        # P1.7: NTFF with too few steps
+    def _validate_cfg_ntff_min_steps(self, dx: float) -> None:
+        """P1.7: NTFF with too few steps."""
         if self._ntff is not None:
             _, _, ntff_freqs = self._ntff
             if ntff_freqs is not None:
@@ -1330,13 +1404,24 @@ class _PreflightMixin:
                 # Can't check n_steps here (not known yet), but store hint
                 self._ntff_min_steps_hint = min_steps_for_ntff
 
-        # P1.9: Geometry (dielectric OR PEC) extending into CPML region.
-        # CPML modifies field-update equations with absorbing coefficients;
-        # any structure placed there is effectively eaten by the absorber
-        # and produces physically meaningless results (issue #61).
-        # Periodic axes have no CPML (see _build_grid — issue #68), so
-        # the per-axis thresholds above already carry `cpml_thick_xyz[ax]
-        # == 0` on those axes and the check naturally skips.
+    def _validate_cfg_geometry_in_cpml(
+        self,
+        _w,
+        dx: float,
+        cpml_thickness: float,
+        cpml_thick_lo: list[float],
+        cpml_thick_hi: list[float],
+        absorber_label: str,
+    ) -> None:
+        """P1.9: Geometry (dielectric OR PEC) extending into CPML region.
+
+        CPML modifies field-update equations with absorbing coefficients;
+        any structure placed there is effectively eaten by the absorber
+        and produces physically meaningless results (issue #61).
+        Periodic axes have no CPML (see _build_grid — issue #68), so
+        the per-axis thresholds above already carry `cpml_thick_xyz[ax]
+        == 0` on those axes and the check naturally skips.
+        """
         if cpml_thickness > 0 and self._boundary == "cpml":
             for entry in self._geometry:
                 if hasattr(entry.shape, "bounding_box"):
@@ -1379,14 +1464,17 @@ class _PreflightMixin:
                     except (NotImplementedError, TypeError):
                         pass
 
-        # P1.8: Port/source/probe inside PEC geometry
-        # FP4 refinement (2026-05-06): tangential H is non-zero on a
-        # PEC surface and well-defined within a thin (≤ 1.5·dx) PEC
-        # sheet — for example, an MSL diagnostic Hy probe placed at
-        # z = h_sub + 0.5·dx (the centre of a 1-cell trace) measures
-        # the trace surface current and must not warn.  Inside a thick
-        # PEC volume H still decays to zero, so the warning still
-        # fires there.
+    def _validate_cfg_port_inside_pec(self, _w, dx: float) -> None:
+        """P1.8: Port/source/probe inside PEC geometry.
+
+        FP4 refinement (2026-05-06): tangential H is non-zero on a
+        PEC surface and well-defined within a thin (≤ 1.5·dx) PEC
+        sheet — for example, an MSL diagnostic Hy probe placed at
+        z = h_sub + 0.5·dx (the centre of a 1-cell trace) measures
+        the trace surface current and must not warn.  Inside a thick
+        PEC volume H still decays to zero, so the warning still
+        fires there.
+        """
         for pe in list(self._ports) + list(self._probes):
             pos = pe.position
             component = (getattr(pe, "component", "") or "").lower()
@@ -1414,12 +1502,14 @@ class _PreflightMixin:
                     except (NotImplementedError, TypeError):
                         pass
 
-        # P1.9: Single-cell port in dielectric with no adjacent PEC pin
-        # (issue #71). A single-cell LumpedPort placed mid-substrate with
-        # no conducting pin or microstrip does not couple to patch-antenna
-        # TM modes — the optimiser reads a nonsense loss from the
-        # floating Ez source. Recommend extent=<substrate_height> to
-        # promote to a WirePort spanning ground → patch.
+    def _validate_cfg_floating_single_cell_port(self, _w) -> None:
+        """P1.9: Single-cell port in dielectric with no adjacent PEC pin
+        (issue #71). A single-cell LumpedPort placed mid-substrate with
+        no conducting pin or microstrip does not couple to patch-antenna
+        TM modes — the optimiser reads a nonsense loss from the
+        floating Ez source. Recommend extent=<substrate_height> to
+        promote to a WirePort spanning ground → patch.
+        """
         _PORT_COMP_AXIS = {"ex": 0, "ey": 1, "ez": 2}
         for pe in self._ports:
             # Filter: only true ports (impedance > 0), single-cell
@@ -1496,7 +1586,8 @@ class _PreflightMixin:
                 stacklevel=3,
             )
 
-        # P0.4: PEC boundary on likely open structure
+    def _validate_cfg_pec_boundary_open_structure(self, _w) -> None:
+        """P0.4: PEC boundary on likely open structure."""
         if self._boundary == "pec" and self._ntff is not None:
             _w.warn(
                 "PEC boundary with NTFF far-field: PEC reflects all energy "
@@ -1505,7 +1596,8 @@ class _PreflightMixin:
                 stacklevel=3,
             )
 
-        # P0.5: No sources configured
+    def _validate_cfg_no_sources(self, _w) -> None:
+        """P0.5: No sources configured."""
         if (
             not self._ports
             and self._tfsf is None
@@ -1519,9 +1611,10 @@ class _PreflightMixin:
                 stacklevel=3,
             )
 
-        # ================================================================
-        # P2: Non-uniform mesh shadow-lane limitations
-        # ================================================================
+    def _validate_cfg_nonuniform_limitations(
+        self, _w, cpml_thickness: float
+    ) -> None:
+        """P2: Non-uniform mesh shadow-lane limitations."""
         if self._dz_profile is not None:
             # P2.3: TFSF on nonuniform mesh — narrowed scope.
             # Axis-aligned ±x incidence with angle_deg=0 runs the 1D
@@ -1557,15 +1650,13 @@ class _PreflightMixin:
                         stacklevel=3,
                     )
 
-        # ================================================================
-        # P3: Distributed path limitations
-        # ================================================================
-        # (Distributed warnings are emitted at run() dispatch time in
-        #  distributed_v2.py, but we add preflight hints here too.)
+    def _validate_cfg_subgrid_limitations(self, _w) -> None:
+        """P4: Subgridded path limitations.
 
-        # ================================================================
-        # P4: Subgridded path limitations
-        # ================================================================
+        P3 (Distributed path): distributed warnings are emitted at
+        run() dispatch time in distributed_v2.py — no preflight check
+        here.
+        """
         if self._refinement is not None:
             if self._dft_planes:
                 _w.warn(
@@ -1596,25 +1687,33 @@ class _PreflightMixin:
                     stacklevel=3,
                 )
 
-        # P2.7 (obsolete): PMC / PEC + CPML on the same axis used to emit
-        # a warning for the architectural offset between the reflector
-        # plane and the user domain edge. v1.7.5 closed that gap on both
-        # the uniform (rfx/grid.py) and non-uniform (rfx/nonuniform.py)
-        # paths via per-face ``pad_{axis}_{lo,hi}`` allocation. The
-        # warning is retained as a no-op anchor so external references
-        # ("[P2.7]") don't break and as a reminder that the fix is
-        # regression-locked via tests/test_silent_drop_warnings.py and
-        # tests/test_boundary_pmc_hi_faces.py.
+    def _validate_cfg_waveguide_reference_plane(
+        self,
+        _w,
+        cpml_thick_lo: list[float],
+        cpml_thick_hi: list[float],
+    ) -> None:
+        """P2.8: Waveguide-port reference plane sanity.
 
-        # P2.8: Waveguide-port reference plane sanity.
-        # The S-matrix returned by ``compute_waveguide_s_matrix`` is
-        # evaluated AT the reference plane (either ``entry.reference_plane``
-        # if user-specified, or the port's ``x_position`` by default after
-        # 2026-04-22). The phase of reported S-params is therefore tied to
-        # that plane. Physical correctness requires the plane lies inside
-        # the simulation domain, outside the CPML absorbing region, and
-        # preferably inside a uniform-cross-section segment of guide so the
-        # modal decomposition is defined.
+        The S-matrix returned by ``compute_waveguide_s_matrix`` is
+        evaluated AT the reference plane (either ``entry.reference_plane``
+        if user-specified, or the port's ``x_position`` by default after
+        2026-04-22). The phase of reported S-params is therefore tied to
+        that plane. Physical correctness requires the plane lies inside
+        the simulation domain, outside the CPML absorbing region, and
+        preferably inside a uniform-cross-section segment of guide so the
+        modal decomposition is defined.
+
+        P2.7 (obsolete): PMC / PEC + CPML on the same axis used to emit
+        a warning for the architectural offset between the reflector
+        plane and the user domain edge. v1.7.5 closed that gap on both
+        the uniform (rfx/grid.py) and non-uniform (rfx/nonuniform.py)
+        paths via per-face ``pad_{axis}_{lo,hi}`` allocation. The
+        warning is retained as a no-op anchor so external references
+        ("[P2.7]") don't break and as a reminder that the fix is
+        regression-locked via tests/test_silent_drop_warnings.py and
+        tests/test_boundary_pmc_hi_faces.py.
+        """
         if self._waveguide_ports:
             axis_map = {"x": 0, "y": 1, "z": 2}
             for entry in self._waveguide_ports:
@@ -1664,9 +1763,6 @@ class _PreflightMixin:
                                 stacklevel=3,
                             )
                             break
-
-        self._check_waveguide_port_evanescent()
-        self._check_msl_port_geometry(dx, cpml_thick_lo, cpml_thick_hi)
 
     def _check_msl_port_geometry(
         self,
