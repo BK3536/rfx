@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Crossval 12: disjoint 3-D subgrid prototype diagnostic.
+"""Crossval 12: disjoint 3-D subgrid prototype smoke.
 
-This example exercises the disjoint subgrid prototype, which is **research-only**
+This example exercises the Stage-2 disjoint subgrid runner
+(``rfx.runners.disjoint.run_disjoint_stage2_path``), which is **research-only**
 and **not long-time energy-stable**. It is not a public
 ``Simulation.add_refinement`` feature claim and it is not a Meep/openEMS
-cross-solver pass. The short-window gate below is a research diagnostic, *not* a
+cross-solver pass. The short-window run below is a research smoke, *not* a
 "COMPLETE" or production-ready status: the disjoint topology still grows energy
 over long integration windows and remains outside the validated production
 envelope. Guarded one-sided production subgrid crossval evidence lives in
@@ -17,28 +18,55 @@ Run:
 
 from __future__ import annotations
 
-import os
-import sys
+import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from rfx import GaussianPulse, Simulation
+from rfx.runners.disjoint import run_disjoint_stage2_path
 
-from scripts.stage2_disjoint_full_physics_gate import run_gate
+
+def _build_disjoint_simulation() -> Simulation:
+    """Return a small research-only Stage-2 disjoint subgrid simulation."""
+    sim = Simulation(
+        freq_max=8e9,
+        domain=(0.04, 0.04, 0.024),
+        boundary="pec",
+        dx=0.002,
+    )
+    sim.add_refinement(
+        z_range=(0.006, 0.018),
+        ratio=2,
+        validation="research",
+        topology="stage2_disjoint_3d",
+    )
+    sim.add_source(
+        (0.04 / 3.0, 0.04 / 3.0, 0.0114),
+        "ez",
+        waveform=GaussianPulse(f0=4e9, bandwidth=0.6),
+    )
+    sim.add_probe((2.0 * 0.04 / 3.0, 2.0 * 0.04 / 3.0, 0.0126), "ez")
+    return sim
 
 
 def main() -> int:
-    result = run_gate(n_steps=100)
+    sim = _build_disjoint_simulation()
+    grid = sim._build_grid()
+    n_steps = 100
+    result = run_disjoint_stage2_path(sim, grid, n_steps=n_steps)
+
+    series = np.asarray(result.time_series)
+    finite = bool(np.all(np.isfinite(series)))
+    abs_max = float(np.max(np.abs(series))) if series.size else 0.0
     print(
-        "Crossval 12 disjoint subgrid prototype: short-window research gate "
-        "PASS (research-only; NOT a COMPLETE/production status — the disjoint "
+        "Crossval 12 disjoint subgrid prototype: short-window research smoke "
+        "(research-only; NOT a COMPLETE/production status -- the disjoint "
         "topology is not long-time energy-stable)"
     )
-    print(f"  energy max ratio:   {result.max_energy_ratio:.6f}x")
-    print(f"  face signal min:    {result.face_signal_min:.6e}")
-    print(f"  coarse hole max:    {result.coarse_hole_max:.6e}")
-    print(f"  AD gradient:        {result.ad_grad:.6e}")
-    print(f"  cell savings:       {result.cell_savings_factor:.2f}x")
-    print(f"  allocated savings:  {result.allocated_cell_savings_factor:.2f}x")
-    return 0
+    print(f"  steps run:          {n_steps}")
+    print(f"  probe series shape: {series.shape}")
+    print(f"  probe abs max:      {abs_max:.6e}")
+    print(f"  all finite:         {finite}")
+    print(f"  timestep dt:        {result.dt:.6e}")
+    return 0 if finite else 1
 
 
 if __name__ == "__main__":
