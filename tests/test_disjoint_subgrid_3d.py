@@ -325,26 +325,43 @@ def test_six_face_sat_longer_run_bounded_and_ad_finite():
     assert np.isfinite(grad)
 
 
+def _disjoint_longrun_final_energy(stepper, config, state, n_steps=3000):
+    """Roll the disjoint state ``n_steps`` via a compiled scan; return energy.
+
+    ``compute_disjoint_energy_3d`` reduces to a Python ``float`` and so cannot
+    run inside ``lax.scan``; the scan only advances the state and energy is
+    measured on the concrete final state. (The earlier per-step-energy scan
+    body raised ``ConcretizationTypeError`` and the xfail masked it -- the
+    long-run lock was never actually measuring the energy it claims to.)
+    """
+    final_state, _ = jax.lax.scan(
+        lambda carry, _: (stepper(carry, config), None),
+        state,
+        None,
+        length=n_steps,
+    )
+    return float(compute_disjoint_energy_3d(final_state, config))
+
+
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "Known energy instability of the disjoint Stage-2 prototype: the "
-        "six-face SAT coupling injects energy and the closed-domain energy "
-        "diverges over a long horizon (~14x by 3000 steps). research-only "
-        "— see handover SUBGRID_HANDOVER_2026-05-16.md section 3. This "
-        "xfail(strict=True) locks the known instability: if a future change "
-        "stabilizes the prototype the test XPASSes and strict flips it to a "
-        "failure, so the change cannot land silently."
+        "Known energy instability of the disjoint Stage-2 six-face SAT "
+        "prototype: the closed-domain energy diverges ~14x over a 3000-step "
+        "horizon. research-only — see handover SUBGRID_HANDOVER_2026-05-16.md "
+        "section 3. This xfail(strict=True) locks the known instability: if a "
+        "future change stabilizes the prototype the test XPASSes and strict "
+        "flips it to a failure, so the change cannot land silently."
     ),
 )
 def test_disjoint_subgrid_3d_longrun_instability():
-    """Long-run energy lock: the disjoint prototype is NOT long-time stable.
+    """Long-run energy lock: the six-face disjoint prototype is NOT stable.
 
     ``test_six_face_sat_longer_run_bounded_and_ad_finite`` runs only 80 steps
-    — inside the bounded-transient window. Over a long (>=3000-step) horizon
-    the closed-domain energy diverges. This test asserts long-time
-    boundedness, which fails by design; it documents the instability instead
-    of hiding it behind a short window.
+    — inside the bounded-transient window. Over a 3000-step horizon the
+    closed-domain energy diverges. This test asserts long-time boundedness,
+    which fails by design; it documents the instability instead of hiding it
+    behind a short window.
     """
     config, base = init_disjoint_subgrid_3d(
         shape_c=(14, 14, 14),
@@ -361,19 +378,15 @@ def test_disjoint_subgrid_3d_longrun_instability():
     state = zero_coarse_hole(state, config)
     initial_energy = float(compute_disjoint_energy_3d(state, config))
 
-    # Run the 3000-step rollout as a single compiled scan. A plain Python
-    # loop re-traces the JAX step 3000x and is impractically slow.
-    def _scan_step(carry, _):
-        stepped = step_disjoint_sat_3d(carry, config)
-        return stepped, compute_disjoint_energy_3d(stepped, config)
-
-    _, energies = jax.lax.scan(_scan_step, state, None, length=3000)
-    assert bool(jnp.all(jnp.isfinite(energies)))
-    max_energy = float(jnp.max(energies))
+    final_energy = _disjoint_longrun_final_energy(
+        step_disjoint_sat_3d, config, state
+    )
 
     # A genuine SBP-SAT closure keeps closed-domain energy bounded. This
-    # prototype does not — the assertion fails by design (the xfail lock).
-    assert max_energy <= initial_energy * 1.25
+    # prototype does not — the bound assertion fails by design (the xfail
+    # lock); the finiteness assertion above it must still hold.
+    assert np.isfinite(final_energy)
+    assert final_energy <= initial_energy * 1.25
 
 
 def test_z_slab_sat_handles_full_xy_fine_block_without_side_coarse_cells():
@@ -404,4 +417,49 @@ def test_z_slab_sat_handles_full_xy_fine_block_without_side_coarse_cells():
     for arr in (state.ex_c, state.ey_c, state.ez_c, state.hx_c, state.hy_c, state.hz_c):
         hole = arr[fi_lo:fi_hi, fj_lo:fj_hi, fk_lo:fk_hi]
         assert float(jnp.max(jnp.abs(hole))) == 0.0
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Known energy instability of the disjoint z-slab keep-path stepper "
+        "(step_disjoint_z_slab_sat_3d, the stepper US-11 kept as the disjoint "
+        "research keep-path): the closed-domain energy diverges ~33x over a "
+        "3000-step horizon. research-only. This xfail(strict=True) locks the "
+        "instability so a future stabilization XPASSes and strict flips it to "
+        "a failure."
+    ),
+)
+def test_disjoint_z_slab_sat_3d_longrun_instability():
+    """Long-run energy lock for the disjoint z-slab keep-path stepper.
+
+    ``test_z_slab_sat_handles_full_xy_fine_block_without_side_coarse_cells``
+    runs only 20 steps — inside the bounded-transient window.
+    ``step_disjoint_z_slab_sat_3d`` is the stepper US-11 kept as the disjoint
+    research keep-path, so its long-run behaviour needs an explicit lock too
+    (the existing US-06 lock exercises only ``step_disjoint_sat_3d``). Over a
+    3000-step horizon the closed-domain energy diverges; this test asserts
+    long-time boundedness, which fails by design.
+    """
+    config, state = init_disjoint_subgrid_3d(
+        shape_c=(10, 10, 10),
+        fine_region=(0, 10, 0, 10, 3, 7),
+        ratio=2,
+        sat_strength=0.02,
+    )
+    fi_lo, fi_hi, fj_lo, fj_hi, fk_lo, fk_hi = config.fine_region
+    state = state._replace(
+        hy_c=state.hy_c.at[fi_lo:fi_hi, fj_lo:fj_hi, fk_lo - 1].set(1.0 / Z0),
+    )
+    state = zero_coarse_hole(state, config)
+    initial_energy = float(compute_disjoint_energy_3d(state, config))
+
+    final_energy = _disjoint_longrun_final_energy(
+        step_disjoint_z_slab_sat_3d, config, state
+    )
+
+    # The keep-path stepper is not long-time energy-stable either — the bound
+    # assertion fails by design (the xfail lock).
+    assert np.isfinite(final_energy)
+    assert final_energy <= initial_energy * 2.0
 
