@@ -18,7 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from rfx.grid import Grid
-from rfx.core.yee import _shift_fwd, _shift_bwd
+from rfx.core.yee import _shift_fwd, _shift_bwd, EPS_0
 from rfx.core.jax_utils import is_tracer
 
 
@@ -128,7 +128,6 @@ def _cpml_profile(
         ``σ_max = -ln(R) * (m+1) / (2 * η * d)``
         where ``d = n_layers * dx``.  Default 1e-15 (matching Meep).
     """
-    EPS_0 = 8.854187817e-12
     MU_0 = 1.2566370614e-6
 
     # Stay in-trace when dt/dx are JAX tracers (mesh-as-design-variable
@@ -409,7 +408,6 @@ def apply_cpml_e(
     """
     n = grid.cpml_layers
     dt = grid.dt
-    EPS_0 = 8.854187817e-12
     # Material-aware CPML: use local eps_r so guided modes in dielectric
     # waveguides see an impedance-matched absorber (equivalent to UPML).
     # Falls back to free-space eps_0 when materials is None.
