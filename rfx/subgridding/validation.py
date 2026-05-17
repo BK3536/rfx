@@ -133,6 +133,18 @@ class SubgridValidationReport(NamedTuple):
         return json.dumps(self.to_dict(), **options)
 
 
+def overlap_fine_extent(coarse_extent: int, ratio: int) -> int:
+    """Return the node-aligned fine-grid node count for an overlap z-slab.
+
+    A fine slab spanning ``coarse_extent`` coarse nodes at refinement ``ratio``
+    owns ``(coarse_extent - 1) * ratio + 1`` fine nodes -- the node-aligned
+    convention used by the overlap runner in ``rfx.runners.subgridded``.  Both
+    that runner and ``build_subgrid_region`` below call this helper, so the
+    reported validation region and the executed fine grid cannot drift apart.
+    """
+    return (int(coarse_extent) - 1) * int(ratio) + 1
+
+
 def build_subgrid_region(sim, grid) -> SubgridRegion | None:
     """Return the runner's coarse/fine index mapping, or ``None``."""
     ref = getattr(sim, "_refinement", None)
@@ -167,12 +179,11 @@ def build_subgrid_region(sim, grid) -> SubgridRegion | None:
             int(round((sim._domain[1] - margin) / dx_c)) + grid.pad_y_lo + 1,
             grid.ny - grid.pad_y_hi,
         )
-    # Fine-grid extent uses the cell-extent convention ``(hi - lo) * ratio``.
-    # This matches the actual runner path (``rfx.runners.subgridded`` and the
-    # ``SubgridConfig3D`` builder in ``rfx.subgridding.sbp_sat_3d``), which is
-    # what consumes this region. The node-aligned ``(hi - lo - 1) * ratio + 1``
-    # form previously used here disagreed with the runner by ``ratio - 1``
-    # points per axis.
+    # Fine-grid extent uses the node-aligned convention
+    # ``(hi - lo - 1) * ratio + 1`` shared with the overlap runner in
+    # ``rfx.runners.subgridded`` via ``overlap_fine_extent``.  The cell-extent
+    # ``(hi - lo) * ratio`` form over-reports the fine shape by ``ratio - 1``
+    # nodes per axis relative to the fine grid the runner actually builds.
     return SubgridRegion(
         fi_lo=fi_lo,
         fi_hi=fi_hi,
@@ -180,9 +191,9 @@ def build_subgrid_region(sim, grid) -> SubgridRegion | None:
         fj_hi=fj_hi,
         fk_lo=fk_lo,
         fk_hi=fk_hi,
-        nx_f=(fi_hi - fi_lo) * ratio,
-        ny_f=(fj_hi - fj_lo) * ratio,
-        nz_f=(fk_hi - fk_lo) * ratio,
+        nx_f=overlap_fine_extent(fi_hi - fi_lo, ratio),
+        ny_f=overlap_fine_extent(fj_hi - fj_lo, ratio),
+        nz_f=overlap_fine_extent(fk_hi - fk_lo, ratio),
         dx_c=dx_c,
         dx_f=dx_f,
         ratio=ratio,
@@ -223,6 +234,10 @@ def build_stage2_disjoint_region(sim, grid) -> SubgridRegion:
             int(round((sim._domain[1] - margin) / dx_c)) + grid.pad_y_lo + 1,
             grid.ny - grid.pad_y_hi,
         )
+    # The Stage-2 disjoint runner contract (``build_disjoint_runner_contract``)
+    # defaults to the cell-extent convention ``(hi - lo) * ratio``; this region
+    # matches that default.  This intentionally differs from the node-aligned
+    # overlap convention -- each topology's region matches its own runner.
     return SubgridRegion(
         fi_lo=fi_lo,
         fi_hi=fi_hi,

@@ -101,9 +101,15 @@ def _run_subgridded_once(
     # ``(n_coarse_nodes - 1) * ratio + 1``.  The legacy ``n_nodes * ratio``
     # formula created one extra fine interval per axis and made the z-hi fine
     # face physically offset from the coarse face it was SAT-coupled to.
-    nx_f = (fi_hi - fi_lo - 1) * ratio + 1
-    ny_f = (fj_hi - fj_lo - 1) * ratio + 1
-    nz_f = (fk_hi - fk_lo - 1) * ratio + 1
+    #
+    # ``overlap_fine_extent`` is the single source of truth shared with
+    # ``rfx.subgridding.validation.build_subgrid_region`` so the validation
+    # report and this executed fine grid cannot drift apart.
+    from rfx.subgridding.validation import overlap_fine_extent
+
+    nx_f = overlap_fine_extent(fi_hi - fi_lo, ratio)
+    ny_f = overlap_fine_extent(fj_hi - fj_lo, ratio)
+    nz_f = overlap_fine_extent(fk_hi - fk_lo, ratio)
 
     # Global timestep (limited by fine grid CFL)
     C0_val = 1.0 / np.sqrt(float(EPS_0) * float(MU_0))
