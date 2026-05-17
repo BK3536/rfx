@@ -68,8 +68,11 @@ def init_materials(shape: tuple[int, int, int]) -> MaterialArrays:
     )
 
 
-# Physical constants
-EPS_0 = 8.854187817e-12  # F/m
+# Physical constants — post-2019 SI / CODATA. EPS_0 and MU_0 form a
+# mutually consistent pair: 1/sqrt(MU_0 * EPS_0) == c (299792458 m/s),
+# so the FDTD's effective speed of light is exact. Changing one without
+# the other breaks that consistency (see the TE10-cutoff gate).
+EPS_0 = 8.8541878128e-12  # F/m — post-2019 SI / CODATA value
 MU_0 = 1.25663706212e-6  # H/m — post-2019 SI / CODATA value
 
 

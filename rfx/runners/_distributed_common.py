@@ -55,8 +55,10 @@ __all__ = [
 def cpml_coeff_e_vacuum(dt: float) -> float:
     """Vacuum CPML E-field update coefficient ``dt / eps_0``.
 
-    Bit-identical to the pre-refactor inline literal
-    ``dt / 8.854187817e-12`` (``EPS_0`` is exactly that value).
+    Returns ``dt / EPS_0`` using the canonical ``rfx.core.yee.EPS_0``
+    (post-2019 SI value 8.8541878128e-12). The pre-refactor distributed
+    runners held the literal ``8.854187817e-12`` inline; Stage 3.5b
+    consolidated every EPS_0 site onto the canonical constant.
 
     Takes ONLY ``dt`` — no ``eps_r``/``materials`` argument. The vacuum
     assumption is intentional and load-bearing: see the module docstring.
