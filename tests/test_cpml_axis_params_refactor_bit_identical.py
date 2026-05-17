@@ -101,3 +101,77 @@ def test_cpml_axis_params_boundary_cell_sizes_match_grid_dx():
         assert abs(getattr(params, cell_attr) - dx) < 1e-12, (
             f"{cell_attr} expected {dx}, got {getattr(params, cell_attr)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Stage 1.5a — distributed-trio CPML/constant de-duplication guards
+# ---------------------------------------------------------------------------
+
+
+def test_distributed_common_cpml_coeff_helpers_are_vacuum_only():
+    """Stage 1.5a / architect residual (a) — the extracted CPML-coefficient
+    helpers must stay VACUUM-ONLY.
+
+    `cpml_coeff_e_vacuum` / `cpml_coeff_h_vacuum` take ONLY `dt`. The
+    distributed CPML correction runs where per-cell permittivity is not in
+    scope, so the vacuum form is structural. If a future change adds an
+    `eps_r` / `mu_r` / `materials` parameter (a CORE-C2-class hidden-
+    assumption bug), this guard fails — by design.
+    """
+    import inspect
+
+    from rfx.runners._distributed_common import (
+        cpml_coeff_e_vacuum,
+        cpml_coeff_h_vacuum,
+    )
+
+    for fn in (cpml_coeff_e_vacuum, cpml_coeff_h_vacuum):
+        params = list(inspect.signature(fn).parameters)
+        assert params == ["dt"], (
+            f"{fn.__name__} must take only 'dt' (vacuum-only); got {params}. "
+            f"A non-vacuum eps_r/mu_r/materials parameter would reintroduce "
+            f"a CORE-C2-class hidden-assumption bug."
+        )
+
+
+def test_distributed_common_cpml_coeff_bit_identical_to_inline_literals():
+    """Stage 1.5a de-dup guard — the shared vacuum CPML coefficients must
+    stay byte-identical to the inline literals they replaced in
+    distributed.py / distributed_v2.py / distributed_nu.py."""
+    from rfx.runners._distributed_common import (
+        cpml_coeff_e_vacuum,
+        cpml_coeff_h_vacuum,
+    )
+
+    dt = 1.234e-12
+    # distributed.py / distributed_nu.py old literal: dt / 8.854187817e-12
+    assert cpml_coeff_e_vacuum(dt) == dt / 8.854187817e-12
+    # distributed.py / distributed_nu.py old literal: dt / 1.2566370614e-6
+    assert cpml_coeff_h_vacuum(dt) == dt / 1.2566370614e-6
+
+
+def test_distributed_runners_use_shared_cpml_coeff_helpers():
+    """Stage 1.5a de-dup guard — the uniform and NU distributed runners
+    must reference the shared vacuum CPML-coefficient helpers, not a
+    re-introduced inline literal. Catches sibling drift mechanically."""
+    import rfx.runners.distributed as dmod
+    import rfx.runners.distributed_nu as numod
+    from rfx.runners import _distributed_common as common
+
+    assert dmod.cpml_coeff_e_vacuum is common.cpml_coeff_e_vacuum
+    assert dmod.cpml_coeff_h_vacuum is common.cpml_coeff_h_vacuum
+    assert numod.cpml_coeff_e_vacuum is common.cpml_coeff_e_vacuum
+    assert numod.cpml_coeff_h_vacuum is common.cpml_coeff_h_vacuum
+
+
+def test_distributed_ghost_exchange_is_single_shared_body():
+    """Stage 1.5a de-dup guard — ``distributed_v2`` and ``distributed_nu``
+    carried byte-identical ``shard_map`` ghost-exchange bodies. After the
+    extraction both must resolve to the SAME shared function object, so a
+    future fix to one cannot silently drift from the other."""
+    from rfx.runners._distributed_common import exchange_component_shmap
+    from rfx.runners.distributed_v2 import _exchange_component_shmap
+    from rfx.runners.distributed_nu import _exchange_component_nu_shmap
+
+    assert _exchange_component_shmap is exchange_component_shmap
+    assert _exchange_component_nu_shmap is exchange_component_shmap

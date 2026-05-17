@@ -42,6 +42,11 @@ from rfx.core.yee import (
     _shift_bwd,
 )
 from rfx.core.jax_utils import is_tracer  # noqa: F401  (Phase 2C reuse target)
+from rfx.runners._distributed_common import (
+    cpml_coeff_e_vacuum,
+    cpml_coeff_h_vacuum,
+    exchange_component_shmap,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -662,45 +667,13 @@ def shard_pec_mask_x_slab(global_mask, sharded_grid: ShardedNUGrid):
     return slabs.reshape(n_devices * nx_local, ny, nz)
 
 
-def _exchange_component_nu_shmap(field, mesh, n_devices):
-    """Ghost-exchange one field component on an x-sharded array.
-
-    Mirrors ``rfx/runners/distributed_v2.py::_exchange_component_shmap``
-    exactly — the NU scan body uses the same ghost-exchange contract
-    (last-real-cell -> next rank's left ghost, first-real-cell ->
-    previous rank's right ghost) as the uniform distributed runner.
-    """
-    @partial(
-        shard_map,
-        mesh=mesh,
-        in_specs=P("x"),
-        out_specs=P("x"),
-        check_rep=False,
-    )
-    def _exchange(f):
-        right_boundary = f[-2:-1, :, :]   # last real cell -> right neighbour's left ghost
-        left_boundary = f[1:2, :, :]      # first real cell -> left neighbour's right ghost
-
-        perm_right = [(i, (i + 1) % n_devices) for i in range(n_devices)]
-        left_ghost_recv = lax.ppermute(right_boundary, "x", perm=perm_right)
-
-        perm_left = [(i, (i - 1) % n_devices) for i in range(n_devices)]
-        right_ghost_recv = lax.ppermute(left_boundary, "x", perm=perm_left)
-
-        device_idx = lax.axis_index("x")
-
-        left_ghost_val = jnp.where(device_idx > 0,
-                                   left_ghost_recv,
-                                   f[0:1, :, :])
-        right_ghost_val = jnp.where(device_idx < n_devices - 1,
-                                    right_ghost_recv,
-                                    f[-1:, :, :])
-
-        f = f.at[0:1, :, :].set(left_ghost_val)
-        f = f.at[-1:, :, :].set(right_ghost_val)
-        return f
-
-    return _exchange(field)
+# Ghost-exchange one field component on an x-sharded array.
+#
+# The NU scan body uses the same ghost-exchange contract as the uniform
+# distributed runner; the body lived here verbatim and is now the shared
+# ``exchange_component_shmap`` in ``_distributed_common.py``. Kept as a
+# module-local alias so the existing call sites are unchanged.
+_exchange_component_nu_shmap = exchange_component_shmap
 
 
 def _exchange_h_ghosts_nu(state: FDTDState, mesh, n_devices: int) -> FDTDState:
@@ -1486,8 +1459,7 @@ def _apply_cpml_e_local_nu(state: FDTDState, cpml_params, cpml_state,
     """
     from rfx.boundaries.cpml import CPMLAxisParams
 
-    EPS_0_LOC = 8.854187817e-12
-    coeff_e = dt / EPS_0_LOC  # vacuum coefficient (matches uniform path)
+    coeff_e = cpml_coeff_e_vacuum(dt)  # vacuum coefficient (matches uniform path)
 
     if isinstance(cpml_params, CPMLAxisParams):
         # T7 PR1: read lo-face profile; scan body synthesises the hi-face
@@ -1710,8 +1682,7 @@ def _apply_cpml_h_local_nu(state: FDTDState, cpml_params, cpml_state,
     """
     from rfx.boundaries.cpml import CPMLAxisParams
 
-    MU_0_LOC = 1.2566370614e-6
-    coeff_h = dt / MU_0_LOC
+    coeff_h = cpml_coeff_h_vacuum(dt)  # vacuum coefficient (matches uniform path)
 
     if isinstance(cpml_params, CPMLAxisParams):
         # T7 PR1: read lo-face; scan body jnp.flip(px.b) preserves bit-identity.
