@@ -1,9 +1,17 @@
-"""Differentiable material fitting — fit Debye/Lorentz poles to S-parameters via jax.grad.
+"""Differentiable material fitting — fit Debye/Lorentz poles via jax.grad.
 
 Unlike the scipy-based fitting in ``material_fit.py`` which fits to eps(f),
-this module fits dispersive material models directly to S-parameter data by
-differentiating through the full FDTD simulation.  No de-embedding is needed
-because the fixture geometry is included in the simulation.
+this module differentiates through the full FDTD simulation to fit
+dispersive material models.  No de-embedding is needed because the fixture
+geometry is included in the simulation.
+
+ACCURACY CAVEAT — despite the name, the current loss does NOT fit true
+S-parameters. The extraction self-normalizes each probe spectrum by its own
+per-probe maximum magnitude (see ~L470-477), which discards magnitude
+information; the loss therefore matches only the *shape* of a self-normalized
+probe spectrum, not S-parameter magnitude and phase. The code calls this an
+"S-param proxy" internally. A real S-parameter fit is planned (the
+review-remediation plan, Stage 3.5a).
 
 The gradient path is::
 

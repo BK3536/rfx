@@ -244,8 +244,12 @@ class RISUnitCell:
             dx=self._dx,
         )
 
-        # Substrate
-        sim.add_material("substrate", eps_r=_substrate_eps(self._substrate_material))
+        # Substrate — carry the full material (sigma / dispersion), not
+        # just a scalar eps_r.
+        sim.add_material(
+            "substrate",
+            **_substrate_material_kwargs(self._substrate_material),
+        )
         sim.add(
             Box((0, 0, 0), (Lx, Ly, h_sub)),
             material="substrate",
@@ -495,24 +499,39 @@ class RISUnitCell:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _substrate_eps(material: str) -> float:
-    """Resolve substrate material to a relative permittivity value."""
+# Common RIS substrates not in the default MATERIAL_LIBRARY. Only the
+# permittivity is characterised for these — no loss / dispersion data.
+_EXTRA_SUBSTRATES = {
+    "rogers5880": 2.2,
+    "rogers4350b": 3.66,
+    "rogers3003": 3.0,
+    "duroid": 2.2,
+}
+
+
+def _substrate_material_kwargs(material: str) -> dict:
+    """Resolve a substrate material name to the full ``add_material``
+    kwargs.
+
+    Carries ``sigma`` / dispersion (``debye_poles`` etc.) from the
+    library entry. The prior ``_substrate_eps()``-only path collapsed
+    the material to a scalar permittivity, silently dropping substrate
+    loss and dispersion (Tier-3 silent-wrong-answer).
+    """
     from rfx.api import MATERIAL_LIBRARY
     if material in MATERIAL_LIBRARY:
-        return MATERIAL_LIBRARY[material]["eps_r"]
-    # Common RIS substrates not in the default library
-    _EXTRA = {
-        "rogers5880": 2.2,
-        "rogers4350b": 3.66,
-        "rogers3003": 3.0,
-        "duroid": 2.2,
-    }
-    if material in _EXTRA:
-        return _EXTRA[material]
+        return dict(MATERIAL_LIBRARY[material])
+    if material in _EXTRA_SUBSTRATES:
+        return {"eps_r": _EXTRA_SUBSTRATES[material]}
     raise ValueError(
         f"Unknown substrate material {material!r}. "
-        f"Known: {sorted(list(MATERIAL_LIBRARY.keys()) + list(_EXTRA.keys()))}"
+        f"Known: {sorted(list(MATERIAL_LIBRARY.keys()) + list(_EXTRA_SUBSTRATES.keys()))}"
     )
+
+
+def _substrate_eps(material: str) -> float:
+    """Relative permittivity (scalar) of a substrate material."""
+    return _substrate_material_kwargs(material)["eps_r"]
 
 
 def _extract_reflection(
@@ -522,8 +541,17 @@ def _extract_reflection(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Extract S11 reflection from a simulation result.
 
-    Tries Floquet S-params first; falls back to time-domain FFT
-    of the probe recording.
+    Tries Floquet S-params first — the only path here that returns a
+    physically valid S11.
+
+    WARNING: the time-domain FFT fallback below does NOT produce a valid
+    S11. It FFTs the raw probe time series (total field, with no
+    incident-field reference subtraction) and peak-normalizes the
+    magnitude. This violates the repo rule "never FFT-of-probe for R(f)"
+    (.claude/rules/rfx-feature-discovery.md) and yields a spectrum shaped
+    by the source, not a reflection coefficient. The fallback is kept
+    only so RIS demos run end-to-end; treat its output as a qualitative
+    placeholder, not a measured S-parameter.
 
     Returns
     -------

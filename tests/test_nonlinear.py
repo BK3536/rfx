@@ -113,14 +113,16 @@ def test_kerr_nonzero_modifies_field():
     ez_orig = float(state.ez[4, 4, 4])
     ez_corr = float(corrected.ez[4, 4, 4])
 
-    # The correction subtracts (dt/eps0)*chi3*|E|^2*E, so |E| should decrease
+    # The Kerr correction reduces |E| (self-defocusing for chi3 > 0).
     assert abs(ez_corr) < abs(ez_orig), (
         f"Kerr ADE should reduce field magnitude: {ez_corr} vs {ez_orig}"
     )
 
-    # Verify the correction factor is physically correct
+    # GEO-C1: apply_kerr_ade solves the documented implicit relation
+    # exactly — E^{n+1} = E^n / (1 + factor), not the old explicit
+    # E*(1-factor). (At this factor ~1e-7 the two agree to O(factor^2).)
     expected_factor = (dt / EPS_0) * chi3_val * e_val ** 2
-    expected_ez = e_val * (1.0 - expected_factor)
+    expected_ez = e_val / (1.0 + expected_factor)
     np.testing.assert_allclose(ez_corr, expected_ez, rtol=1e-5)
 
     # Cells without field should remain zero

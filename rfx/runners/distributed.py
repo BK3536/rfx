@@ -43,6 +43,10 @@ from rfx.simulation import (
 from rfx.sources.sources import LumpedPort, setup_lumped_port
 from rfx.materials.debye import DebyeCoeffs, DebyeState
 from rfx.materials.lorentz import LorentzCoeffs, LorentzState
+from rfx.runners._distributed_common import (
+    cpml_coeff_e_vacuum,
+    cpml_coeff_h_vacuum,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -738,7 +742,7 @@ def _apply_cpml_e_distributed(
     """
     n = n_cpml
     g = ghost
-    coeff_e = dt / (8.854187817e-12 * 1.0)  # dt / eps_0
+    coeff_e = cpml_coeff_e_vacuum(dt)  # dt / eps_0 (vacuum)
 
     b = cpml_params.b
     c = cpml_params.c
@@ -980,7 +984,7 @@ def _apply_cpml_h_distributed(
     """
     n = n_cpml
     g = ghost
-    coeff_h = dt / 1.2566370614e-6  # dt / mu_0
+    coeff_h = cpml_coeff_h_vacuum(dt)  # dt / mu_0 (vacuum)
 
     b = cpml_params.b
     c = cpml_params.c

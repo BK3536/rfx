@@ -22,8 +22,9 @@ from typing import NamedTuple
 
 import numpy as np
 
+from rfx.core.yee import EPS_0  # canonical 8.854187817e-12 (Stage 3.5b)
+
 C0 = 299792458.0
-EPS_0 = 8.854187817e-12
 
 
 # ---------------------------------------------------------------------------

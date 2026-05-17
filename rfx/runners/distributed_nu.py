@@ -16,11 +16,10 @@ Scope (Phase B minimal):
   here. The public entry point in ``distributed_v2`` falls back when
   dispersion is active.
 
-Key helper: ``_build_sharded_inv_dx_arrays`` returns per-device
-slabs of ``inv_dx`` / ``inv_dx_h`` whose slab boundary entry of
-``inv_dx_h`` is derived from the global spacing straddling the slab
-seam (NOT from the local slab alone) so H-field mean-spacing math
-remains consistent across the shard boundary.
+Key helper: ``_build_sharded_inv_dx_arrays`` builds the x-axis
+inverse-spacing arrays on the global padded profile (E update: mean
+``2/(d[k-1]+d[k])``; H update: local ``1/d[k]`` — CORE-C2) so the
+per-device slabs stay correct across the shard boundary.
 """
 
 from __future__ import annotations
@@ -43,6 +42,11 @@ from rfx.core.yee import (
     _shift_bwd,
 )
 from rfx.core.jax_utils import is_tracer  # noqa: F401  (Phase 2C reuse target)
+from rfx.runners._distributed_common import (
+    cpml_coeff_e_vacuum,
+    cpml_coeff_h_vacuum,
+    exchange_component_shmap,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -59,9 +63,9 @@ def _build_sharded_inv_dx_arrays(grid, n_devices, pad_x=0):
     ``inv_dx`` and ``inv_dx_h`` from the padded profile, then reshape to
     per-device slabs.
 
-    For ``inv_dx_h``, the last entry of each device's slab is the global
-    mean-spacing straddling the slab seam with the next device (or 0 at
-    the domain boundary), NOT derived from the local slab alone.
+    The two inverse-spacing arrays are built on the *global* padded
+    profile, so slicing them into per-device slabs (with ghosts) keeps
+    every entry — including the slab-boundary ones — globally correct.
 
     Parameters
     ----------
@@ -73,10 +77,12 @@ def _build_sharded_inv_dx_arrays(grid, n_devices, pad_x=0):
 
     Returns
     -------
-    inv_dx_global : (nx_padded,) np.ndarray
-        Replicated — every device sees the whole thing when used with
-        ``P("x")`` (see caller packing).
+    inv_dx_e_global : (nx_padded,) np.ndarray
+        E-update inverse spacing — mean ``2/(d[k-1]+d[k])`` (leading
+        ``1/d[0]``). Consumed by ``_update_e_local_nu``.
     inv_dx_h_global : (nx_padded,) np.ndarray
+        H-update inverse spacing — local ``1/d[k]`` (trailing ``0``).
+        Consumed by ``_update_h_local_nu``.
     dx_padded : (nx_padded,) np.ndarray
         The padded cell-size profile (float32) — useful for diagnostics
         and the unit test.
@@ -93,13 +99,21 @@ def _build_sharded_inv_dx_arrays(grid, n_devices, pad_x=0):
             f"After padding nx={nx} is not divisible by n_devices={n_devices}"
         )
 
-    inv_dx = 1.0 / dx_arr
-    # inv_dx_h[i] = 2 / (dx[i] + dx[i+1]) for i<N-1 ; 0 at end.
-    inv_dx_h_mean = 2.0 / (dx_arr[:-1] + dx_arr[1:])
-    inv_dx_h = np.concatenate([inv_dx_h_mean, np.zeros(1, dtype=np.float64)])
+    # CORE-C2: the E update needs the MEAN spacing 2/(d[k-1]+d[k]); the
+    # H update needs the LOCAL cell width 1/d[k]. (Mirrors the
+    # single-device rfx.nonuniform._profile_to_inv_arrays.) Built on the
+    # global padded profile, so each per-device slab is correct after
+    # the P("x") shard — the E-mean seam straddles the lower neighbour
+    # and is resolved here, globally, before sharding.
+    inv_local = 1.0 / dx_arr                          # 1/d[k]
+    inv_mean = 2.0 / (dx_arr[:-1] + dx_arr[1:])       # 2/(d[k]+d[k+1])
+    # First return -> E update: mean of (d[k-1], d[k]); leading 1/d[0].
+    inv_dx_e = np.concatenate([inv_local[:1], inv_mean])
+    # Second return -> H update: local cell width; trailing 0.
+    inv_dx_h = np.concatenate([inv_local[:-1], np.zeros(1, dtype=np.float64)])
 
     return (
-        inv_dx.astype(np.float32),
+        inv_dx_e.astype(np.float32),
         inv_dx_h.astype(np.float32),
         dx_arr.astype(np.float32),
     )
@@ -653,45 +667,13 @@ def shard_pec_mask_x_slab(global_mask, sharded_grid: ShardedNUGrid):
     return slabs.reshape(n_devices * nx_local, ny, nz)
 
 
-def _exchange_component_nu_shmap(field, mesh, n_devices):
-    """Ghost-exchange one field component on an x-sharded array.
-
-    Mirrors ``rfx/runners/distributed_v2.py::_exchange_component_shmap``
-    exactly — the NU scan body uses the same ghost-exchange contract
-    (last-real-cell -> next rank's left ghost, first-real-cell ->
-    previous rank's right ghost) as the uniform distributed runner.
-    """
-    @partial(
-        shard_map,
-        mesh=mesh,
-        in_specs=P("x"),
-        out_specs=P("x"),
-        check_rep=False,
-    )
-    def _exchange(f):
-        right_boundary = f[-2:-1, :, :]   # last real cell -> right neighbour's left ghost
-        left_boundary = f[1:2, :, :]      # first real cell -> left neighbour's right ghost
-
-        perm_right = [(i, (i + 1) % n_devices) for i in range(n_devices)]
-        left_ghost_recv = lax.ppermute(right_boundary, "x", perm=perm_right)
-
-        perm_left = [(i, (i - 1) % n_devices) for i in range(n_devices)]
-        right_ghost_recv = lax.ppermute(left_boundary, "x", perm=perm_left)
-
-        device_idx = lax.axis_index("x")
-
-        left_ghost_val = jnp.where(device_idx > 0,
-                                   left_ghost_recv,
-                                   f[0:1, :, :])
-        right_ghost_val = jnp.where(device_idx < n_devices - 1,
-                                    right_ghost_recv,
-                                    f[-1:, :, :])
-
-        f = f.at[0:1, :, :].set(left_ghost_val)
-        f = f.at[-1:, :, :].set(right_ghost_val)
-        return f
-
-    return _exchange(field)
+# Ghost-exchange one field component on an x-sharded array.
+#
+# The NU scan body uses the same ghost-exchange contract as the uniform
+# distributed runner; the body lived here verbatim and is now the shared
+# ``exchange_component_shmap`` in ``_distributed_common.py``. Kept as a
+# module-local alias so the existing call sites are unchanged.
+_exchange_component_nu_shmap = exchange_component_shmap
 
 
 def _exchange_h_ghosts_nu(state: FDTDState, mesh, n_devices: int) -> FDTDState:
@@ -1477,8 +1459,7 @@ def _apply_cpml_e_local_nu(state: FDTDState, cpml_params, cpml_state,
     """
     from rfx.boundaries.cpml import CPMLAxisParams
 
-    EPS_0_LOC = 8.854187817e-12
-    coeff_e = dt / EPS_0_LOC  # vacuum coefficient (matches uniform path)
+    coeff_e = cpml_coeff_e_vacuum(dt)  # vacuum coefficient (matches uniform path)
 
     if isinstance(cpml_params, CPMLAxisParams):
         # T7 PR1: read lo-face profile; scan body synthesises the hi-face
@@ -1701,8 +1682,7 @@ def _apply_cpml_h_local_nu(state: FDTDState, cpml_params, cpml_state,
     """
     from rfx.boundaries.cpml import CPMLAxisParams
 
-    MU_0_LOC = 1.2566370614e-6
-    coeff_h = dt / MU_0_LOC
+    coeff_h = cpml_coeff_h_vacuum(dt)  # vacuum coefficient (matches uniform path)
 
     if isinstance(cpml_params, CPMLAxisParams):
         # T7 PR1: read lo-face; scan body jnp.flip(px.b) preserves bit-identity.

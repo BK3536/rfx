@@ -26,6 +26,8 @@ Three design improvements over the original rfx linear-SDF scheme:
 
 from __future__ import annotations
 
+import warnings
+
 import jax
 import jax.numpy as jnp
 
@@ -365,8 +367,18 @@ def compute_smoothed_eps_nonuniform(
                     eps_ex = jnp.where(m, eps_r, eps_ex)
                     eps_ey = jnp.where(m, eps_r, eps_ey)
                     eps_ez = jnp.where(m, eps_r, eps_ez)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # A shape whose .mask() cannot handle a
+                    # NonUniformGrid is skipped — but make that visible.
+                    # The pre-fix bare ``except: pass`` silently dropped
+                    # the shape's geometry AND would have masked a real
+                    # bug (NaN, typo, unexpected error) just as quietly.
+                    warnings.warn(
+                        f"smoothing: {type(shape).__name__}.mask() failed "
+                        f"on the non-uniform grid ({exc!r}); this shape is "
+                        f"SKIPPED and its geometry is NOT applied.",
+                        stacklevel=2,
+                    )
 
         if not sdf_shapes:
             continue

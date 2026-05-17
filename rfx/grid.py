@@ -190,13 +190,26 @@ class Grid:
 
     def position_to_index(self, pos: tuple[float, float, float]) -> tuple[int, int, int]:
         """Convert physical position to grid index (accounting for the
-        leading per-face CPML offset ``pad_{axis}_lo``)."""
+        leading per-face CPML offset ``pad_{axis}_lo``).
+
+        Raises
+        ------
+        ValueError
+            If ``pos`` maps outside the grid. The pre-guard code
+            returned an out-of-range index silently, which then indexed
+            the wrong cell (or wrapped negatively) downstream.
+        """
+        i = int(round(pos[0] / self.dx)) + self.pad_x_lo
+        j = int(round(pos[1] / self.dx)) + self.pad_y_lo
         k = 0 if self.is_2d else int(round(pos[2] / self.dx)) + self.pad_z_lo
-        return (
-            int(round(pos[0] / self.dx)) + self.pad_x_lo,
-            int(round(pos[1] / self.dx)) + self.pad_y_lo,
-            k,
-        )
+        nx, ny, nz = self.shape
+        if not (0 <= i < nx and 0 <= j < ny and 0 <= k < nz):
+            raise ValueError(
+                f"position {pos} maps to grid index ({i}, {j}, {k}), "
+                f"outside the grid shape {(nx, ny, nz)}. Check the "
+                f"position lies inside the simulation domain."
+            )
+        return (i, j, k)
 
     def __repr__(self) -> str:
         return (

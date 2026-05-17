@@ -24,7 +24,7 @@ Limitations
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import jax
@@ -627,32 +627,21 @@ def _sequential_fallback(
         # Clone the simulation and modify the material
         import copy
         sim_copy = copy.deepcopy(sim)
+        # ``dataclasses.replace`` carries ALL MaterialSpec fields and
+        # overrides only the swept one. The prior explicit field-by-field
+        # reconstruction listed eps_r/sigma/mu_r/debye_poles/lorentz_poles
+        # but NOT chi3 — a vmap fallback on a Kerr material silently
+        # dropped the nonlinearity (Tier-3 silent-wrong-answer).
         if mat_name is not None:
-            # Modify the named material
+            # Modify the named material.
             mat = sim_copy._resolve_material(mat_name)
-            new_kwargs = {
-                "eps_r": mat.eps_r,
-                "sigma": mat.sigma,
-                "mu_r": mat.mu_r,
-                "debye_poles": mat.debye_poles,
-                "lorentz_poles": mat.lorentz_poles,
-            }
-            new_kwargs[field] = float(val)
-            from rfx.api import MaterialSpec
-            sim_copy._materials[mat_name] = MaterialSpec(**new_kwargs)
+            sim_copy._materials[mat_name] = replace(
+                mat, **{field: float(val)})
         else:
-            # Modify all custom materials
+            # Modify all custom materials.
             for name, mat in list(sim_copy._materials.items()):
-                new_kwargs = {
-                    "eps_r": mat.eps_r,
-                    "sigma": mat.sigma,
-                    "mu_r": mat.mu_r,
-                    "debye_poles": mat.debye_poles,
-                    "lorentz_poles": mat.lorentz_poles,
-                }
-                new_kwargs[field] = float(val)
-                from rfx.api import MaterialSpec
-                sim_copy._materials[name] = MaterialSpec(**new_kwargs)
+                sim_copy._materials[name] = replace(
+                    mat, **{field: float(val)})
 
         result = sim_copy.run(n_steps=n_steps)
         all_ts.append(np.asarray(result.time_series))

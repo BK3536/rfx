@@ -37,8 +37,11 @@ def _graded_profile(n_physical, dx0, ratio=1.5):
 
 
 def test_inv_dx_h_slab_boundary_matches_global():
-    """The last entry of each device's inv_dx_h slab must equal the
-    global inv_dx_h value straddling the slab seam."""
+    """The sharded x inverse-spacing slabs must match the globally-built
+    arrays at the slab seam. CORE-C2 (2026-05-16): inv_dx_h is the
+    H-update array — local cell width 1/dx[k]; inv_dx_g is the E-update
+    array — mean 2/(dx[k-1]+dx[k]) — which is the one that straddles the
+    lower neighbour and is resolved by the global build."""
     nz = 8
     ny = 8
     n_physical = 32
@@ -71,18 +74,25 @@ def test_inv_dx_h_slab_boundary_matches_global():
             slabs[d, -1] = inv_dx_h_g[hi]
 
     # For device 0: the rightmost real cell (index ghost+nx_per-1 in slab)
-    # must equal inv_dx_h_g[nx_per - 1] — the global mean-spacing
-    # straddling the slab seam.
+    # equals inv_dx_h_g[nx_per - 1] — a slice of the globally-built array.
     expected = inv_dx_h_g[nx_per - 1]
     got = slabs[0, ghost + nx_per - 1]
     assert np.isclose(got, expected), (
         f"Device 0 seam-cell inv_dx_h = {got}, expected global "
         f"inv_dx_h[{nx_per - 1}] = {expected}"
     )
-    # Verify that this value is specifically 2 / (dx[nx_per-1] + dx[nx_per])
-    expected_analytic = 2.0 / (dx_padded[nx_per - 1] + dx_padded[nx_per])
+    # CORE-C2: inv_dx_h is the H-update array — LOCAL cell width 1/dx[k].
+    expected_analytic = 1.0 / dx_padded[nx_per - 1]
     assert np.isclose(got, expected_analytic, atol=1e-6), (
-        f"Seam inv_dx_h = {got}, analytic 2/(dx+dx') = {expected_analytic}"
+        f"Seam inv_dx_h = {got}, analytic 1/dx = {expected_analytic}"
+    )
+    # inv_dx_g is the E-update MEAN 2/(dx[k-1]+dx[k]); its genuine seam
+    # cell is device-1's first real cell (global nx_per), which straddles
+    # device-0's last cell — correct because the array is built globally.
+    e_seam = inv_dx_g[nx_per]
+    e_analytic = 2.0 / (dx_padded[nx_per - 1] + dx_padded[nx_per])
+    assert np.isclose(e_seam, e_analytic, atol=1e-6), (
+        f"Seam inv_dx_g (E mean) = {e_seam}, analytic = {e_analytic}"
     )
 
 
@@ -270,7 +280,8 @@ def test_build_sharded_nu_grid_metadata_shapes():
 
 
 def test_build_sharded_nu_grid_inv_dx_seam_continuity():
-    """inv_dx_h at the slab seam matches the un-sharded global reference."""
+    """inv_dx_h at the slab seam matches the un-sharded global reference.
+    CORE-C2: inv_dx_h is the H-update array — local cell width 1/dx[k]."""
     from rfx.runners.distributed_nu import split_1d_with_ghost
 
     grid = _make_test_grid(nx_physical=32, ny_physical=8, nz_physical=8,
@@ -294,11 +305,11 @@ def test_build_sharded_nu_grid_inv_dx_seam_continuity():
         f"Seam slab value {seam_slab} != global reference {seam_global}"
     )
 
-    # Cross-check analytically: 2 / (dx[seam-1] + dx[seam])
+    # Cross-check analytically: inv_dx_h is the H-update local 1/dx[k].
     dx_arr = sg.dx_padded
-    analytic = float(2.0 / (dx_arr[nx_per - 1] + dx_arr[nx_per]))
+    analytic = float(1.0 / dx_arr[nx_per - 1])
     assert np.isclose(seam_slab, analytic, atol=1e-5), (
-        f"Seam inv_dx_h {seam_slab} != analytic {analytic}"
+        f"Seam inv_dx_h {seam_slab} != analytic 1/dx {analytic}"
     )
 
 

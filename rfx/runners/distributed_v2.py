@@ -66,6 +66,7 @@ from rfx.runners.distributed import (
     _apply_cpml_e_distributed,
     _apply_cpml_h_distributed,
 )
+from rfx.runners._distributed_common import exchange_component_shmap
 
 
 # ---------------------------------------------------------------------------
@@ -114,50 +115,13 @@ def _shard_materials(materials: MaterialArrays, mesh: Mesh) -> MaterialArrays:
 # Ghost cell exchange via shard_map + ppermute
 # ---------------------------------------------------------------------------
 
-def _exchange_component_shmap(field, mesh, n_devices):
-    """Exchange ghost cells for one field component using shard_map.
-
-    ``field`` has global shape ``(nx_with_ghost*n_devices, ny, nz)`` when
-    viewed from outside shard_map; inside each shard sees
-    ``(nx_local_with_ghost, ny, nz)``.
-
-    The convention matches the pmap version in distributed.py:
-    - field[0]  = left ghost  <- left neighbour's rightmost real cell
-    - field[-1] = right ghost <- right neighbour's leftmost real cell
-    - real cells: field[1:-1]
-    """
-
-    @partial(
-        shard_map,
-        mesh=mesh,
-        in_specs=P("x"),
-        out_specs=P("x"),
-        check_rep=False,
-    )
-    def _exchange(f):
-        right_boundary = f[-2:-1, :, :]   # last real cell -> right neighbour's left ghost
-        left_boundary  = f[1:2, :, :]     # first real cell -> left neighbour's right ghost
-
-        perm_right = [(i, (i + 1) % n_devices) for i in range(n_devices)]
-        left_ghost_recv = lax.ppermute(right_boundary, "x", perm=perm_right)
-
-        perm_left = [(i, (i - 1) % n_devices) for i in range(n_devices)]
-        right_ghost_recv = lax.ppermute(left_boundary, "x", perm=perm_left)
-
-        device_idx = lax.axis_index("x")
-
-        left_ghost_val = jnp.where(device_idx > 0,
-                                   left_ghost_recv,
-                                   f[0:1, :, :])
-        right_ghost_val = jnp.where(device_idx < n_devices - 1,
-                                    right_ghost_recv,
-                                    f[-1:, :, :])
-
-        f = f.at[0:1, :, :].set(left_ghost_val)
-        f = f.at[-1:, :, :].set(right_ghost_val)
-        return f
-
-    return _exchange(field)
+# Exchange ghost cells for one field component using shard_map.
+#
+# The body lived here verbatim and is now the shared
+# ``exchange_component_shmap`` in ``_distributed_common.py`` (the NU
+# runner carried a byte-identical copy). Kept as a module-local alias so
+# the existing call sites are unchanged.
+_exchange_component_shmap = exchange_component_shmap
 
 
 def _exchange_h_ghosts_shmap(state: FDTDState, mesh: Mesh, n_devices: int) -> FDTDState:
@@ -1404,12 +1368,20 @@ def run_distributed(sim, *, n_steps, devices=None, exchange_interval=1,
     # stacked (n_devices, nx_local, ny, nz) -> gathered (nx, ny, nz)
     # ------------------------------------------------------------------
     def _unstack_and_gather(sharded_arr):
-        arr = np.array(sharded_arr)  # pull to host
-        # arr: (n_devices * nx_local, ny, nz)
-        total_x = arr.shape[0]
+        # Stage 1.5b: must remain traceable under jax.grad. The prior
+        # ``np.array(sharded_arr)`` host-pull raised
+        # TracerArrayConversionError whenever a caller wrapped the runner
+        # in ``jax.grad`` to drive an objective from the gathered
+        # ``final_state``. Pure JAX reshape + ``gather_array_x`` (already
+        # JAX-friendly) keeps the gather in the trace. Mirrors the
+        # already-correct ``distributed_nu.py::_unstack_and_gather``.
+        total_x = sharded_arr.shape[0]
         assert total_x == n_devices * nx_local
-        stacked = arr.reshape(n_devices, nx_local, *arr.shape[1:])
-        gathered = jnp.array(gather_array_x(jnp.array(stacked), ghost))
+        stacked = jnp.reshape(
+            sharded_arr,
+            (n_devices, nx_local) + tuple(sharded_arr.shape[1:]),
+        )
+        gathered = gather_array_x(stacked, ghost)
         # Trim padding cells if nx was padded
         if pad_x > 0:
             gathered = gathered[:nx]

@@ -11,9 +11,13 @@ Timestep scheme
 Global dt: both coarse and fine grids use the same timestep, limited by
 the fine-grid CFL condition. No temporal sub-stepping.
 
-Validated (2026-04-12): energy is net dissipative over 1000 steps
-(ratio=0.87x at step 1000). Small transient growth (~1.004x) at step 100
-is SAT penalty equilibration, not instability.
+Status: EXPERIMENTAL / NOT physics-validated. An energy-stability check
+(2026-04-12) showed energy is net dissipative over 1000 steps (ratio=0.87x
+at step 1000); the small transient growth (~1.004x) at step 100 is SAT
+penalty equilibration, not instability. That is a stability observation
+only — 3D SBP-SAT subgridding has NOT been validated against a reference
+solver or analytic result, and the repo CLAUDE.md explicitly marks 3D
+subgridding unvalidated. Do not present its output as validated.
 
 SAT penalty coefficients (Eq. from Cheng et al.)
 -------------------------------------------------

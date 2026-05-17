@@ -72,16 +72,21 @@ def apply_kerr_ade(state, chi3_arr, dt):
     -------
     FDTDState with corrected E-field components.
     """
-    # |E|^2 from the just-updated field (explicit forward-Euler)
+    # |E|^2 from the just-updated field.
     e_sq = state.ex ** 2 + state.ey ** 2 + state.ez ** 2
 
-    # Correction factor: dt * chi3 / eps0 * |E|^2
-    # Negative sign because P_NL opposes field growth.
+    # Correction factor: dt * chi3 / eps0 * |E|^2.
     factor = (dt / EPS_0) * chi3_arr * e_sq
 
-    ex = state.ex - factor * state.ex
-    ey = state.ey - factor * state.ey
-    ez = state.ez - factor * state.ez
+    # GEO-C1: exact solve of the documented implicit relation
+    #   E^{n+1} (1 + factor) = E^n  ->  E^{n+1} = E^n / (1 + factor).
+    # The prior code used the explicit linearisation E*(1-factor) — only
+    # first-order in ``factor`` and divergent once ``factor`` is not
+    # << 1. The implicit form is the same cost and unconditionally
+    # stable for this term.
+    ex = state.ex / (1.0 + factor)
+    ey = state.ey / (1.0 + factor)
+    ez = state.ez / (1.0 + factor)
 
     return state._replace(ex=ex, ey=ey, ez=ez)
 
