@@ -17,9 +17,16 @@ import numpy as np  # noqa: F401  (used by moved method bodies)
 
 from rfx.grid import Grid, C0  # noqa: F401  (used by moved method bodies)
 from rfx.core.yee import MaterialArrays  # noqa: F401
-from rfx.materials.debye import DebyePole
-from rfx.materials.lorentz import LorentzPole
+from rfx.geometry.csg import Box
+from rfx.materials.debye import DebyePole, init_debye
+from rfx.materials.lorentz import LorentzPole, init_lorentz
+from rfx.materials.thin_conductor import apply_thin_conductor
 from rfx.nonuniform import NonUniformGrid  # noqa: F401
+from rfx.sources.waveguide_port import (
+    WaveguidePort,
+    init_waveguide_port,
+    init_multimode_waveguide_port,
+)
 from rfx.api._spec import _WaveguidePortEntry  # noqa: F401
 
 # Type aliases mirrored from rfx/api/__init__.py (used in moved signatures).
