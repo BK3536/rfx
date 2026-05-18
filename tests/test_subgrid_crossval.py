@@ -160,8 +160,12 @@ class TestCavitySubgrid:
             freq_max=10e9, domain=(0.04, 0.04, 0.04),
             boundary="pec", dx=3e-3,
         )
-        # z_range covers source (z=0.018) and probe (z=0.022)
-        sim.add_refinement(z_range=(0.008, 0.032), ratio=3)
+        # z_range covers source (z=0.018) and probe (z=0.022). The slab is
+        # centered (two interfaces, touches neither z boundary) — a
+        # research-only lane since PR #81 restricted production subgrid to a
+        # guarded one-sided z-slab. Run it under validation="research", same
+        # as TestSlabCavitySubgrid above.
+        sim.add_refinement(z_range=(0.008, 0.032), ratio=3, validation="research")
         sim.add_source(position=(0.012, 0.015, 0.018), component="ez")
         sim.add_probe(position=(0.028, 0.025, 0.022), component="ez")
         return sim.run(n_steps=n_steps)
